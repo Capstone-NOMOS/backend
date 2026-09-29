@@ -90,8 +90,14 @@ DB 제약으로 올릴 수 있는 불변식은 마이그레이션으로 올려 �
 테이블을 가로질러야 알 수 있어 CHECK로 표현 못 하는 것만 `tests/helpers/assert-invariants.ts`에 넣고,
 `tests/setup-invariants.ts`의 전역 `afterEach`가 매 테스트 뒤에 확인한다. afterAll로 몰면 어느 테스트가 깼는지를 잃는다.
 
-`npm run dev`로 띄우면 <http://localhost:3000/docs>에 Swagger UI가 올라온다(`NODE_ENV=production`에서는 마운트하지 않는다).
-`docs/openapi.yaml`은 **손으로 쓴 문서라 코드와 자동 동기화되지 않는다** — 어긋나면 코드가 맞다. 자동 생성(zod-to-openapi)은 나중 과제.
+`npm run dev`로 띄우면 <http://localhost:3000/docs>에 Swagger UI가 올라온다(운영은 `DOCS_ENABLED` + Basic Auth — 배포 절 참고).
+`docs/openapi.yaml`은 **손으로 쓰지만 테스트가 코드와 대조하는 계약이다.** FE가 여기서 타입을 생성한다(`openapi-typescript`) — 그래서 모든 성공 응답에 `schema`가 있어야 한다(example은 타입이 되지 않는다).
+- `tests/setup-invariants.ts`가 Express `res.json`을 감싸 **테스트가 내는 모든 `/api` 응답**을 문서의 schema로 검사한다(`tests/helpers/openapi-contract.ts`, ajv).
+  문서에 없는 필드가 오면 실패다(객체는 기본 `additionalProperties: false`) — "문서엔 `userId`, 실제는 `id`"가 실제로 있었다. 에러 응답은 공통 `Error` 형태만 본다.
+- `tests/openapi-contract.test.ts`가 **라우트와 문서가 1:1**인지(`src/routes/*.ts`를 전부 읽는다), 모든 2xx에 schema가 있는지, 그리고 **모든 성공 응답을 실제 HTTP로 한 번 이상 받는지** 확인한다.
+  API를 추가하면 문서에 경로·schema를 쓰고 그 흐름에 호출 한 줄을 넣어야 CI가 통과한다.
+- 응답 필드를 바꾸면 문서를 같이 고친다 — 안 고치면 테스트가 잡는다. 스키마는 `components.schemas`에 두고 응답에서는 `$ref`로 쓴다.
+- 코드로 생성하지 않고 손으로 쓰는 이유: 사람이 읽는 설명(한국어 description·예시)이 문서의 절반이라 YAML이 읽기 쉽다. 대신 틀리면 테스트가 잡는다.
 `{{PROJECT_ID}}` 같은 자리표는 `/docs/openapi.json`을 서빙할 때마다 DB에서 읽어 채우므로(`src/openapi/spec.ts`) 재시드 후 새로고침만 하면 된다.
 
 수동으로 서버를 띄워 API를 손으로 찔러보는 절차는 `docs/manual-test.md`에 있다 — 기동·환경변수·API 25개 curl 예시·시나리오 대본.

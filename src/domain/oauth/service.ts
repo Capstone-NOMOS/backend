@@ -5,12 +5,20 @@ import { appendEvent } from '../events/append.js';
 import { createGithubDeviceApi, DEFAULT_SCOPE, type DeviceCode, type GithubDeviceApi } from './github-device.js';
 import { insertOauthSession, linkGithubAccount } from './repository.js';
 
-const defaultApi = createGithubDeviceApi();
+let defaultApi: GithubDeviceApi = createGithubDeviceApi();
+
+// 테스트가 GitHub에 실제로 닿지 않고 HTTP 경로(라우트 → 서비스)를 돌 수 있게 한다. 운영 코드에서는 부르지 않는다.
+// 되돌릴 때 쓰도록 이전 값을 돌려준다.
+export function setGithubDeviceApi(next: GithubDeviceApi): GithubDeviceApi {
+  const previous = defaultApi;
+  defaultApi = next;
+  return previous;
+}
 
 // device_code는 서버가 보관하지 않고 CLI가 들고 있는다. 보관하면 지울 책임이 생기고,
 // 우리 DB가 새면 진행 중인 인증까지 함께 털린다. GitHub device flow가 그렇게 설계돼 있다.
-export async function startGithubDeviceFlow(api: GithubDeviceApi = defaultApi): Promise<DeviceCode> {
-  return api.requestDeviceCode(DEFAULT_SCOPE);
+export async function startGithubDeviceFlow(api?: GithubDeviceApi): Promise<DeviceCode> {
+  return (api ?? defaultApi).requestDeviceCode(DEFAULT_SCOPE);
 }
 
 export type DeviceFlowStatus =
@@ -24,8 +32,9 @@ export type DeviceFlowStatus =
 export async function completeGithubDeviceFlow(
   userId: string,
   deviceCode: string,
-  api: GithubDeviceApi = defaultApi,
+  apiOverride?: GithubDeviceApi,
 ): Promise<DeviceFlowStatus> {
+  const api = apiOverride ?? defaultApi;
   const result = await api.exchangeDeviceCode(deviceCode);
   if (result.status !== 'ok') return result;
 
