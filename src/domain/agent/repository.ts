@@ -105,3 +105,42 @@ export async function findAgentById(db: Queryable, agentId: string): Promise<Age
   const row = rows[0];
   return row ? toAgent(row) : null;
 }
+
+// 조직 에이전트 목록(역할 배정 화면). 진행 중 프로젝트 배정은 findAgentMembership과 같은 기준
+// (completed·aborted 제외, 여러 개면 가장 최근)으로 하나만 붙인다 — 토큰의 project_id와 같은 답이어야 한다.
+export type OrgAgentRow = {
+  agentId: AgentId;
+  agentName: string;
+  userId: UserId;
+  nickname: string | null;
+  connectedAt: string;
+  activeProjectId: string | null;
+  activeTeamRole: string | null;
+};
+
+export async function listAgentsByOrg(db: Queryable, orgId: string): Promise<OrgAgentRow[]> {
+  const { rows } = await db.query(
+    `SELECT a.id, a.name, a.user_id, a.created_at, u.nickname, m.project_id, m.team_role
+       FROM agents a
+       JOIN users u ON u.id = a.user_id
+       LEFT JOIN LATERAL (
+         SELECT pm.project_id, pm.team_role FROM project_members pm
+           JOIN projects p ON p.id = pm.project_id
+          WHERE pm.agent_id = a.id AND p.status NOT IN ('completed', 'aborted')
+          ORDER BY p.created_at DESC
+          LIMIT 1
+       ) m ON true
+      WHERE a.org_id = $1
+      ORDER BY u.created_at ASC, a.created_at ASC`,
+    [orgId],
+  );
+  return rows.map((r) => ({
+    agentId: asAgentId(r.id),
+    agentName: r.name,
+    userId: asUserId(r.user_id),
+    nickname: r.nickname,
+    connectedAt: r.created_at,
+    activeProjectId: r.project_id ?? null,
+    activeTeamRole: r.team_role ?? null,
+  }));
+}

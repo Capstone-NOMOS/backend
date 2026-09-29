@@ -35,7 +35,10 @@ echo "▶ 마이그레이션"
 "${COMPOSE[@]}" run --rm app migrate
 
 echo "▶ 서버 교체"
-"${COMPOSE[@]}" up -d app caddy
+# app은 항상 새로 띄운다. 비밀값·설정은 기동 시 SSM에서 한 번만 읽으므로, 같은 태그로 다시 돌릴 때
+# (SSM 값만 바꾼 경우) compose가 "변경 없음"으로 컨테이너를 그대로 두면 새 값이 반영되지 않는다 — 실제로 그랬다.
+"${COMPOSE[@]}" up -d --force-recreate app
+"${COMPOSE[@]}" up -d caddy
 
 echo "▶ 헬스체크 (최대 60초)"
 for _ in $(seq 1 30); do

@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate, orgIdOf, requireRepresentative, requireSameOrg } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
-import { connectRepos, updateRepoSettings } from '../domain/repo/service.js';
+import { connectRepos, listRepos, updateRepoSettings } from '../domain/repo/service.js';
 
 export const reposRouter = Router();
 
@@ -39,6 +39,18 @@ reposRouter.post(
       repos: req.body.repos,
     });
     res.status(201).json({ data: { repos } });
+  },
+);
+
+// GET /api/orgs/:orgId/repos — 연결된 레포 목록. 경로 소유권 화면과 프로젝트 생성의 레포 선택이 여기서 id를 얻는다.
+reposRouter.get(
+  '/orgs/:orgId/repos',
+  validate({ params: orgIdParamsSchema }),
+  authenticate,
+  requireSameOrg,
+  async (req, res) => {
+    const { orgId } = req.params as z.infer<typeof orgIdParamsSchema>;
+    res.status(200).json({ data: { repos: await listRepos(orgId) } });
   },
 );
 

@@ -157,7 +157,7 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
 그래서 **소유 역할이 지정된 경로 규칙이 하나도 없는 레포는 프로젝트에 넣을 수 없다**(`createProject`, 422 `REPO_OWNERSHIP_NOT_SET`, 메시지에 막힌 레포 전부와 부를 API를 함께 적는다). 그대로 두면 아무도 쓸 수 없는 레포라 원인이 제출 시점에야 드러나기 때문이다.
 기준은 "하나라도 지정됐는가"이지 "`**`가 지정됐는가"가 아니다 — 모노레포처럼 `apps/*/**`만 나누고 루트를 비워 두는 설계를 막지 않는다. 그 경우 루트 파일은 기본 거부다(열리지 않는다).
 
-각 규칙의 `action_key`는 **허용 레벨 정책표**(`action_catalog`, 17행)의 "탐지" 열을 경로로 옮긴 것이다. 정책표는 행동마다 누가 승인하는가(AUTO / PM_REVIEW / HUMAN / FORBIDDEN)를 L1~L4 열로 정의하고, `locked_mode`(🔒) 행은 네 레벨이 모두 같아야 한다는 CHECK로 DB가 막는다. **`PM_REVIEW`는 PM이 반려만 할 수 있고 통과는 AUTO 검증이 결정한다** — LLM이 게이트를 열 수 없다. PM이 응답하지 못할 때(타임아웃·예산 소진) AUTO 강등은 **PM_REVIEW 한 칸에만** 적용하고(🔒 행은 원천 제외, HUMAN·FORBIDDEN은 절대 강등 없음) 같은 트랜잭션에 `PM_REVIEW_DEGRADED`(사유·`policy_hash`)를 남긴다(`domain/policy/pm-review-fallback.ts`). `package.json`의 `dep:add`는 경로가 아니라 dependencies/devDependencies diff로 판정한다(`domain/policy/dependency-diff.ts`, 읽을 수 없으면 dep:add로 취급). 비밀 파일 행의 `action_key`를 NULL로 두면 `code:own_path`로 해석되므로 반드시 `secret:touch`여야 한다. 시드 목록을 바꾸면 `source='seed'` 행만 골라 기존 레포에도 반영하는 마이그레이션을 같이 쓴다(004·005가 선례).
+각 규칙의 `action_key`는 **허용 레벨 정책표**(`action_catalog`, 17행)의 "탐지" 열을 경로로 옮긴 것이다. 정책표는 행동마다 누가 승인하는가(AUTO / PM_REVIEW / HUMAN / FORBIDDEN)를 L1~L4 열로 정의하고, `locked_mode`(🔒) 행은 네 레벨이 모두 같아야 한다는 CHECK로 DB가 막는다. **`PM_REVIEW`는 PM이 반려만 할 수 있고 통과는 AUTO 검증이 결정한다** — LLM이 게이트를 열 수 없다. PM이 응답하지 못할 때(타임아웃·예산 소진) AUTO 강등은 **PM_REVIEW 한 칸에만** 적용하고(🔒 행은 원천 제외, HUMAN·FORBIDDEN은 절대 강등 없음) 같은 트랜잭션에 `PM_REVIEW_DEGRADED`(사유·`policy_hash`)를 남긴다(`domain/policy/pm-review-fallback.ts`). `package.json`의 `dep:add`는 경로가 아니라 dependencies/devDependencies diff로 판정하도록 **판정기만 있고 연결되지 않았다**(`domain/policy/dependency-diff.ts`, 읽을 수 없으면 dep:add로 취급) — 지금은 `package.json`을 고쳐도 `dep:add`가 걸리지 않는다. 시드 40번(`requirements.txt`)만 경로로 잡힌다. `package.json`을 경로 행으로 추가해 메우지 말 것: scripts만 고친 변경까지 dep:add가 되고, 승인 API가 없어 `AWAITING_APPROVAL`에서 멈춘다. 제출·V3가 변경 전후 내용을 읽을 때 연결한다. 비밀 파일 행의 `action_key`를 NULL로 두면 `code:own_path`로 해석되므로 반드시 `secret:touch`여야 한다. 시드 목록을 바꾸면 `source='seed'` 행만 골라 기존 레포에도 반영하는 마이그레이션을 같이 쓴다(004·005가 선례).
 
 - `priority`는 **항상 명시적 정수**이고 **레포 안에서 유일**하다(`uq_repo_paths_priority`). 대역은 `0~99` seed · `100~199` scan · `200~299` manual · `900+` 조직 상한이고 source별 CHECK(`repo_paths_priority_band_chk`)가 강제한다. manual 규칙은 priority를 안 주면 대역의 최댓값 + 1. "더 구체적인 패턴이 이긴다" 같은 규칙 기반 판정은 금지 — 재현 실험이 성립하려면 어느 규칙이 이기는지가 결정적이어야 한다.
 - `resolveRule`은 매칭 규칙 중 priority 최대값을 고르고, 동점이면 `path_pattern` **사전순 오름차순**으로 tie-break한다. priority가 유일하므로 DB 데이터에선 폴백이 발동하지 않지만, 함수 자체의 결정성은 유지한다.
@@ -179,7 +179,7 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
 
 ### 인증
 
-사람은 `POST /api/auth/login`으로 받은 JWT를 `Authorization: Bearer`로 보낸다. 에이전트(CLI)는 가입 때 받은 개인 연결 키로 `POST /api/agents/connect`를 호출해 access/refresh 토큰을 받는다. JWT는 의존성 없이 `node:crypto`로 구현했다(`src/utils/tokens.ts`, HS256). 비밀번호는 `scrypt`(`src/utils/password.ts`) — argon2·bcrypt는 네이티브 빌드가 Windows에서 자주 깨진다.
+사람은 `POST /api/auth/login`으로 받은 JWT(**24시간**, refresh 없음)를 `Authorization: Bearer`로 보낸다. 에이전트 토큰(1시간)보다 긴 이유는 사람 토큰에 권한이 없고 매 요청 DB에서 조직·역할을 다시 읽기 때문이다 — 남는 위험은 탈취된 토큰을 만료 전에 끊을 수 없다는 것(로그아웃·강제 만료 없음). 프론트는 로그인 뒤 `GET /api/me`로 조직·역할을 읽는다(조직이 없으면 `orgRole`도 null — `users.org_role`의 기본값 MEMBER를 그대로 내지 않는다). 에이전트(CLI)는 가입 때 받은 개인 연결 키로 `POST /api/agents/connect`를 호출해 access/refresh 토큰을 받는다. JWT는 의존성 없이 `node:crypto`로 구현했다(`src/utils/tokens.ts`, HS256). 비밀번호는 `scrypt`(`src/utils/password.ts`) — argon2·bcrypt는 네이티브 빌드가 Windows에서 자주 깨진다.
 
 - `authenticate`는 토큰에서 **신원(`sub`)만** 믿고 `orgId`·`orgRole`은 매 요청 DB에서 다시 읽는다. 토큰의 `org_role`로 판정하면 조직을 만든 직후에도 옛 역할이 남는다.
 - 토큰의 `kind`(`user` | `agent`)를 반드시 검사한다. 빼면 에이전트 토큰으로 사람 API를 부를 수 있다.
@@ -295,7 +295,9 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
 - `policy_hash`는 NOT NULL인데 계산하려면 정책 사본이 먼저 있어야 한다. 그래서 자리값 `'pending'`으로 INSERT한 뒤
   같은 트랜잭션에서 `recomputeProjectPolicyHash`가 덮어쓴다 — 자리값이 트랜잭션 밖으로 나가면 안 된다.
 - **같은 레포를 두 활성 프로젝트(`planning`·`active`)가 쓸 수 없다.** DB 제약으로 표현할 수 없어 서비스가 막는다(409).
-- **G1(`projects.started_at`) 이후에는 멤버를 바꿀 수 없다**(403). 역할 교체는 해제 후 재배정이다 —
+- **에이전트는 진행 중(completed·aborted가 아닌) 프로젝트를 하나만 맡는다**(409 `AGENT_IN_ANOTHER_PROJECT`). 토큰의 `project_id`가 하나라서
+  두 곳에 배정되면 먼저 배정된 쪽은 조용히 못 쓰게 된다. "진행 중"의 정의는 `findAgentMembership`과 같아야 한다.
+- **G1(`projects.started_at`) 이후에는 멤버를 바꿀 수 없다**(403). G1으로 가는 경로(승인 API)는 아직 없어 지금은 항상 `planning`이다. 역할 교체는 해제 후 재배정이다 —
   UPDATE 경로를 두면 한 역할에 둘이 잠깐 겹친다.
 - **멤버 배정 뒤 그 에이전트는 토큰을 재발급해야 한다.** 배정 전 토큰에는 `project_id`가 없다.
   배정 응답의 `notice`와 openapi 설명에 그 안내가 들어 있다.
@@ -370,14 +372,18 @@ EC2 1대(Docker) + RDS PostgreSQL 16 + KMS + SSM. 콘솔 절차는 `docs/deploy-
 
 브랜치는 `dev`에서 따서 PR로 `dev`에 합치고, 배포할 때 `dev → main`으로 머지한다. **`main`에 들어온 것이 곧 운영이다.**
 
-- `ci.yml` — PR(`main`·`dev` 대상)과 `dev` push에서 타입체크 + 전체 테스트. PostgreSQL 서비스 컨테이너를
+- `ci.yml` — `dev` 대상 PR과 `dev` push에서 타입체크 + 전체 테스트. PostgreSQL 서비스 컨테이너를
   `vitest.config.ts`와 **같은 포트·DB 이름**(`55432/nomos_test`)으로 띄운다 — CI용 접속 문자열을 따로 두지 말 것.
+  `dev → main` PR에서는 돌지 않는다 — 머지 직후 deploy가 같은 코드를 다시 테스트하므로 중복이다.
 - `deploy.yml` — `main` push에서 `ci.yml`을 다시 돌린 뒤(`workflow_call`) 이미지를 `sha-<7자리>` 태그로 ECR에 올리고,
   **SSM Run Command**로 EC2에서 그 이미지의 배포 파일을 꺼내 `deploy.sh`를 돈다. 수동 배포와 같은 경로다
   (migrate → 서버 교체 → 헬스체크). 롤백은 Run workflow에 이전 태그를 넣는다(빌드·테스트를 건너뛴다).
 - **AWS 자격 증명은 OIDC다.** 액세스 키를 GitHub Secrets에 넣지 말 것. 역할의 신뢰 정책은 `sub`를
-  `repo:<소유자>/<레포>:environment:production`으로 묶는다(`deploy/github-actions-trust.json`) — 그래서 deploy 잡의
+  `<접두사>:environment:production`으로 묶는다(`deploy/github-actions-trust.json`) — 그래서 deploy 잡의
   `environment: production`을 빼면 역할을 못 받고, 다른 브랜치·PR의 워크플로는 운영 권한을 얻지 못한다.
+  **접두사는 `repo:소유자/레포`가 아니다.** 이 레포는 GitHub의 불변 subject(`use_immutable_subject`)라 소유자·레포 id가 붙는다
+  (`repo:Capstone-NOMOS@327380436/backend@1375402955`). 추측하지 말고
+  `gh api repos/<소유자>/<레포>/actions/oidc/customization/sub`의 `sub_claim_prefix`를 그대로 쓴다 — 이름 형식으로 적었다가 실제로 막혔다.
   권한은 `deploy/github-actions-policy.json`(ECR 한 리포지토리 푸시 + 그 인스턴스에만 SendCommand).
 - 설정값은 **production 환경의 Variables**(`AWS_REGION`·`AWS_DEPLOY_ROLE_ARN`·`ECR_REPOSITORY`·`EC2_INSTANCE_ID`)다.
   전부 비밀이 아니다. 앱 비밀값은 지금처럼 SSM Parameter Store에만 둔다 — CI에 복사하지 말 것.

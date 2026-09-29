@@ -87,7 +87,8 @@ const envSchema = z
   .transform((v) => ({
     ...v,
     API_BASE_URL: v.API_BASE_URL ?? 'http://localhost:3000',
-    FRONTEND_BASE_URL: v.FRONTEND_BASE_URL ?? 'http://localhost:5173',
+    // 프론트(Next)는 로컬에서 3001로 뜬다(3000은 이 서버). 초대 링크가 이 주소로 만들어진다.
+    FRONTEND_BASE_URL: v.FRONTEND_BASE_URL ?? 'http://localhost:3001',
     // 로컬 개발에서는 지금처럼 켜 두고, 그 외(운영·테스트)는 명시해야 켜진다.
     DOCS_ENABLED: v.DOCS_ENABLED ?? v.NODE_ENV === 'development',
   }));

@@ -95,6 +95,18 @@ export async function listReposByOrg(db: Queryable, orgId: string): Promise<Repo
   return rows.map(toRepo);
 }
 
+// 소유 역할이 하나라도 지정된 레포 id. project/repository.ts의 findReposWithoutOwnership과 같은 기준
+// (owner_role이 NULL이 아닌 규칙이 있는가) — 목록의 표시와 프로젝트 생성의 422가 같은 답을 내야 한다.
+export async function listRepoIdsWithOwnership(db: Queryable, orgId: string): Promise<Set<string>> {
+  const { rows } = await db.query(
+    `SELECT DISTINCT r.id FROM repos r
+       JOIN repo_paths p ON p.repo_id = r.id AND p.owner_role IS NOT NULL
+      WHERE r.org_id = $1`,
+    [orgId],
+  );
+  return new Set(rows.map((row) => row.id as string));
+}
+
 // org 필터 없이 repo_id만으로 조회한다. "존재하지 않음(404)"과 "다른 조직 소유(403)"를
 // 구분해야 하는 호출부(assertRepoInOrg)에서만 쓴다.
 // 레포 설정(github_repo_id·clone_url) 변경. 넘긴 키만 바꾼다 — undefined는 그대로, null은 비운다.

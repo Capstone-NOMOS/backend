@@ -7,7 +7,10 @@ import { generateSecret, hashSecret, signJwt } from '../../utils/tokens.js';
 import { appendEvent } from '../events/append.js';
 import { findCredentialsByLoginId, insertUser, updateConnectKeyHash } from '../org/repository.js';
 
-const USER_ACCESS_TTL_SECONDS = 60 * 60;
+// 사람 토큰은 24시간(기능명세 F-02). 에이전트 토큰(1시간)보다 긴 이유: 사람 토큰에는 권한이 없고
+// authenticate가 매 요청 조직·역할을 DB에서 다시 읽으므로, 오래 살아도 옛 권한으로 판정되지 않는다.
+// 남는 위험은 탈취된 토큰을 만료 전에 끊을 수 없다는 것 — 로그아웃·강제 만료는 아직 없다(refresh 도입 시 함께).
+const USER_ACCESS_TTL_SECONDS = 24 * 60 * 60;
 
 // 없는 아이디일 때도 scrypt를 한 번 돌려 응답 시간으로 아이디 존재 여부가 드러나지 않게 한다.
 let dummyHash: Promise<string> | undefined;

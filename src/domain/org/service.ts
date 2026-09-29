@@ -7,6 +7,7 @@ import { checkCollaborator, hasGithubToken, listUserRepos, type GithubRepo } fro
 import { listReposByOrg } from '../repo/repository.js';
 import {
   assignUserToOrg,
+  findOrganizationById,
   findUserById,
   insertOrganization,
   listUsersByOrg,
@@ -54,8 +55,10 @@ export async function listAvailableGithubRepos(): Promise<GithubRepo[]> {
   return listUserRepos();
 }
 
+// 사용자를 가리키는 키는 다른 응답(createOrg·acceptInvite·프로젝트 멤버)과 같은 userId로 쓴다.
 export type MemberView = {
-  id: string;
+  userId: string;
+  loginId: string | null;
   nickname: string | null;
   githubLogin: string | null;
   name: string | null;
@@ -68,7 +71,8 @@ export type MemberView = {
 export async function listMembers(orgId: string): Promise<MemberView[]> {
   const users = await listUsersByOrg(pool, orgId);
   const base = (u: (typeof users)[number]): MemberView => ({
-    id: u.id,
+    userId: u.id,
+    loginId: u.loginId,
     nickname: u.nickname,
     githubLogin: u.githubLogin,
     name: u.name,
@@ -96,4 +100,33 @@ export async function listMembers(orgId: string): Promise<MemberView[]> {
     results.push({ ...base(u), ...(isCollaborator === undefined ? {} : { isCollaborator }) });
   }
   return results;
+}
+
+// GET /api/me — 로그인 직후 프론트가 "어느 조직의 누구인가"를 아는 유일한 경로.
+// 로그인 응답에 넣지 않는 이유: 토큰은 신원만 증명하고 조직·역할은 매 요청 DB가 정본이다.
+// 로그인 시점 값을 들고 다니면 조직을 만들거나 초대를 수락한 직후에 옛 값이 남는다.
+export type MeView = {
+  userId: string;
+  loginId: string | null;
+  nickname: string | null;
+  githubLogin: string | null;
+  orgId: string | null;
+  orgName: string | null;
+  // 조직이 없으면 null. users.org_role은 NOT NULL(기본 MEMBER)이라 그대로 내면 "조직 없는 MEMBER"로 읽힌다.
+  orgRole: 'REPRESENTATIVE' | 'MEMBER' | null;
+};
+
+export async function getMe(userId: string): Promise<MeView> {
+  const user = await findUserById(pool, userId);
+  if (!user) throw new AppError('UNAUTHENTICATED', 'user not found');
+  const org = user.orgId === null ? null : await findOrganizationById(pool, user.orgId);
+  return {
+    userId: user.id,
+    loginId: user.loginId,
+    nickname: user.nickname,
+    githubLogin: user.githubLogin,
+    orgId: user.orgId,
+    orgName: org?.name ?? null,
+    orgRole: user.orgId === null ? null : user.orgRole,
+  };
 }

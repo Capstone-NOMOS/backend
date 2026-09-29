@@ -136,10 +136,10 @@ cp .env.example .env
 | `PORT` | | `3000` | 3000 |
 | `LOG_LEVEL` | | `info` | info |
 | `API_BASE_URL` | | `http://localhost:3000` | 같은 값. 시드가 자격 증명의 `baseUrl`로 쓴다 |
-| `FRONTEND_BASE_URL` | | `http://localhost:5173` | 같은 값. **초대 링크**가 `{이 값}/invites/{token}`으로 만들어진다 |
+| `FRONTEND_BASE_URL` | | `http://localhost:3001` | 같은 값. **초대 링크**가 `{이 값}/invites/{token}`으로 만들어진다 |
 | `APP_BASE_URL` | ❌ | — | **두 값으로 나뉘었다.** 남아 있으면 서버가 뜨지 않는다 — 지울 것 |
 | `DOCS_ENABLED` | | `true` | 로컬 개발은 켜짐, 그 외 꺼짐 |
-| `CORS_ALLOWED_ORIGINS` | | `http://localhost:5173` | CORS 헤더 없음(같은 오리진만) |
+| `CORS_ALLOWED_ORIGINS` | | `http://localhost:3001` | CORS 헤더 없음(같은 오리진만) |
 | `GITHUB_TOKEN` | | GitHub PAT | 레포 목록 조회가 **빈 배열**을 반환한다 (500이 아니다) |
 | `GITHUB_CLIENT_ID` · `GITHUB_CLIENT_SECRET` | | OAuth App 값 | GitHub Device Flow 두 API만 502 |
 | `SECRET_ENCRYPTION_KEY` | | base64 32바이트 | Device Flow **승인 완료 시점**에만 실패 |

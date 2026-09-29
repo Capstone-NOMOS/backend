@@ -88,6 +88,42 @@ export async function insertProject(
   return toProject(rows[0]!);
 }
 
+// 프로젝트 목록. userId를 주면 그 사람의 에이전트가 배정된 프로젝트만 — "볼 수 있는가"는
+// visibility.ts(대표는 전체, 팀원은 배정된 것만)와 같은 정의다.
+export async function listProjectsByOrg(
+  db: Queryable,
+  orgId: string,
+  onlyForUserId: string | null,
+): Promise<Project[]> {
+  const { rows } = await db.query(
+    `SELECT p.* FROM projects p
+      WHERE p.org_id = $1
+        AND ($2::uuid IS NULL OR EXISTS (
+              SELECT 1 FROM project_members m JOIN agents a ON a.id = m.agent_id
+               WHERE m.project_id = p.id AND a.user_id = $2))
+      ORDER BY p.created_at DESC`,
+    [orgId, onlyForUserId],
+  );
+  return rows.map(toProject);
+}
+
+// 에이전트가 이미 맡고 있는 진행 중 프로젝트(이 프로젝트 제외). policy/repository.ts의 findAgentMembership과
+// 같은 "진행 중" 정의(completed·aborted 제외)를 쓴다 — 어긋나면 토큰이 다른 프로젝트를 가리킨다.
+export async function findOtherActiveAssignment(
+  db: Queryable,
+  agentId: string,
+  exceptProjectId: string,
+): Promise<string | null> {
+  const { rows } = await db.query(
+    `SELECT m.project_id FROM project_members m
+       JOIN projects p ON p.id = m.project_id
+      WHERE m.agent_id = $1 AND m.project_id <> $2 AND p.status NOT IN ('completed', 'aborted')
+      LIMIT 1`,
+    [agentId, exceptProjectId],
+  );
+  return rows[0]?.project_id ?? null;
+}
+
 export async function findProjectById(db: Queryable, projectId: string): Promise<Project | null> {
   const { rows } = await db.query(`SELECT * FROM projects WHERE id = $1`, [projectId]);
   const row = rows[0];
