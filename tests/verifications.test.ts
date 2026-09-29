@@ -5,7 +5,7 @@ import { createApp } from '../src/app.js';
 import { NomosClient } from '../src/bridge/nomos-client.js';
 import { pool } from '../src/config/db.js';
 import { connectAgent, refreshAgentToken } from '../src/domain/agent/service.js';
-import { signup } from '../src/domain/auth/service.js';
+import { login, signup } from '../src/domain/auth/service.js';
 import { createOrganization } from '../src/domain/org/service.js';
 import { clearPolicyCache } from '../src/domain/policy/policy-cache.js';
 import { recomputeProjectPolicyHash } from '../src/domain/policy/policy-hash.js';
@@ -249,6 +249,30 @@ describe('V3 — 경로 검사 (server)', () => {
     setCommitInspector(fakeInspector(new Error('네트워크 끊김')));
     const second = await claimAndSubmit(other, ['src/api/join.ts']);
     expect(resultOf(second.verification.stages, 'V3')).toBe('SKIPPED');
+  });
+});
+
+// 예전에는 확인이 없어 artifactId만 알면 다른 조직의 검증 결과(바뀐 경로 목록 포함)를 읽을 수 있었다.
+describe('검증 결과 조회 권한', () => {
+  it('자기 프로젝트만 본다 — 다른 프로젝트의 에이전트는 404, 다른 조직의 사람은 403', async () => {
+    const mine = await setup();
+    const other = await setup({ loginId: 'other' });
+    setCommitInspector(fakeInspector(['src/api/join.ts']));
+    const { id } = await claimAndSubmit(mine, ['src/api/join.ts']);
+
+    const get = (token: string) =>
+      fetch(`${baseUrl}/api/artifacts/${id}/verifications`, { headers: { Authorization: `Bearer ${token}` } });
+
+    expect((await get(mine.tokens.accessToken)).status).toBe(200);
+
+    const otherAgent = await get(other.tokens.accessToken);
+    expect(otherAgent.status).toBe(404);
+    expect(((await otherAgent.json()) as { error: { code: string } }).error.code).toBe('ARTIFACT_NOT_FOUND');
+
+    const { accessToken: otherHuman } = await login({ loginId: 'other', password: 'correct-horse-battery' });
+    const human = await get(otherHuman);
+    expect(human.status).toBe(403);
+    expect(((await human.json()) as { error: { code: string } }).error.code).toBe('CROSS_ORG_ACCESS');
   });
 });
 

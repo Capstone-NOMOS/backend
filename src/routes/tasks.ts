@@ -113,7 +113,13 @@ tasksRouter.get(
   validate({ params: artifactIdParamsSchema }),
   async (req, res) => {
     const { artifactId } = req.params as z.infer<typeof artifactIdParamsSchema>;
-    res.json({ data: { verifications: await getArtifactVerifications(artifactId) } });
+    const viewer = req.agent
+      ? ({ kind: 'agent', projectId: agentContextOf(req).projectId } as const)
+      : ({
+          kind: 'user',
+          actor: { userId: req.user!.id, orgId: orgIdOf(req), orgRole: req.user!.orgRole },
+        } as const);
+    res.json({ data: { verifications: await getArtifactVerifications(viewer, artifactId) } });
   },
 );
 

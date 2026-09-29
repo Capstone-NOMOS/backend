@@ -5,6 +5,7 @@ import { logger } from '../../config/logger.js';
 import { appendEvent } from '../events/append.js';
 import { getPolicySnapshot } from '../policy/policy-cache.js';
 import { inspectPaths } from '../policy/scope-check.js';
+import { assertProjectVisibleToUser, type UserContext } from '../project/visibility.js';
 import { findRepoById } from '../repo/repository.js';
 import type { RepoPath } from '../repo/types.js';
 import type { TeamRole } from '../roles.js';
@@ -417,6 +418,23 @@ export async function recordBridgeVerification(
   });
 }
 
-export async function getArtifactVerifications(artifactId: string) {
-  return withTransaction((tx) => listVerifications(tx, artifactId));
+// 누가 보느냐로 범위가 갈린다. 에이전트는 자기 프로젝트의 산출물만, 사람은 볼 수 있는 프로젝트의 것만.
+// 예전에는 확인이 없어 artifactId만 알면 다른 조직의 검증 결과(바뀐 경로 목록 포함)를 읽을 수 있었다.
+export type ArtifactViewer = { kind: 'agent'; projectId: string } | { kind: 'user'; actor: UserContext };
+
+export async function getArtifactVerifications(viewer: ArtifactViewer, artifactId: string) {
+  return withTransaction(async (tx) => {
+    const artifact = await findArtifactById(tx, artifactId);
+    const task = artifact ? await findTaskById(tx, artifact.taskId) : null;
+    if (!artifact || !task) throw new AppError('ARTIFACT_NOT_FOUND', `artifact ${artifactId} not found`);
+    if (viewer.kind === 'agent') {
+      // 다른 프로젝트의 산출물은 존재 여부도 드러내지 않는다.
+      if (task.projectId !== viewer.projectId) {
+        throw new AppError('ARTIFACT_NOT_FOUND', `artifact ${artifactId} not found`);
+      }
+    } else {
+      await assertProjectVisibleToUser(tx, viewer.actor, task.projectId);
+    }
+    return listVerifications(tx, artifactId);
+  });
 }
