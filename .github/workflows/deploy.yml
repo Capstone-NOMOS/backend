@@ -1,0 +1,140 @@
+# main에 들어오면 운영에 배포한다: 테스트 → 이미지 빌드·ECR 푸시 → EC2에서 deploy.sh.
+#
+# - AWS 자격 증명은 OIDC로 받는다. 액세스 키를 GitHub에 저장하지 않는다(역할 신뢰 정책: deploy/github-actions-trust.json).
+# - EC2에는 SSH가 아니라 SSM Run Command로 들어간다. 22번 포트를 열지 않고, 서버에 키를 두지 않는다.
+# - 배포 파일(deploy.sh·compose·Caddyfile)은 이미지 안에 있으므로 매번 그 태그의 것으로 꺼내 쓴다 —
+#   EC2에 남은 옛 deploy.sh로 새 이미지를 올리는 일이 없다. deploy.env(인스턴스별 값)는 EC2에 있는 것을 쓴다.
+# - 마이그레이션은 deploy.sh가 migrate → 서버 순서로 돌린다. 실패하면 이전 서버가 그대로 돈다.
+#
+# 롤백: Actions → deploy → Run workflow에 이전 태그(sha-xxxxxxx)를 넣는다. 빌드를 건너뛰고 그 이미지를 올린다.
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '다시 올릴 기존 이미지 태그(예: sha-1a2b3c4). 비우면 지금 커밋을 빌드해 올린다'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    if: github.event_name == 'push' || inputs.tag == ''
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: ci
+    # 롤백(tag 지정)이면 ci를 건너뛰므로 needs가 skipped여도 돈다. ci가 실패하면 돌지 않는다.
+    if: ${{ !cancelled() && (needs.ci.result == 'success' || (needs.ci.result == 'skipped' && inputs.tag != '')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # 변수(vars.*)는 production 환경에 둔다. 신뢰 정책의 sub가 environment:production이라 이 줄을 빼면 역할을 못 받는다.
+    environment: production
+    # 배포는 겹치면 안 된다. 진행 중인 배포를 취소하지도 않는다(마이그레이션 도중에 끊기면 안 된다).
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+      EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 설정값 확인
+        run: |
+          for v in AWS_REGION ECR_REPOSITORY EC2_INSTANCE_ID; do
+            [ -n "${!v}" ] || { echo "::error::production 환경 변수 $v가 없다"; exit 1; }
+          done
+          [ -n "${{ vars.AWS_DEPLOY_ROLE_ARN }}" ] || { echo "::error::production 환경 변수 AWS_DEPLOY_ROLE_ARN이 없다"; exit 1; }
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: 태그 정하기
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            tag="$INPUT_TAG"
+          else
+            tag="sha-${GITHUB_SHA::7}"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "image=${{ steps.ecr.outputs.registry }}/$ECR_REPOSITORY:$tag" >> "$GITHUB_OUTPUT"
+
+      # ECR은 태그 변경 불가다. 같은 커밋을 다시 돌리면(재실행) 이미 있는 이미지를 그대로 쓴다.
+      - name: 이미지 빌드·푸시
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          IMAGE: ${{ steps.tag.outputs.image }}
+        run: |
+          if aws ecr describe-images --repository-name "$ECR_REPOSITORY" --image-ids imageTag="$TAG" >/dev/null 2>&1; then
+            echo "이미 있는 이미지: $IMAGE — 빌드를 건너뛴다"
+            exit 0
+          fi
+          if [ -n "${{ inputs.tag }}" ]; then
+            echo "::error::지정한 태그 $TAG가 ECR에 없다"; exit 1
+          fi
+          docker build --platform linux/amd64 -t "$IMAGE" .
+          docker push "$IMAGE"
+
+      - name: EC2에 배포 (SSM Run Command)
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          IMAGE: ${{ steps.tag.outputs.image }}
+        run: |
+          # EC2에서 ec2-user로: 이미지의 배포 파일을 꺼내 /opt/nomos에 깔고 deploy.sh를 돌린다.
+          # deploy.env는 docker cp가 덮지 않는다(이미지에 없다 — .dockerignore).
+          remote=$(cat <<EOF
+          set -euo pipefail
+          cd /opt/nomos
+          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin ${IMAGE%%/*} >/dev/null
+          docker pull $IMAGE
+          cid=\$(docker create $IMAGE) && docker cp "\$cid":/app/deploy/. . && docker rm "\$cid" >/dev/null
+          bash deploy.sh $TAG
+          EOF
+          )
+          params=$(jq -n --arg s "$remote" '{commands: ["sudo -u ec2-user -H bash -lc " + ($s | @sh)], executionTimeout: ["1200"]}')
+          cmd_id=$(aws ssm send-command \
+            --instance-ids "$EC2_INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --comment "deploy $TAG (${GITHUB_SHA::7})" \
+            --parameters "$params" \
+            --query Command.CommandId --output text)
+          echo "SSM command: $cmd_id"
+
+          status=Pending
+          for _ in $(seq 1 120); do
+            sleep 10
+            status=$(aws ssm get-command-invocation --command-id "$cmd_id" --instance-id "$EC2_INSTANCE_ID" \
+              --query Status --output text 2>/dev/null || echo Pending)
+            case "$status" in Pending|InProgress|Delayed) continue ;; *) break ;; esac
+          done
+
+          echo "── EC2 출력 ──"
+          aws ssm get-command-invocation --command-id "$cmd_id" --instance-id "$EC2_INSTANCE_ID" \
+            --query StandardOutputContent --output text || true
+          echo "── EC2 오류 출력 ──"
+          aws ssm get-command-invocation --command-id "$cmd_id" --instance-id "$EC2_INSTANCE_ID" \
+            --query StandardErrorContent --output text || true
+
+          if [ "$status" != "Success" ]; then
+            echo "::error::배포 실패 (SSM 상태: $status). 마이그레이션 단계에서 멈췄다면 이전 서버가 그대로 돈다."
+            exit 1
+          fi
+          echo "### 배포 완료: \`$TAG\`" >> "$GITHUB_STEP_SUMMARY"

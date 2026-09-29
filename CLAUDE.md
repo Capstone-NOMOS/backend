@@ -366,6 +366,23 @@ EC2 1대(Docker) + RDS PostgreSQL 16 + KMS + SSM. 콘솔 절차는 `docs/deploy-
   부모 디렉터리에도 같은 모드를 적용하므로 디렉터리를 먼저 만든다 — 안 그러면 node 사용자가 못 읽는다(실제로 막혔다).
 - `/health`는 DB까지 닿는지 본다. 배포 스크립트와 컨테이너 헬스체크가 쓴다.
 
+### CI/CD (`.github/workflows/`)
+
+브랜치는 `dev`에서 따서 PR로 `dev`에 합치고, 배포할 때 `dev → main`으로 머지한다. **`main`에 들어온 것이 곧 운영이다.**
+
+- `ci.yml` — PR(`main`·`dev` 대상)과 `dev` push에서 타입체크 + 전체 테스트. PostgreSQL 서비스 컨테이너를
+  `vitest.config.ts`와 **같은 포트·DB 이름**(`55432/nomos_test`)으로 띄운다 — CI용 접속 문자열을 따로 두지 말 것.
+- `deploy.yml` — `main` push에서 `ci.yml`을 다시 돌린 뒤(`workflow_call`) 이미지를 `sha-<7자리>` 태그로 ECR에 올리고,
+  **SSM Run Command**로 EC2에서 그 이미지의 배포 파일을 꺼내 `deploy.sh`를 돈다. 수동 배포와 같은 경로다
+  (migrate → 서버 교체 → 헬스체크). 롤백은 Run workflow에 이전 태그를 넣는다(빌드·테스트를 건너뛴다).
+- **AWS 자격 증명은 OIDC다.** 액세스 키를 GitHub Secrets에 넣지 말 것. 역할의 신뢰 정책은 `sub`를
+  `repo:<소유자>/<레포>:environment:production`으로 묶는다(`deploy/github-actions-trust.json`) — 그래서 deploy 잡의
+  `environment: production`을 빼면 역할을 못 받고, 다른 브랜치·PR의 워크플로는 운영 권한을 얻지 못한다.
+  권한은 `deploy/github-actions-policy.json`(ECR 한 리포지토리 푸시 + 그 인스턴스에만 SendCommand).
+- 설정값은 **production 환경의 Variables**(`AWS_REGION`·`AWS_DEPLOY_ROLE_ARN`·`ECR_REPOSITORY`·`EC2_INSTANCE_ID`)다.
+  전부 비밀이 아니다. 앱 비밀값은 지금처럼 SSM Parameter Store에만 둔다 — CI에 복사하지 말 것.
+- 배포 잡은 `concurrency: deploy-production`, `cancel-in-progress: false`다. 마이그레이션 도중에 취소되면 안 된다.
+
 ## 마이그레이션
 
 `migrations/*.sql`은 node-pg-migrate의 raw SQL 형식이다. `-- Up Migration` / `-- Down Migration` 주석이 구분자이며, `tests/test-db.ts`도 이 마커로 Up 구간만 잘라 실행하므로 **마커 문자열을 바꾸면 테스트가 깨진다.**
