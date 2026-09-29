@@ -9,6 +9,7 @@ import { findUserByConnectKeyHash } from '../org/repository.js';
 import {
   findAgentByActiveRefreshToken,
   insertRefreshToken,
+  listAgentsByOrg,
   upsertAgent,
   type Agent,
 } from './repository.js';
@@ -119,4 +120,32 @@ export async function describeSelf(ctx: {
     projectId: ctx.projectId,
     teamRole: row.team_role,
   };
+}
+
+// 역할 배정 화면이 보는 모양. agents.status는 넣지 않는다 — 연결 이후 갱신하는 경로가 아직 없어
+// 항상 'pending'이라, 내보내면 화면이 "오프라인"으로 오해한다(접속 상태 추적은 미구현).
+export type OrgAgentView = {
+  agentId: string;
+  agentName: string;
+  userId: string;
+  nickname: string | null;
+  // 처음 CLI로 연결한 시각. 행이 있다는 것 자체가 "연결한 적 있음"이다.
+  connectedAt: string;
+  // 진행 중(completed·aborted가 아닌) 프로젝트 배정. 에이전트는 한 번에 한 프로젝트만 맡는다.
+  assignment: { projectId: string; teamRole: string } | null;
+};
+
+export async function listOrgAgents(orgId: string): Promise<OrgAgentView[]> {
+  const rows = await listAgentsByOrg(pool, orgId);
+  return rows.map((r) => ({
+    agentId: r.agentId,
+    agentName: r.agentName,
+    userId: r.userId,
+    nickname: r.nickname,
+    connectedAt: r.connectedAt,
+    assignment:
+      r.activeProjectId === null || r.activeTeamRole === null
+        ? null
+        : { projectId: r.activeProjectId, teamRole: r.activeTeamRole },
+  }));
 }

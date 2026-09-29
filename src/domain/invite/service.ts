@@ -47,6 +47,8 @@ export type InvitePreview = {
   orgName: string;
   valid: boolean;
   teamRole: TeamRole | null;
+  // 없는 토큰이면 null(존재 여부를 숨긴다). 만료·사용된 초대도 원래 만료 시각을 준다.
+  expiresAt: string | null;
   reason?: 'expired' | 'used' | 'not_found';
 };
 
@@ -54,20 +56,21 @@ export type InvitePreview = {
 export async function previewInvite(token: string): Promise<InvitePreview> {
   const invite = await findInviteByToken(pool, token);
   if (!invite) {
-    return { orgName: '', valid: false, teamRole: null, reason: 'not_found' };
+    return { orgName: '', valid: false, teamRole: null, expiresAt: null, reason: 'not_found' };
   }
 
   const org = await findOrganizationById(pool, invite.orgId);
   const orgName = org?.name ?? '';
   const teamRole = invite.teamRole;
+  const expiresAt = new Date(invite.expiresAt).toISOString();
 
   if (invite.usedBy !== null) {
-    return { orgName, valid: false, teamRole, reason: 'used' };
+    return { orgName, valid: false, teamRole, expiresAt, reason: 'used' };
   }
   if (new Date(invite.expiresAt).getTime() < Date.now()) {
-    return { orgName, valid: false, teamRole, reason: 'expired' };
+    return { orgName, valid: false, teamRole, expiresAt, reason: 'expired' };
   }
-  return { orgName, valid: true, teamRole };
+  return { orgName, valid: true, teamRole, expiresAt };
 }
 
 export type AcceptInviteResult = { userId: string; orgId: string };

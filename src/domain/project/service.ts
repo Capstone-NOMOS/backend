@@ -9,6 +9,7 @@ import {
   copyPoliciesFromCatalog,
   deleteProjectMember,
   findAgentOrg,
+  findOtherActiveAssignment,
   findOrgConstitution,
   findProjectById,
   findReposByIds,
@@ -19,6 +20,7 @@ import {
   linkProjectRepos,
   listProjectMembers,
   listProjectRepos,
+  listProjectsByOrg,
   type AutonomyPreset,
   type Project,
   type ProjectMember,
@@ -168,6 +170,16 @@ export async function assignMember(
       throw new AppError('AGENT_NOT_IN_ORG', `agent ${agentId} does not belong to this organization`);
     }
 
+    // 에이전트 토큰은 project_id를 하나만 담는다(findAgentMembership이 가장 최근 것을 고른다).
+    // 두 진행 중 프로젝트에 배정되면 먼저 배정된 쪽은 조용히 쓸 수 없게 되므로 여기서 막는다.
+    const other = await findOtherActiveAssignment(tx, agentId, projectId);
+    if (other !== null) {
+      throw new AppError(
+        'AGENT_IN_ANOTHER_PROJECT',
+        `agent ${agentId} is already assigned to active project ${other}; unassign it there first`,
+      );
+    }
+
     try {
       await insertProjectMember(tx, projectId, agentId, teamRole);
     } catch (err) {
@@ -236,4 +248,12 @@ export async function getProject(actor: Actor, projectId: string): Promise<Proje
 
     return { project, repos: await listProjectRepos(tx, projectId), members };
   });
+}
+
+// GET /api/orgs/:orgId/projects — 대표는 조직 전체, 팀원은 자기 에이전트가 배정된 프로젝트만.
+// 팀원이 자기 프로젝트 id를 알 수 있는 유일한 경로다.
+export async function listProjects(actor: Actor): Promise<Project[]> {
+  return withTransaction(async (tx) =>
+    listProjectsByOrg(tx, actor.orgId, actor.orgRole === 'REPRESENTATIVE' ? null : actor.userId),
+  );
 }

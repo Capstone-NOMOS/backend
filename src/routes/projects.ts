@@ -4,6 +4,7 @@ import {
   assignMember,
   createProject,
   getProject,
+  listProjects,
   unassignMember,
   type Actor,
 } from '../domain/project/service.js';
@@ -51,6 +52,17 @@ projectsRouter.post(
     const body = req.body as z.infer<typeof createProjectBodySchema>;
     const detail = await createProject(orgId, req.user!.id, body);
     res.status(201).json({ data: detail });
+  },
+);
+
+// GET /api/orgs/:orgId/projects — 프로젝트 목록. 대표는 전체, 팀원은 자기 에이전트가 배정된 것만.
+projectsRouter.get(
+  '/orgs/:orgId/projects',
+  validate({ params: orgIdParamsSchema }),
+  authenticate,
+  requireSameOrg,
+  async (req, res) => {
+    res.status(200).json({ data: { projects: await listProjects(actorOf(req)) } });
   },
 );
 

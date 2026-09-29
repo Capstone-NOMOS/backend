@@ -11,7 +11,7 @@ export default defineConfig({
       DATABASE_URL: 'postgres://postgres:postgres@localhost:55432/nomos_test',
       LOG_LEVEL: 'error',
       API_BASE_URL: 'http://localhost:3000',
-      FRONTEND_BASE_URL: 'http://localhost:5173',
+      FRONTEND_BASE_URL: 'http://localhost:3001',
       // 테스트는 setCommitInspector로 구현체를 바꿔 끼운다. 기본값이 없으므로 여기서 고른다.
       COMMIT_INSPECTOR: 'mirror',
       JWT_SECRET: 'test-only-secret-not-for-production-0123456789',

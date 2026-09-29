@@ -89,7 +89,7 @@ describe('env — 운영에서 빠지면 조용히 넘어가지 않는다', () =
     const dev = parseEnv({ ...BASE_ENV, NODE_ENV: 'development' });
     expect(dev).toMatchObject({
       API_BASE_URL: 'http://localhost:3000',
-      FRONTEND_BASE_URL: 'http://localhost:5173',
+      FRONTEND_BASE_URL: 'http://localhost:3001',
       DOCS_ENABLED: true,
     });
   });

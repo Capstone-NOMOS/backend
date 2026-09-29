@@ -22,7 +22,10 @@ info:
 
     서로의 API를 부를 수 없다. 사람 토큰으로 태스크 API를 부르면 401이다.
 
-    access token은 **1시간**이다. 만료되면 `POST /agents/token/refresh`로 다시 받는다.
+    **사람 토큰은 24시간**, 에이전트 access token은 **1시간**이다. 에이전트 토큰이 만료되면 `POST /agents/token/refresh`로 다시 받는다.
+    사람 토큰에는 refresh가 없다 — 만료되면 다시 로그인한다.
+
+    **응답 스키마(`schema`)는 일부 엔드포인트에만 있다.** 없는 곳은 `example`이 기준이다.
 
 servers:
   - url: http://localhost:3000/api
@@ -42,6 +45,101 @@ components:
       description: 에이전트 토큰. 시드 출력의 access token 또는 refresh 응답의 값을 붙여넣는다.
 
   schemas:
+    LoginResult:
+      type: object
+      required: [accessToken, tokenType, expiresIn]
+      properties:
+        accessToken: { type: string }
+        tokenType: { type: string, enum: [Bearer] }
+        expiresIn: { type: integer, description: '초 단위. 사람 토큰은 86400(24시간)' }
+    Me:
+      type: object
+      required: [userId, loginId, nickname, githubLogin, orgId, orgName, orgRole]
+      properties:
+        userId: { type: string, format: uuid }
+        loginId: { type: string, nullable: true }
+        nickname: { type: string, nullable: true }
+        githubLogin: { type: string, nullable: true, description: 'GitHub 연결 전이면 null' }
+        orgId: { type: string, format: uuid, nullable: true, description: '조직이 없으면 null → 조직 만들기·초대 수락 화면으로' }
+        orgName: { type: string, nullable: true }
+        orgRole: { type: string, enum: [REPRESENTATIVE, MEMBER], nullable: true, description: '조직이 없으면 null' }
+    Member:
+      type: object
+      required: [userId, loginId, nickname, githubLogin, name, orgRole]
+      properties:
+        userId: { type: string, format: uuid }
+        loginId: { type: string, nullable: true }
+        nickname: { type: string, nullable: true }
+        githubLogin: { type: string, nullable: true }
+        name: { type: string, nullable: true, description: 'GitHub 프로필 이름' }
+        orgRole: { type: string, enum: [REPRESENTATIVE, MEMBER] }
+        isCollaborator:
+          type: boolean
+          description: |
+            **없을 수 있다.** 확인하지 못했으면(GitHub 토큰 없음·조회 실패·GitHub 미연결) 필드 자체를 생략한다.
+            false는 "확인했는데 권한 없음"이다.
+    OrgAgent:
+      type: object
+      required: [agentId, agentName, userId, nickname, connectedAt, assignment]
+      properties:
+        agentId: { type: string, format: uuid }
+        agentName: { type: string }
+        userId: { type: string, format: uuid, description: '에이전트 주인' }
+        nickname: { type: string, nullable: true, description: '주인의 닉네임' }
+        connectedAt: { type: string, format: date-time, description: '처음 CLI로 연결한 시각' }
+        assignment:
+          type: object
+          nullable: true
+          description: '진행 중(completed·aborted가 아닌) 프로젝트 배정. 에이전트는 한 번에 하나만 맡는다'
+          required: [projectId, teamRole]
+          properties:
+            projectId: { type: string, format: uuid }
+            teamRole: { type: string, enum: [FRONTEND, BACKEND] }
+    Project:
+      type: object
+      required: [id, orgId, name, autonomyPreset, policyHash, constitutionHash, pmBudgetUsd, budgetUsd, deadline, status, startedAt, createdBy, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        orgId: { type: string, format: uuid }
+        name: { type: string }
+        autonomyPreset: { type: string, enum: [L1, L2, L3, L4] }
+        policyHash: { type: string }
+        constitutionHash: { type: string, nullable: true }
+        pmBudgetUsd: { type: string, description: 'numeric이라 문자열로 나간다(예: "40.00")' }
+        budgetUsd: { type: string, nullable: true }
+        deadline: { type: string, format: date, nullable: true, description: 'YYYY-MM-DD' }
+        status:
+          type: string
+          enum: [planning, active, halted, completed, aborted]
+          description: '지금은 생성 시 planning에서 바뀌지 않는다(G1 승인 경로 미구현)'
+        startedAt: { type: string, format: date-time, nullable: true, description: 'G1 승인 시각. 지금은 항상 null' }
+        createdBy: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+    RepoListItem:
+      type: object
+      required: [id, fullName, githubRepoId, defaultBranch, devBranch, cloneUrl, ownershipAssigned]
+      properties:
+        id: { type: string, format: uuid }
+        fullName: { type: string }
+        githubRepoId: { type: integer, nullable: true }
+        defaultBranch: { type: string }
+        devBranch: { type: string }
+        cloneUrl: { type: string, nullable: true }
+        ownershipAssigned:
+          type: boolean
+          description: '소유 역할이 지정된 경로 규칙이 하나라도 있는가. false면 프로젝트 생성에서 422 REPO_OWNERSHIP_NOT_SET'
+    InvitePreview:
+      type: object
+      required: [orgName, valid, teamRole, expiresAt]
+      properties:
+        orgName: { type: string, description: '없는 토큰이면 빈 문자열' }
+        valid: { type: boolean }
+        teamRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true, description: '초대 발급 때 적은 참고용 역할. 실제 배정은 프로젝트에서 따로 한다' }
+        expiresAt: { type: string, format: date-time, nullable: true, description: '없는 토큰이면 null' }
+        reason:
+          type: string
+          enum: [expired, used, not_found]
+          description: 'valid=false일 때만 있다'
     Error:
       type: object
       properties:
@@ -196,14 +294,46 @@ paths:
           description: 토큰 발급. `data.accessToken`을 Authorize의 userToken 칸에 붙여넣는다.
           content:
             application/json:
+              schema:
+                type: object
+                properties: { data: { $ref: '#/components/schemas/LoginResult' } }
               example:
-                data: { accessToken: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..., tokenType: Bearer, expiresIn: 3600 }
+                data: { accessToken: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..., tokenType: Bearer, expiresIn: 86400 }
         '401':
           description: 아이디 또는 비밀번호가 틀림
           content:
             application/json:
               example:
                 error: { code: INVALID_CREDENTIALS, message: invalid login id or password }
+
+  /me:
+    get:
+      tags: [인증·계정]
+      summary: 내 계정·조직·조직 역할
+      description: |
+        로그인 직후 프론트가 `orgId`·`orgRole`을 아는 경로다. 로그인 응답에 넣지 않는 이유: 조직·역할은
+        매 요청 DB가 정본이라, 조직을 만들거나 초대를 수락한 직후에는 로그인 시점 값이 틀린다.
+        그런 행동 뒤에는 이걸 다시 부른다(토큰은 그대로 써도 된다).
+      security: [{ userToken: [] }]
+      responses:
+        '200':
+          description: 조직이 없으면 orgId·orgName·orgRole이 null
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { data: { $ref: '#/components/schemas/Me' } }
+              examples:
+                대표:
+                  value: { data: { userId: 1959e109-c60c-43f4-842f-dd18d9e7afab, loginId: rep, nickname: 대표, githubLogin: null, orgId: '{{ORG_ID}}', orgName: Acme Inc., orgRole: REPRESENTATIVE } }
+                조직없음:
+                  value: { data: { userId: 5b0c6f7e-2f7a-4f36-9b0e-8f1f0f6b7a11, loginId: newbie, nickname: 신입, githubLogin: null, orgId: null, orgName: null, orgRole: null } }
+        '401':
+          description: 토큰 없음·만료
+          content:
+            application/json:
+              example:
+                error: { code: UNAUTHENTICATED, message: invalid or expired token }
 
   /me/connect-key/rotate:
     post:
@@ -355,11 +485,11 @@ paths:
               example:
                 data: { repos: [] }
         '403':
-          description: 대표가 아니거나 다른 조직
+          description: 다른 조직 (조직 멤버면 대표가 아니어도 된다)
           content:
             application/json:
               example:
-                error: { code: NOT_REPRESENTATIVE, message: this action requires the organization representative }
+                error: { code: CROSS_ORG_ACCESS, message: cannot access another organization }
 
   /orgs/{orgId}/members:
     get:
@@ -375,6 +505,12 @@ paths:
           description: 멤버 목록
           content:
             application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties: { members: { type: array, items: { $ref: '#/components/schemas/Member' } } }
               example:
                 data:
                   members:
@@ -387,7 +523,71 @@ paths:
               example:
                 error: { code: CROSS_ORG_ACCESS, message: cannot access another organization }
 
+  /orgs/{orgId}/agents:
+    get:
+      tags: [조직]
+      summary: 조직의 에이전트 목록 (조직 멤버)
+      description: |
+        역할 배정(`POST /projects/{projectId}/members`)이 받는 `agentId`를 여기서 고른다.
+        `assignment`가 있는 에이전트는 다른 진행 중 프로젝트를 맡고 있어 배정하면 409 `AGENT_IN_ANOTHER_PROJECT`다.
+
+        **접속 상태(online/offline)는 없다.** 연결 뒤 상태를 갱신하는 경로가 아직 없어서 내보내지 않는다.
+        목록에 있다는 것이 "CLI로 연결한 적 있음"이다.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/OrgId' }]
+      responses:
+        '200':
+          description: 에이전트 목록
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties: { agents: { type: array, items: { $ref: '#/components/schemas/OrgAgent' } } }
+              example:
+                data:
+                  agents:
+                    - { agentId: '{{AGENT_BE}}', agentName: be-laptop, userId: 956e2b45-f39a-4799-a256-8b03de80f4ec, nickname: 백엔드, connectedAt: '2026-09-29T02:00:00.000Z', assignment: { projectId: '{{PROJECT_ID}}', teamRole: BACKEND } }
+                    - { agentId: 0c9d1c62-4c7e-4d7e-bf0e-3b1a2f4c5d6e, agentName: fe-laptop, userId: 7a1e7c2b-1d3f-4e5a-9b8c-0d1e2f3a4b5c, nickname: 프론트, connectedAt: '2026-09-29T02:05:00.000Z', assignment: null }
+        '403':
+          description: 다른 조직
+          content:
+            application/json:
+              example:
+                error: { code: CROSS_ORG_ACCESS, message: cannot access another organization }
+
   /orgs/{orgId}/repos:
+    get:
+      tags: [레포·경로]
+      summary: 연결된 레포 목록 (조직 멤버)
+      description: |
+        경로 소유권 화면(`/repos/{repoId}/paths`)과 프로젝트 생성의 `repoIds`가 여기서 id를 얻는다.
+        `ownershipAssigned=false`인 레포는 프로젝트에 넣으면 422 `REPO_OWNERSHIP_NOT_SET`이다 — 미리 막을 수 있다.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/OrgId' }]
+      responses:
+        '200':
+          description: 연결 순서대로
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties: { repos: { type: array, items: { $ref: '#/components/schemas/RepoListItem' } } }
+              example:
+                data:
+                  repos:
+                    - { id: '{{REPO_API}}', fullName: acme/study-api, githubRepoId: null, defaultBranch: main, devBranch: dev, cloneUrl: null, ownershipAssigned: true }
+        '403':
+          description: 다른 조직
+          content:
+            application/json:
+              example:
+                error: { code: CROSS_ORG_ACCESS, message: cannot access another organization }
     post:
       tags: [레포·경로]
       summary: 레포 연결 (조직 멤버)
@@ -627,7 +827,7 @@ paths:
           content:
             application/json:
               example:
-                data: { token: '{{INVITE_TOKEN}}', url: 'http://localhost:5173/invites/{{INVITE_TOKEN}}', expiresAt: '2026-09-25T00:00:00.000Z', teamRole: BACKEND }
+                data: { token: '{{INVITE_TOKEN}}', url: 'http://localhost:3001/invites/{{INVITE_TOKEN}}', expiresAt: '2026-09-25T00:00:00.000Z', teamRole: BACKEND }
         '403':
           description: 대표가 아님
           content:
@@ -649,14 +849,21 @@ paths:
           example: '{{INVITE_TOKEN}}'
       responses:
         '200':
-          description: 유효하든 아니든 200
+          description: 유효하든 아니든 200. 무효면 `reason`으로 만료·사용됨·없음을 구분한다
           content:
             application/json:
+              schema:
+                type: object
+                properties: { data: { $ref: '#/components/schemas/InvitePreview' } }
               examples:
                 유효:
-                  value: { data: { valid: true, orgName: Acme Inc., teamRole: BACKEND, expiresAt: '2026-09-25T00:00:00.000Z' } }
-                무효:
-                  value: { data: { valid: false } }
+                  value: { data: { orgName: Acme Inc., valid: true, teamRole: BACKEND, expiresAt: '2026-09-25T00:00:00.000Z' } }
+                만료:
+                  value: { data: { orgName: Acme Inc., valid: false, teamRole: BACKEND, expiresAt: '2026-09-20T00:00:00.000Z', reason: expired } }
+                이미사용:
+                  value: { data: { orgName: Acme Inc., valid: false, teamRole: null, expiresAt: '2026-09-25T00:00:00.000Z', reason: used } }
+                없는토큰:
+                  value: { data: { orgName: '', valid: false, teamRole: null, expiresAt: null, reason: not_found } }
 
   /invites/{token}/accept:
     post:
@@ -1036,6 +1243,35 @@ paths:
                 error: { code: NOT_PROJECT_MEMBER, message: agent is not a member of this project }
 
   /orgs/{orgId}/projects:
+    get:
+      tags: [프로젝트]
+      summary: 프로젝트 목록 (대표는 전체, 팀원은 배정된 것만)
+      description: |
+        팀원은 **자기 에이전트가 배정된 프로젝트만** 본다(`GET /projects/{projectId}`의 권한과 같은 정의).
+        팀원이 대시보드에 들어갈 프로젝트 id를 아는 경로다. 최근 생성 순.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/OrgId' }]
+      responses:
+        '200':
+          description: 프로젝트 목록
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties: { projects: { type: array, items: { $ref: '#/components/schemas/Project' } } }
+              example:
+                data:
+                  projects:
+                    - { id: '{{PROJECT_ID}}', orgId: '{{ORG_ID}}', name: 스터디 관리 웹앱 v1, autonomyPreset: L2, policyHash: bc7f3b33d92b36b25607093d7efb05cdacf73f1f0b52524046bff7b56e94442c, constitutionHash: null, pmBudgetUsd: '40.00', budgetUsd: null, deadline: '2026-10-31', status: planning, startedAt: null, createdBy: 1959e109-c60c-43f4-842f-dd18d9e7afab, createdAt: '2026-09-29T02:00:00.000Z' }
+        '403':
+          description: 다른 조직
+          content:
+            application/json:
+              example:
+                error: { code: CROSS_ORG_ACCESS, message: cannot access another organization }
     post:
       tags: [프로젝트]
       summary: 프로젝트 생성 (대표 전용)
@@ -1119,8 +1355,9 @@ paths:
           description: |
             허용 레벨 어휘 위반, 또는 소유 역할이 하나도 지정되지 않은 레포.
 
-            레포 연결은 팀원도 할 수 있으므로, 소유권 지정 없이 투입되면 `owner_role`이 전부 NULL이라
-            모든 역할이 레포 전체에 쓸 수 있다. 메시지에 막힌 레포 전부와 부를 API를 함께 적는다.
+            소유 역할이 하나도 없는 레포는 기본 거부라 **아무도 쓸 수 없다** — 원인이 제출 시점에야 드러나지 않게
+            생성에서 막는다. 메시지에 막힌 레포 전부와 부를 API를 함께 적는다. `GET /orgs/{orgId}/repos`의
+            `ownershipAssigned`로 미리 알 수 있다.
           content:
             application/json:
               examples:
@@ -1213,10 +1450,12 @@ paths:
                 시작된프로젝트:
                   value: { error: { code: PROJECT_STARTED, message: project has started; members are frozen } }
         '409':
-          description: 역할이 이미 찼거나, 그 에이전트가 이미 배정됨
+          description: 역할이 이미 찼거나, 그 에이전트가 이미 배정됐거나, 다른 진행 중 프로젝트를 맡고 있음
           content:
             application/json:
               examples:
+                다른프로젝트:
+                  value: { error: { code: AGENT_IN_ANOTHER_PROJECT, message: 'agent ... is already assigned to active project ...; unassign it there first' } }
                 역할중복:
                   value: { error: { code: ROLE_ALREADY_ASSIGNED, message: BACKEND is already assigned in this project } }
                 에이전트중복:

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { login, rotateConnectKey, signup } from '../domain/auth/service.js';
+import { getMe } from '../domain/org/service.js';
 import { authenticate } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 
@@ -31,6 +32,11 @@ const loginBodySchema = z.object({
 authRouter.post('/auth/login', validate({ body: loginBodySchema }), async (req, res) => {
   const result = await login(req.body);
   res.set('Cache-Control', 'no-store').status(200).json({ data: result });
+});
+
+// GET /api/me — 내 계정·조직·조직 역할. 조직이 없으면 orgId·orgName·orgRole이 null이다.
+authRouter.get('/me', authenticate, async (req, res) => {
+  res.set('Cache-Control', 'no-store').status(200).json({ data: await getMe(req.user!.id) });
 });
 
 // POST /api/me/connect-key/rotate — 새 키 발급, 기존 키 즉시 무효.

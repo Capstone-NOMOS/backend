@@ -1,8 +1,9 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { connectAgent, refreshAgentToken } from '../domain/agent/service.js';
+import { connectAgent, listOrgAgents, refreshAgentToken } from '../domain/agent/service.js';
 import { describeSelf } from '../domain/agent/service.js';
 import { agentContextOf, authenticateAgent } from '../middleware/agent-auth.js';
+import { authenticate, requireSameOrg } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 
 export const agentsRouter = Router();
@@ -34,3 +35,18 @@ agentsRouter.post('/agents/token/refresh', validate({ body: refreshBodySchema })
 agentsRouter.get('/agents/me', authenticateAgent, async (req, res) => {
   res.json({ data: await describeSelf(agentContextOf(req)) });
 });
+
+const orgIdParamsSchema = z.object({ orgId: z.string().uuid() });
+
+// GET /api/orgs/:orgId/agents — 조직의 에이전트 목록(사람 토큰, 조직 멤버 누구나).
+// 역할 배정 화면이 고를 agentId와 "이미 다른 프로젝트에 배정됨"을 여기서 읽는다.
+agentsRouter.get(
+  '/orgs/:orgId/agents',
+  validate({ params: orgIdParamsSchema }),
+  authenticate,
+  requireSameOrg,
+  async (req, res) => {
+    const { orgId } = req.params as z.infer<typeof orgIdParamsSchema>;
+    res.status(200).json({ data: { agents: await listOrgAgents(orgId) } });
+  },
+);
