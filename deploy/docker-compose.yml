@@ -1,0 +1,40 @@
+# EC2에서 도는 구성. deploy.sh가 부른다 — 직접 `docker compose up`하지 말 것(마이그레이션을 건너뛴다).
+#
+# 비밀값은 여기 없다. 앱이 기동할 때 SSM Parameter Store(SSM_PARAMETER_PATH)에서 읽는다.
+# 이 파일과 deploy.env에는 비밀이 아닌 부트스트랩 값만 둔다.
+services:
+  app:
+    image: ${NOMOS_IMAGE:?deploy.sh로 실행할 것 (NOMOS_IMAGE 없음)}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      AWS_REGION: ${AWS_REGION:?deploy.env에 AWS_REGION 필요}
+      SSM_PARAMETER_PATH: ${SSM_PARAMETER_PATH:?deploy.env에 SSM_PARAMETER_PATH 필요}
+    # 호스트 포트를 열지 않는다. 밖에서는 Caddy(443)로만 들어온다.
+    expose:
+      - "3000"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"   # Let's Encrypt HTTP-01 인증과 https 리다이렉트
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?deploy.env에 DOMAIN 필요}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # 인증서가 여기 저장된다. 지우면 재발급하는데 Let's Encrypt 발급 한도에 걸릴 수 있다.
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

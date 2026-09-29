@@ -1,0 +1,13 @@
+# DOMAIN은 docker-compose.yml이 deploy.env에서 넘긴다 (예: your-team.duckdns.org).
+# Caddy가 Let's Encrypt 인증서를 자동으로 받고 갱신한다. 80 포트가 열려 있어야 발급된다.
+{$DOMAIN} {
+	encode zstd gzip
+
+	header {
+		# 토큰이 헤더로 다니므로 https만 쓰게 한다.
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+
+	reverse_proxy app:3000
+}

@@ -1,0 +1,20 @@
+# 이미지에 들어가면 안 되는 것. 특히 .env — 서버에 비밀값 파일을 올리지 않는다(SSM에서 읽는다).
+.env
+.env.*
+!.env.example
+node_modules
+dist
+.git
+.gitignore
+tests
+spike
+scripts
+# 배포 파일은 이미지에 싣되(EC2 부트스트랩), 인스턴스별 값을 채운 deploy.env는 넣지 않는다.
+deploy/deploy.env
+*.log
+.claude
+.vscode
+
+# docs는 openapi.yaml 하나만 필요하다(Swagger).
+docs/*
+!docs/openapi.yaml

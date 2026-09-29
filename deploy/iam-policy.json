@@ -1,0 +1,23 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "SealAndOpenSecrets",
+      "Effect": "Allow",
+      "Action": ["kms:Encrypt", "kms:Decrypt"],
+      "Resource": "arn:aws:kms:ap-northeast-2:<ACCOUNT_ID>:key/<KMS_KEY_UUID>",
+      "Condition": {
+        "StringEquals": { "kms:EncryptionContext:purpose": "nomos-secret" }
+      }
+    },
+    {
+      "Sid": "ReadAppConfig",
+      "Effect": "Allow",
+      "Action": ["ssm:GetParametersByPath"],
+      "Resource": [
+        "arn:aws:ssm:ap-northeast-2:<ACCOUNT_ID>:parameter/nomos/prod",
+        "arn:aws:ssm:ap-northeast-2:<ACCOUNT_ID>:parameter/nomos/prod/*"
+      ]
+    }
+  ]
+}

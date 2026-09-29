@@ -1,0 +1,33 @@
+{
+  "specs": [
+    {
+      "featureKey": "F-05",
+      "title": "스터디 대기열 신청",
+      "content": "WHEN 정원이 찬 스터디에 신청하면 THEN 시스템은 대기열에 올리고 202와 waitlistPosition을 반환한다",
+      "tests": [
+        {
+          "criterion": "정원이 찬 스터디 신청은 202와 대기 순번을 준다",
+          "testCode": "expect(res.status).toBe(202); expect(res.body.data.waitlistPosition).toBe(1)",
+          "locked": true
+        }
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "ref": "api-waitlist",
+      "title": "T-051 대기열 신청 API",
+      "repo": "acme/study-api",
+      "teamRole": "BACKEND",
+      "spec": "F-05"
+    },
+    {
+      "ref": "web-waitlist",
+      "title": "T-052 대기열 신청 버튼",
+      "repo": "acme/study-web",
+      "teamRole": "FRONTEND",
+      "spec": "F-05",
+      "dependsOn": ["api-waitlist"]
+    }
+  ]
+}

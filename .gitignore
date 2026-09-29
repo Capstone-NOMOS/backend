@@ -1,0 +1,15 @@
+node_modules/
+dist/
+*.log
+.nomos-mcp.json
+.env
+.env.*
+!.env.example
+deploy/deploy.env
+spike/
+coverage/
+docs/deploy-aws.md
+docs/TASK.md
+docs/imple.md
+docs/api-spec.md
+docs/phase2-requirements.md

@@ -1,0 +1,1469 @@
+# NOMOS API — 수동 테스트용 Swagger 문서.
+#
+# 손으로 쓴 문서다. 코드와 자동 동기화되지 않으므로 어긋나면 코드가 맞다.
+# 자동 생성(zod-to-openapi)은 나중 과제. 지금 목적은 "브라우저에서 눌러보고 응답 확인"이다.
+#
+# {{...}} 자리표는 /docs/openapi.json을 서빙할 때 DB에서 읽어 채운다(src/openapi/spec.ts).
+# 그래서 npm run seed로 id가 바뀌어도 브라우저를 새로고침하면 맞는 값이 들어온다.
+openapi: 3.0.3
+
+info:
+  title: NOMOS API
+  version: 0.1.0
+  description: |
+    에이전트 협업 조율 서버. 수동 테스트 절차는 `docs/manual-test.md`를 함께 보라.
+
+    **토큰이 두 종류다.** 오른쪽 위 Authorize를 누르면 칸이 두 개 뜬다.
+
+    | 칸 | 어떤 토큰 | 받는 법 |
+    |---|---|---|
+    | `userToken` | 사람 토큰 (`kind: user`) | `POST /auth/login` — 시드 계정 `rep` / `manual-test-1234` |
+    | `agentToken` | 에이전트 토큰 (`kind: agent`) | `npm run seed` 출력의 **be-laptop access token**, 또는 `POST /agents/token/refresh` |
+
+    서로의 API를 부를 수 없다. 사람 토큰으로 태스크 API를 부르면 401이다.
+
+    access token은 **1시간**이다. 만료되면 `POST /agents/token/refresh`로 다시 받는다.
+
+servers:
+  - url: http://localhost:3000/api
+    description: 로컬 개발 서버
+
+components:
+  securitySchemes:
+    userToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: 사람 토큰. `POST /auth/login`의 `data.accessToken`을 붙여넣는다.
+    agentToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: 에이전트 토큰. 시드 출력의 access token 또는 refresh 응답의 값을 붙여넣는다.
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              example: FORBIDDEN_PATH
+            message:
+              type: string
+              example: '**/.env* is denied'
+            reason:
+              type: string
+              description: POLICY_STALE에만 실린다. 다른 코드에서는 생략된다.
+              example: policy_stale
+
+  responses:
+    Unauthenticated:
+      description: 토큰이 없거나 만료·위조됨
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: { code: UNAUTHENTICATED, message: invalid or expired token }
+    PolicyStale:
+      description: |
+        토큰이 **옛 정책 스냅샷 기준**이다. 경로 규칙이나 정책이 바뀌면 이렇게 된다.
+        refresh로 재발급하고 원 요청을 **1회만** 재시도한다. 그래도 stale이면 멈춘다.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: POLICY_STALE
+              message: policy snapshot changed; refresh the token
+              reason: policy_stale
+    ProjectHalted:
+      description: 프로젝트가 정지됨. 토큰이 살아 있어도 막힌다 — 멈춤은 명령이 아니라 상태다.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: { code: PROJECT_HALTED, message: project is halted }
+
+  parameters:
+    TaskId:
+      name: taskId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+      example: '{{TASK_BE}}'
+    RepoId:
+      name: repoId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+      example: '{{REPO_API}}'
+    OrgId:
+      name: orgId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+      example: '{{ORG_ID}}'
+    ProjectId:
+      name: projectId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+      example: '{{PROJECT_ID}}'
+    ArtifactId:
+      name: artifactId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+      description: 산출물 id. `GET /tasks/{taskId}/artifacts`로 찾는다.
+
+tags:
+  - name: 인증·계정
+  - name: CLI 연결
+  - name: 조직
+  - name: 레포·경로
+  - name: 프로젝트
+  - name: 초대
+  - name: GitHub OAuth
+  - name: 태스크·노트
+  - name: 검증
+
+paths:
+  /auth/signup:
+    post:
+      tags: [인증·계정]
+      summary: 로컬 계정 가입
+      description: |
+        연결 키 평문은 **이 응답에서 한 번만** 나온다. 이후 다시 볼 방법이 없고, 잃어버리면 재발급해야 한다.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [loginId, password, nickname]
+              properties:
+                loginId: { type: string, minLength: 3, maxLength: 64 }
+                password: { type: string, minLength: 8 }
+                nickname: { type: string }
+            example:
+              loginId: tester
+              password: manual-test-1234
+              nickname: tester
+      responses:
+        '201':
+          description: 가입됨
+          content:
+            application/json:
+              example:
+                data:
+                  userId: 3f2a1b4c-0000-0000-0000-000000000000
+                  connectKey: lt4mWBZ-1_bw93HtjUQdKr6_U7TLjI8dpmsRI8Fu-D8
+        '409':
+          description: 아이디 중복
+          content:
+            application/json:
+              example:
+                error: { code: LOGIN_ID_TAKEN, message: login id is already taken }
+
+  /auth/login:
+    post:
+      tags: [인증·계정]
+      summary: 로그인 (사람 토큰 발급)
+      description: |
+        **없는 아이디와 틀린 비밀번호는 같은 응답이다.** 없는 아이디일 때도 scrypt를 한 번 돌려
+        응답 시간까지 맞춘다 — 아이디 존재 여부가 드러나지 않게.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [loginId, password]
+              properties:
+                loginId: { type: string }
+                password: { type: string }
+            example:
+              loginId: rep
+              password: manual-test-1234
+      responses:
+        '200':
+          description: 토큰 발급. `data.accessToken`을 Authorize의 userToken 칸에 붙여넣는다.
+          content:
+            application/json:
+              example:
+                data: { accessToken: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..., tokenType: Bearer, expiresIn: 3600 }
+        '401':
+          description: 아이디 또는 비밀번호가 틀림
+          content:
+            application/json:
+              example:
+                error: { code: INVALID_CREDENTIALS, message: invalid login id or password }
+
+  /me/connect-key/rotate:
+    post:
+      tags: [인증·계정]
+      summary: 개인 연결 키 재발급
+      description: 새 키를 발급하면 **기존 키는 즉시 무효**다.
+      security: [{ userToken: [] }]
+      responses:
+        '200':
+          description: 새 연결 키 (평문은 이 응답에서 한 번만)
+          content:
+            application/json:
+              example:
+                data: { connectKey: o9m9J-utE-VIKTelv9j8AAAiVTDPHX0d7ikdFu48aig }
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+
+  /agents/connect:
+    post:
+      tags: [CLI 연결]
+      summary: 에이전트 등록 (연결 키로)
+      description: |
+        조직·프로젝트가 없어도 연결된다(`status=pending`). 같은 `agentName`으로 다시 부르면
+        새로 만들지 않고 갱신한다 — CLI 재설치 대응.
+
+        **틀린 연결 키는 401이 아니라 400 + 일반 메시지다.** 무엇이 틀렸는지 알려주지 않는다.
+
+        연결 키는 서버에 **해시로만** 저장되므로 아래 example을 DB에서 채워줄 수 없다.
+        `npm run seed` 출력의 값을 직접 붙여넣어야 한다.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [connectKey, agentName, harness]
+              properties:
+                connectKey: { type: string }
+                agentName: { type: string, maxLength: 64 }
+                harness: { type: string }
+                skills: { type: array, items: { type: string } }
+                maxConcurrent: { type: integer, minimum: 1, maximum: 16 }
+            example:
+              connectKey: 시드-출력의-be-연결-키를-붙여넣으세요
+              agentName: be-laptop
+              harness: claude-code@2.1.263
+              skills: [typescript]
+              maxConcurrent: 2
+      responses:
+        '201':
+          description: 등록됨. access는 1시간, refresh는 30일.
+          content:
+            application/json:
+              example:
+                data: { agentId: 2012e1df-0beb-43fd-ac09-d893ba56b01e, accessToken: eyJ..., refreshToken: XtvVbBmp... }
+        '400':
+          description: 연결 키가 틀림 (의도적으로 401이 아니다)
+          content:
+            application/json:
+              example:
+                error: { code: INVALID_CONNECT_REQUEST, message: invalid connect request }
+
+  /agents/token/refresh:
+    post:
+      tags: [CLI 연결]
+      summary: 에이전트 access 토큰 재발급
+      description: |
+        **401 POLICY_STALE을 받으면 여기로 재발급하고 원 요청을 1회만 재시도한다.**
+        재발급 후에도 stale이면 루프이므로 즉시 멈춘다.
+
+        재발급된 토큰에는 현재 `project_id`와 `policy_hash`가 담긴다 — 프로젝트에 배정된 뒤
+        이걸 한 번 불러야 태스크 API를 쓸 수 있다.
+
+        refresh 토큰도 해시로만 저장되므로 example을 DB에서 채울 수 없다.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+            example:
+              refreshToken: 시드-출력의-be-laptop-refresh-token을-붙여넣으세요
+      responses:
+        '200':
+          description: 새 access 토큰
+          content:
+            application/json:
+              example:
+                data: { accessToken: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9... }
+        '401':
+          description: refresh 토큰이 만료·폐기됨
+          content:
+            application/json:
+              example:
+                error: { code: INVALID_REFRESH_TOKEN, message: refresh token is invalid or expired }
+
+  /orgs:
+    post:
+      tags: [조직]
+      summary: 조직 생성 (만든 사람이 대표)
+      description: |
+        **이 순간 그 사용자가 먼저 연결해 둔 에이전트의 `org_id`도 함께 채워진다.**
+        한 사용자는 하나의 조직에만 속한다 — 시드 계정으로 부르면 409가 정상이다.
+      security: [{ userToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 128 }
+            example:
+              name: Newbie Inc.
+      responses:
+        '201':
+          description: 생성됨
+          content:
+            application/json:
+              example:
+                data: { orgId: '{{ORG_ID}}', userId: 1959e109-c60c-43f4-842f-dd18d9e7afab }
+        '409':
+          description: 이미 조직에 속함
+          content:
+            application/json:
+              example:
+                error: { code: ALREADY_IN_ORG, message: user already belongs to an organization }
+
+  /orgs/{orgId}/github/repos:
+    get:
+      tags: [조직]
+      summary: GitHub에서 접근 가능한 레포 목록 (조직 멤버)
+      description: |
+        레포 연결이 조직 멤버 누구나 할 수 있으므로, 그 드롭다운을 채우는 이 목록도 함께 열려 있다.
+
+        `GITHUB_TOKEN`이 없으면 **500이 아니라 빈 배열**을 반환한다.
+        GitHub 실패가 우리 기능을 멈추게 하지 않는다.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/OrgId' }]
+      responses:
+        '200':
+          description: 레포 목록
+          content:
+            application/json:
+              example:
+                data: { repos: [] }
+        '403':
+          description: 대표가 아니거나 다른 조직
+          content:
+            application/json:
+              example:
+                error: { code: NOT_REPRESENTATIVE, message: this action requires the organization representative }
+
+  /orgs/{orgId}/members:
+    get:
+      tags: [조직]
+      summary: 조직 멤버 목록
+      description: |
+        GitHub collaborator 조회가 실패하면 `isCollaborator` 필드를 **생략**한다.
+        `false`로 채우지 않는다 — "확인 안 됨"과 "권한 없음"은 다르다.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/OrgId' }]
+      responses:
+        '200':
+          description: 멤버 목록
+          content:
+            application/json:
+              example:
+                data:
+                  members:
+                    - { userId: 1959e109-c60c-43f4-842f-dd18d9e7afab, loginId: rep, nickname: 대표, orgRole: REPRESENTATIVE }
+                    - { userId: 956e2b45-f39a-4799-a256-8b03de80f4ec, loginId: be, nickname: 백엔드, orgRole: MEMBER }
+        '403':
+          description: 다른 조직
+          content:
+            application/json:
+              example:
+                error: { code: CROSS_ORG_ACCESS, message: cannot access another organization }
+
+  /orgs/{orgId}/repos:
+    post:
+      tags: [레포·경로]
+      summary: 레포 연결 (조직 멤버)
+      description: |
+        연결하면 기본 경로 규칙 **15개**가 함께 생성된다(`source=seed`, `owner_role`은 전부 NULL).
+
+        **대표 전용이 아니다.** `repos` 행은 그 자체로 권한을 만들지 않는다 — 판정에 쓰이는 경로 규칙은
+        `project_repos`에 조인된 레포만 읽으므로(`listProjectRepoPaths`), 연결만 된 레포는 어떤
+        에이전트도 건드릴 수 없다. 실제 관문인 소유권 지정(`PATCH .../paths/{pathId}`)과
+        프로젝트 투입(`POST /orgs/{orgId}/projects`의 `repoIds`)은 대표 전용으로 남는다.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/OrgId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [repos]
+              properties:
+                repos:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    required: [fullName]
+                    properties:
+                      fullName: { type: string }
+                      githubRepoId: { type: integer }
+                      defaultBranch: { type: string }
+            example:
+              repos: [{ fullName: acme/extra-repo }]
+      responses:
+        '201':
+          description: 연결됨
+          content:
+            application/json:
+              example:
+                data: { repos: [{ id: 2ea71bc6-05b8-4725-9fa0-2b2eec9d3674, fullName: acme/extra-repo, seededPathCount: 15 }] }
+        '409':
+          description: 이미 연결된 레포
+          content:
+            application/json:
+              example:
+                error: { code: REPO_ALREADY_CONNECTED, message: repository is already connected }
+
+  /repos/{repoId}:
+    patch:
+      tags: [레포·경로]
+      summary: V3가 커밋을 읽을 곳 수정 (대표 전용)
+      description: |
+        `githubRepoId`(운영 github 모드 — 이름이 아니라 id로 찾는다)와 `cloneUrl`(로컬 mirror 모드)만 바꾼다. 넘긴 키만 바뀌고 `null`은 비운다.
+
+        **`cloneUrl`은 서버가 `git clone`에 그대로 넘긴다.** 그래서 `https://`(자격 증명 없이), `file:///`, 로컬 절대 경로만 받는다.
+        `-`로 시작(옵션 주입), `ext::`, `ssh://`·`git@host:`, `http://`, `user:pass@`는 400이고 사유가 메시지에 담긴다.
+
+        같은 조직의 다른 레포가 이미 그 `githubRepoId`를 가리키면 409. 경로 규칙이 아니므로 `policy_hash`는 바뀌지 않는다.
+      security: [{ userToken: [] }]
+      parameters:
+        - name: repoId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          example: '{{REPO_API}}'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                githubRepoId: { type: integer, nullable: true, minimum: 1 }
+                cloneUrl: { type: string, nullable: true, maxLength: 2048 }
+            example: { githubRepoId: 987654321 }
+      responses:
+        '200':
+          description: 바뀐 설정
+          content:
+            application/json:
+              example:
+                data:
+                  repo: { id: '{{REPO_API}}', fullName: acme/study-api, githubRepoId: 987654321, defaultBranch: main, devBranch: dev, cloneUrl: null }
+        '400':
+          description: 빈 바디, 또는 허용되지 않는 cloneUrl
+          content:
+            application/json:
+              example:
+                error: { code: VALIDATION_ERROR, message: 'clone_url 이 -로 시작한다(git 옵션으로 읽힌다) — https://host/owner/repo.git(자격 증명 없이) 또는 로컬 절대 경로만 받는다' }
+        '403':
+          description: 대표가 아니거나 다른 조직
+          content:
+            application/json:
+              example:
+                error: { code: NOT_REPRESENTATIVE, message: this action requires the organization representative }
+        '409':
+          description: 같은 GitHub 레포를 이미 가리키는 레포 행이 있음
+          content:
+            application/json:
+              example:
+                error: { code: REPO_ALREADY_CONNECTED, message: 'github_repo_id 987654321 is already used by acme/study-web (...)' }
+
+  /repos/{repoId}/paths:
+    get:
+      tags: [레포·경로]
+      summary: 경로 규칙 목록 (priority 내림차순)
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/RepoId' }]
+      responses:
+        '200':
+          description: 시드 15행 + 대표가 추가한 것
+          content:
+            application/json:
+              example:
+                data:
+                  paths:
+                    - { id: '{{PATH_ID}}', pathPattern: 'tests/**', ownerRole: null, access: write, actionKey: 'test:write', priority: 20, source: seed }
+                    - { id: 11111111-1111-1111-1111-111111111111, pathPattern: '**', ownerRole: BACKEND, access: write, actionKey: null, priority: 10, source: seed }
+        '404':
+          description: 없는 레포
+          content:
+            application/json:
+              example:
+                error: { code: REPO_NOT_FOUND, message: repository not found }
+    post:
+      tags: [레포·경로]
+      summary: 경로 규칙 추가 (대표 전용)
+      description: |
+        `priority`는 **manual 대역 200~299**만 받고, 안 주면 대역 최댓값 + 1이 된다(나중에 추가한 규칙이 이긴다).
+
+        glob은 `**`, `*`, 리터럴만 허용한다. 중괄호·느낌표·물음표·대괄호는 거부된다 —
+        서버와 브릿지 `.claude/settings.json`의 방언 차이로 판정이 갈리는 것을 막기 위해서다.
+        **부정이 필요하면 `priority`로 푼다.**
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/RepoId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pathPattern, access]
+              properties:
+                pathPattern: { type: string }
+                ownerRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true }
+                access: { type: string, enum: [write, read, denied] }
+                priority: { type: integer, minimum: 200, maximum: 299 }
+            example:
+              pathPattern: 'api/**'
+              ownerRole: BACKEND
+              access: write
+      responses:
+        '201':
+          description: 추가됨
+          content:
+            application/json:
+              example:
+                data: { path: { id: 33333333-3333-3333-3333-333333333333, pathPattern: 'api/**', ownerRole: BACKEND, access: write, priority: 200, source: manual } }
+        '400':
+          description: 허용하지 않는 glob 문법
+          content:
+            application/json:
+              example:
+                error: { code: INVALID_GLOB_PATTERN, message: pattern uses unsupported syntax }
+        '409':
+          description: 대역 안에서 priority 충돌
+          content:
+            application/json:
+              example:
+                error: { code: PATH_PRIORITY_TAKEN, message: priority 200 is already used in this repo }
+
+  /repos/{repoId}/paths/{pathId}:
+    patch:
+      tags: [레포·경로]
+      summary: 경로 소유권 지정 (대표 전용 — 온보딩의 핵심 산출물)
+      description: |
+        `actionKey`와 `priority`는 **어떤 API로도 바꿀 수 없다** — 정책 판정의 기준이라 임의로 바뀌면 재현성이 깨진다.
+
+        priority 900 이상(조직 상한, `.env` 계열 등)은 어떤 필드도 못 바꾼다 → 409 `IMMUTABLE_ORG_CEILING`.
+
+        ⚠️ **이 호출이 성공하면 그 레포를 쓰는 프로젝트의 `policy_hash`가 갱신된다.**
+        이미 발급된 에이전트 토큰은 즉시 401 `POLICY_STALE`이 된다. 재발급하면 다시 통과한다.
+      security: [{ userToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/RepoId'
+        - name: pathId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          example: '{{PATH_ID}}'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ownerRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true }
+                access: { type: string, enum: [write, read, denied] }
+            example:
+              ownerRole: BACKEND
+      responses:
+        '200':
+          description: 변경됨
+          content:
+            application/json:
+              example:
+                data: { path: { id: '{{PATH_ID}}', pathPattern: 'tests/**', ownerRole: BACKEND, access: write, priority: 20, source: seed } }
+        '409':
+          description: 조직 상한 행은 불변
+          content:
+            application/json:
+              example:
+                error: { code: IMMUTABLE_ORG_CEILING, message: organization ceiling rule cannot be changed }
+
+  /orgs/{orgId}/invites:
+    post:
+      tags: [초대]
+      summary: 초대 링크 발급 (대표 전용)
+      description: 토큰은 이벤트 payload에 남기지 않는다 — events는 지워지지 않으므로 비밀값을 넣지 않는다.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/OrgId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                teamRole: { type: string, enum: [FRONTEND, BACKEND] }
+                expiresInDays: { type: integer, minimum: 1 }
+            example:
+              teamRole: BACKEND
+              expiresInDays: 7
+      responses:
+        '201':
+          description: 발급됨
+          content:
+            application/json:
+              example:
+                data: { token: '{{INVITE_TOKEN}}', url: 'http://localhost:5173/invites/{{INVITE_TOKEN}}', expiresAt: '2026-09-25T00:00:00.000Z', teamRole: BACKEND }
+        '403':
+          description: 대표가 아님
+          content:
+            application/json:
+              example:
+                error: { code: NOT_REPRESENTATIVE, message: this action requires the organization representative }
+
+  /invites/{token}:
+    get:
+      tags: [초대]
+      summary: 수락 전 미리보기 (인증 불필요)
+      description: |
+        **무효한 토큰도 404가 아니라 200 + `valid:false`다.** 404를 쓰면 토큰 존재 여부가 드러난다.
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+          example: '{{INVITE_TOKEN}}'
+      responses:
+        '200':
+          description: 유효하든 아니든 200
+          content:
+            application/json:
+              examples:
+                유효:
+                  value: { data: { valid: true, orgName: Acme Inc., teamRole: BACKEND, expiresAt: '2026-09-25T00:00:00.000Z' } }
+                무효:
+                  value: { data: { valid: false } }
+
+  /invites/{token}/accept:
+    post:
+      tags: [초대]
+      summary: 초대 수락
+      description: |
+        `users.org_id`와 그 사용자의 `agents.org_id`가 **함께** 채워진다.
+        같은 링크를 다시 눌러도 성공한다(멱등). 이미 다른 조직에 속했으면 409.
+      security: [{ userToken: [] }]
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+          example: '{{INVITE_TOKEN}}'
+      responses:
+        '200':
+          description: 합류됨
+          content:
+            application/json:
+              example:
+                data: { userId: 2a5f7d0d-60ce-4937-a67a-a567a41c8ddb, orgId: '{{ORG_ID}}' }
+        '409':
+          description: 이미 다른 조직 소속
+          content:
+            application/json:
+              example:
+                error: { code: ALREADY_IN_ORG, message: user already belongs to an organization }
+        '410':
+          description: 만료되거나 이미 사용됨
+          content:
+            application/json:
+              example:
+                error: { code: INVITE_EXPIRED, message: invite has expired }
+
+  /auth/github/device/start:
+    post:
+      tags: [GitHub OAuth]
+      summary: Device Flow 시작
+      description: |
+        `device_code`는 **서버가 보관하지 않고** 응답으로 내보낸다. 보관하면 지울 책임이 생기고,
+        우리 DB가 새면 진행 중인 인증까지 털린다. GitHub device flow가 그렇게 설계돼 있다.
+
+        `GITHUB_CLIENT_ID`가 없으면 502다. 나머지 API는 정상 동작한다.
+      security: [{ userToken: [] }]
+      responses:
+        '200':
+          description: 사용자 코드와 인증 URL
+          content:
+            application/json:
+              example:
+                data: { deviceCode: dev-code, userCode: ABCD-1234, verificationUri: https://github.com/login/device, expiresIn: 900, interval: 5 }
+        '502':
+          description: OAuth 미설정
+          content:
+            application/json:
+              example:
+                error: { code: GITHUB_UNAVAILABLE, message: github oauth is not configured }
+
+  /auth/github/device/poll:
+    post:
+      tags: [GitHub OAuth]
+      summary: 승인 확인 (interval마다 호출)
+      description: |
+        **pending·slow_down·expired·denied도 200이다.** 폴링의 정상적인 중간 상태이기 때문이다.
+
+        승인되면 GitHub 신원을 계정에 붙이고 토큰을 AES-256-GCM으로 암호화해 저장한다.
+        이때 `SECRET_ENCRYPTION_KEY`가 필요하다. `KMS_KEY_ID`가 설정돼 있으면 **일부러 실패한다** —
+        운영에서 약한 키로 조용히 내려가는 것을 막기 위해서다.
+      security: [{ userToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceCode]
+              properties:
+                deviceCode: { type: string }
+            example:
+              deviceCode: start-응답의-deviceCode
+      responses:
+        '200':
+          description: 진행 상태 또는 연결 완료
+          content:
+            application/json:
+              examples:
+                승인대기:
+                  value: { data: { status: pending } }
+                연결완료:
+                  value: { data: { status: connected, githubLogin: minsu } }
+        '409':
+          description: 같은 조직에서 이미 연결된 GitHub 계정
+          content:
+            application/json:
+              example:
+                error: { code: GITHUB_ACCOUNT_TAKEN, message: this github account is already linked in your organization }
+
+  /tasks/{taskId}/claim:
+    post:
+      tags: [태스크·노트]
+      summary: claim_task — READY 태스크 선점
+      description: |
+        `state='READY' AND assignee_agent_id IS NULL` 조건부 UPDATE 하나로 경합을 가른다.
+        **낙관적 잠금이지 트랜잭션 잠금이 아니다.** 진 쪽은 0행을 받고 그게 곧 409다.
+
+        먼저 확인하는 것: 프로젝트 멤버인가 → 선행 태스크가 전부 DONE인가 → 내 역할과 맞는가.
+        `tasks.team_role`이 NULL이면 역할 제한이 없다(통합 태스크).
+      security: [{ agentToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/TaskId' }]
+      responses:
+        '200':
+          description: 선점됨
+          content:
+            application/json:
+              example:
+                data: { id: '{{TASK_BE}}', state: CLAIMED, assigneeAgentId: 2012e1df-0beb-43fd-ac09-d893ba56b01e, teamRole: BACKEND }
+        '401':
+          $ref: '#/components/responses/PolicyStale'
+        '403':
+          description: 역할 불일치·프로젝트 멤버 아님·프로젝트 정지
+          content:
+            application/json:
+              examples:
+                역할불일치:
+                  value: { error: { code: TASK_ROLE_MISMATCH, message: task belongs to FRONTEND } }
+                정지됨:
+                  value: { error: { code: PROJECT_HALTED, message: project is halted } }
+        '404':
+          description: 없는 태스크 (다른 프로젝트의 태스크도 "없음"으로 답한다)
+          content:
+            application/json:
+              example:
+                error: { code: TASK_NOT_FOUND, message: task not found }
+        '409':
+          description: 이미 선점됨 또는 선행 의존 미완료
+          content:
+            application/json:
+              examples:
+                경합패배:
+                  value: { error: { code: TASK_ALREADY_CLAIMED, message: task is no longer READY } }
+                의존미완료:
+                  value: { error: { code: TASK_DEPS_NOT_DONE, message: 1 dependencies are not DONE } }
+
+  /tasks/{taskId}/artifacts:
+    post:
+      tags: [태스크·노트]
+      summary: submit_artifact — 산출물 제출
+      description: |
+        제출 시점에 경로를 **다시** 판정한다. 로컬 편집기로 직접 고친 파일은 도구 호출을 거치지 않으므로
+        여기서만 걸린다(V3의 전신).
+
+        걸린 행동 키(`triggeredActions`)와 **가장 엄격한 판정**(`gateMode`)을 `artifacts`에 고정한다 —
+        나중에 정책표나 경로 규칙이 바뀌어도 "그때 무엇에 걸렸나"가 남아야 리플레이가 성립한다.
+
+        `changedPaths`에 `migrations/010_x.sql`을 섞으면 `db:migration`이 걸려 L2에서 `gateMode=HUMAN`이 된다.
+      security: [{ agentToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/TaskId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [commitSha, changedPaths]
+              properties:
+                commitSha: { type: string, pattern: '^[0-9a-f]{7,40}$' }
+                changedPaths: { type: array, minItems: 1, items: { type: string } }
+            examples:
+              정상:
+                value: { commitSha: a1b2c3d, changedPaths: [src/participation.ts, tests/participation.test.ts] }
+              금지경로:
+                value: { commitSha: a1b2c3d, changedPaths: [api/.env] }
+              승인필요:
+                value: { commitSha: a1b2c3d, changedPaths: [migrations/010_x.sql] }
+      responses:
+        '201':
+          description: |
+            제출됨. 태스크는 VERIFYING으로 넘어간다.
+
+            **서버가 판정하는 단계(V1A·V1B·V3)는 이 응답 안에서 이미 끝나 있다.** 비동기로 돌리면
+            "제출은 됐는데 결과는 언제 오는가"를 관리하는 상태가 하나 더 늘고, 모델은 그 사이에
+            다음 태스크로 넘어가 버린다.
+
+            `verification.outcome`이 읽는 법이다 —
+            `PENDING`(V2·V4 보고를 기다린다) · `DONE` · `AWAITING_APPROVAL`(gateMode가 AUTO가 아니다) ·
+            `RETRY`(FAIL — 태스크가 READY로 돌아가고 retry_count가 올랐다) · `ESCALATED`(3회째 FAIL).
+          content:
+            application/json:
+              example:
+                data:
+                  id: 44444444-4444-4444-4444-444444444444
+                  taskId: '{{TASK_BE}}'
+                  commitSha: a1b2c3d
+                  triggeredActions: ['artifact:submit', 'code:own_path', 'test:write']
+                  gateMode: AUTO
+                  attempt: 1
+                  verification:
+                    artifactId: 44444444-4444-4444-4444-444444444444
+                    attempt: 1
+                    stages:
+                      - { stage: V1A, result: SKIPPED }
+                      - { stage: V1B, result: SKIPPED }
+                      - { stage: V3, result: PASS }
+                    outcome: PENDING
+                    taskState: VERIFYING
+                    retryCount: 0
+        '401':
+          $ref: '#/components/responses/PolicyStale'
+        '403':
+          description: |
+            금지 경로·소유권 위반·남의 태스크. 세 경우 모두 `artifacts`에는 행이 생기지 않고
+            `TOOL_DENIED` 이벤트만 남는다. 소유권 위반만 `path_violation=true`다.
+          content:
+            application/json:
+              examples:
+                금지경로:
+                  value: { error: { code: FORBIDDEN_PATH, message: '**/.env* is denied' } }
+                소유권위반:
+                  value: { error: { code: SCOPE_DENIED, message: '** belongs to FRONTEND' } }
+                남의태스크:
+                  value: { error: { code: NOT_TASK_ASSIGNEE, message: task is assigned to another agent } }
+        '409':
+          description: CLAIMED·IN_PROGRESS가 아닌 상태
+          content:
+            application/json:
+              example:
+                error: { code: TASK_STATE_INVALID, message: cannot submit while task is VERIFYING }
+
+    get:
+      tags: [검증]
+      summary: 산출물 목록 (최신 먼저)
+      description: |
+        모델은 MCP 도구로 제출하므로 Executor는 방금 생긴 산출물의 id를 모른다. V2·V4 결과를
+        어디에 붙일지 알아야 해서 목록을 준다.
+
+        **사람도 호출한다** — 웹 UI가 태스크 상세에서 제출 이력을 보고, 여기서 얻은 id로
+        `GET /artifacts/{artifactId}/verifications`에 닿는다. 사람 경로가 없으면 그 화면이 성립하지 않는다.
+
+        접근 범위가 다르다: 에이전트는 **담당자만**, 사람은 대표이거나 그 프로젝트에 배정된
+        에이전트의 주인이면 된다(조회뿐이다).
+      security: [{ agentToken: [] }, { userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/TaskId' }]
+      responses:
+        '200':
+          description: attempt 내림차순
+          content:
+            application/json:
+              example:
+                data:
+                  artifacts:
+                    - { id: 44444444-4444-4444-4444-444444444444, taskId: '{{TASK_BE}}', commitSha: a1b2c3d, attempt: 2, gateMode: AUTO }
+
+  /tasks/{taskId}/notes:
+    post:
+      tags: [태스크·노트]
+      summary: publish_note — 인계 노트 발행
+      description: |
+        노트는 **대화 채널이 아니라 기록**이다. 본문 컬럼도, 수신자 지정도, 답글도 없다.
+        정정은 새 행(`supersedes`)이다.
+
+        **제목은 서버가 조립해** 응답의 `title`에 담는다: `#순번 - 역할 기능키 종류 — headline`.
+
+        형식 위반은 **자르지 않고 422**로 어디가 몇 자인지 돌려준다. `DEVIATION`은 `affects`가 필수다.
+        다른 에이전트의 이름·id를 넣으면 거부하고 `raise_dispute`로 안내한다 —
+        **자연어로 심사하지 않는다.** 이름 없이 비난하는 문장은 통과한다.
+      security: [{ agentToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/TaskId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, headline, keyPoints]
+              properties:
+                kind: { type: string, enum: [IMPLEMENTED, DECIDED, GOTCHA, DEVIATION] }
+                headline: { type: string, maxLength: 60 }
+                keyPoints: { type: array, minItems: 1, maxItems: 5, items: { type: string, maxLength: 120 } }
+                affects: { type: array, maxItems: 10, items: { type: string, maxLength: 200 } }
+                supersedes: { type: string, format: uuid }
+            examples:
+              구현완료:
+                value: { kind: IMPLEMENTED, headline: participation API done, keyPoints: ['409 on full study'] }
+              명세이탈:
+                value: { kind: DEVIATION, headline: quota check moved to service, keyPoints: [handler was too late], affects: [contracts/F-03.yaml] }
+              위반예시_affects누락:
+                value: { kind: DEVIATION, headline: x, keyPoints: [y] }
+      responses:
+        '201':
+          description: 발행됨
+          content:
+            application/json:
+              example:
+                data:
+                  id: 55555555-5555-5555-5555-555555555555
+                  seq: 1
+                  kind: IMPLEMENTED
+                  headline: participation API done
+                  keyPoints: ['409 on full study']
+                  affects: []
+                  title: '#1 - 백엔드 F-03 구현 완료 — participation API done'
+        '401':
+          $ref: '#/components/responses/PolicyStale'
+        '403':
+          description: CLAIM하지 않은 태스크
+          content:
+            application/json:
+              example:
+                error: { code: NOT_TASK_ASSIGNEE, message: task is assigned to another agent }
+        '422':
+          description: |
+            형식 위반. **권한 거부가 아니므로 `TOOL_DENIED`를 남기지 않는다** —
+            오타를 차단 지표(M5′)에 섞지 않기 위해서다.
+
+            위반 목록은 자르지 않고 `error.details`에 전부 담는다. 어느 필드의 몇 번째가
+            몇 자인지 모르면 에이전트가 같은 요청을 반복한다.
+          content:
+            application/json:
+              example:
+                error:
+                  code: NOTE_INVALID
+                  message: note validation failed
+                  details:
+                    - { field: keyPoints, index: 0, length: 121, limit: 120, message: key_points의 각 항목은 120자 이하여야 합니다 }
+                    - { field: kind, message: DEVIATION은 affects가 1개 이상이어야 합니다 }
+
+  /projects/{projectId}/notes:
+    get:
+      tags: [태스크·노트]
+      summary: read_notes — 인계 노트 읽기
+      description: |
+        **이벤트를 남기지 않는다.** 조회까지 기록하면 events가 열람 로그가 되고,
+        리플레이에서 "무엇이 상태를 바꿨나"를 찾기 어려워진다.
+
+        내 태스크에 필요한 노트는 서버가 프롬프트에 주입하므로, 에이전트는 더 필요할 때만 쓴다.
+
+        **사람도 호출한다** — 노트는 "무엇을 어떻게 진행했는가"의 기록이므로 웹 UI의 진행 상황
+        화면의 본문이 된다. 사람은 대표이거나 그 프로젝트에 배정된 에이전트의 주인이어야 한다.
+        단, 노트는 에이전트의 **자기 보고**다. 검증 통과 여부는 `verifications`에서 확인한다.
+      security: [{ agentToken: [] }, { userToken: [] }]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          example: '{{PROJECT_ID}}'
+        - name: spec_id
+          in: query
+          schema: { type: string, format: uuid }
+          description: 이 기능 명세의 노트만
+        - name: since_seq
+          in: query
+          schema: { type: integer, minimum: 0 }
+          description: 이 순번 이후만
+          example: 0
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+          example: 5
+      responses:
+        '200':
+          description: 최신순 목록
+          content:
+            application/json:
+              example:
+                data:
+                  notes:
+                    - { id: 55555555-5555-5555-5555-555555555555, seq: 1, kind: IMPLEMENTED, headline: participation API done, affects: [] }
+        '401':
+          $ref: '#/components/responses/PolicyStale'
+        '403':
+          description: 다른 프로젝트
+          content:
+            application/json:
+              example:
+                error: { code: NOT_PROJECT_MEMBER, message: agent is not a member of this project }
+
+  /orgs/{orgId}/projects:
+    post:
+      tags: [프로젝트]
+      summary: 프로젝트 생성 (대표 전용)
+      description: |
+        한 트랜잭션에서 다섯 가지가 함께 만들어진다:
+        프로젝트 행(`status=planning`, `started_at=NULL`) · 레포 연결 ·
+        **허용 레벨의 해당 열을 복사한 `project_policies` 17행** · 조직 헌법 스냅샷 · `policy_hash`.
+
+        판정은 이후 `action_catalog`가 아니라 **이 사본만** 본다 — 정책표가 바뀌어도 진행 중인 프로젝트는 흔들리지 않는다.
+        헌법도 생성 시점 사본을 들고 간다. 조직 헌법이 나중에 바뀌어도 과거 판정의 근거가 남아야 하기 때문이다.
+
+        **같은 레포를 두 활성 프로젝트가 쓸 수 없다**(409). 경로 소유권이 두 곳에 걸리기 때문이다.
+        `status`가 `completed`·`aborted`인 프로젝트의 레포는 다시 쓸 수 있다.
+
+        `autonomyPreset`은 zod가 아니라 서비스가 판정해서 **422**로 무엇이 허용되는지 함께 답한다.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/OrgId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, autonomyPreset, pmBudgetUsd, repoIds]
+              properties:
+                name: { type: string, maxLength: 128 }
+                autonomyPreset: { type: string, description: 'L1 | L2 | L3 | L4' }
+                pmBudgetUsd:
+                  type: number
+                  description: PM 예산. 필수 — PM은 NOMOS 키로 돌아 비용을 우리가 부담한다.
+                budgetUsd: { type: number, description: 프로젝트 전체 상한 (선택) }
+                deadline: { type: string, example: '2026-12-31' }
+                repoIds: { type: array, minItems: 1, items: { type: string, format: uuid } }
+            example:
+              name: 스터디 관리 웹앱 v2
+              autonomyPreset: L2
+              pmBudgetUsd: 40
+              repoIds: ['{{REPO_API}}']
+      responses:
+        '201':
+          description: 생성됨
+          content:
+            application/json:
+              example:
+                data:
+                  project:
+                    id: '{{PROJECT_ID}}'
+                    name: 스터디 관리 웹앱 v2
+                    autonomyPreset: L2
+                    status: planning
+                    startedAt: null
+                    pmBudgetUsd: '40.00'
+                    budgetUsd: null
+                    # date 컬럼이지만 응답은 보낸 그대로의 YYYY-MM-DD 문자열이다
+                    # (pg가 주는 Date를 toProject가 날짜 문자열로 되돌린다 — 타임존으로 밀리지 않는다).
+                    deadline: '2026-12-31'
+                    policyHash: bc7f3b33d92b36b25607093d7efb05cdacf73f1f0b52524046bff7b56e94442c
+                    constitutionHash: 44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a
+                    createdBy: '{{USER_REP}}'
+                  repos: [{ id: '{{REPO_API}}', orgId: '{{ORG_ID}}', fullName: acme/study-api }]
+                  members: []
+        '403':
+          description: 대표가 아니거나 다른 조직
+          content:
+            application/json:
+              example:
+                error: { code: NOT_REPRESENTATIVE, message: this action requires the organization representative }
+        '404':
+          description: 없는 레포
+          content:
+            application/json:
+              example:
+                error: { code: REPO_NOT_FOUND, message: repository not found }
+        '409':
+          description: 활성 프로젝트가 이미 쓰는 레포
+          content:
+            application/json:
+              example:
+                error: { code: REPO_IN_ACTIVE_PROJECT, message: repository is already used by another project }
+        '422':
+          description: |
+            허용 레벨 어휘 위반, 또는 소유 역할이 하나도 지정되지 않은 레포.
+
+            레포 연결은 팀원도 할 수 있으므로, 소유권 지정 없이 투입되면 `owner_role`이 전부 NULL이라
+            모든 역할이 레포 전체에 쓸 수 있다. 메시지에 막힌 레포 전부와 부를 API를 함께 적는다.
+          content:
+            application/json:
+              examples:
+                허용레벨:
+                  value: { error: { code: INVALID_AUTONOMY_PRESET, message: 'autonomyPreset must be one of L1, L2, L3, L4' } }
+                소유권미지정:
+                  value: { error: { code: REPO_OWNERSHIP_NOT_SET, message: '레포의 경로 소유권을 먼저 지정하세요. PATCH /api/repos/{{REPO_API}}/paths/:pathId' } }
+
+  /projects/{projectId}:
+    get:
+      tags: [프로젝트]
+      summary: 프로젝트 상세 (대표 또는 배정된 에이전트의 주인)
+      description: 상태·허용 레벨·`policy_hash`·레포 목록·멤버 목록을 함께 준다. DB를 직접 보지 않고 확인하기 위한 창구다.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/ProjectId' }]
+      responses:
+        '200':
+          description: 상세
+          content:
+            application/json:
+              example:
+                data:
+                  project:
+                    id: '{{PROJECT_ID}}'
+                    status: planning
+                    autonomyPreset: L2
+                    policyHash: bc7f3b33d92b36b25607093d7efb05cdacf73f1f0b52524046bff7b56e94442c
+                    startedAt: null
+                    pmBudgetUsd: '40.00'
+                  repos:
+                    - { id: '{{REPO_API}}', fullName: acme/study-api }
+                  members:
+                    - { agentId: '{{AGENT_BE}}', agentName: be-laptop, teamRole: BACKEND }
+        '403':
+          description: 이 프로젝트의 멤버가 아님
+          content:
+            application/json:
+              example:
+                error: { code: NOT_PROJECT_MEMBER, message: you are not a member of this project }
+        '404':
+          description: 없는 프로젝트
+          content:
+            application/json:
+              example:
+                error: { code: PROJECT_NOT_FOUND, message: project not found }
+
+  /projects/{projectId}/members:
+    post:
+      tags: [프로젝트]
+      summary: 역할 배정 (대표 전용)
+      description: |
+        **배정 뒤 그 에이전트는 토큰을 재발급해야 한다.** 배정 전에 발급된 토큰에는 `project_id`가 없어
+        태스크·노트 API가 403 `NOT_PROJECT_MEMBER`로 막힌다. `POST /agents/token/refresh`를 한 번 부르면 된다.
+        응답의 `notice`에도 같은 안내가 들어 있다.
+
+        프로젝트당 역할은 **하나씩만** 배정된다(`uq_project_members_role`). 실험 통제를 위해서다.
+        **G1(`started_at`) 이후에는 멤버를 바꿀 수 없다** — 도중에 바뀌면 통제가 흔들린다.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/ProjectId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agentId, teamRole]
+              properties:
+                agentId: { type: string, format: uuid }
+                teamRole: { type: string, enum: [FRONTEND, BACKEND] }
+            example:
+              agentId: '{{AGENT_BE}}'
+              teamRole: BACKEND
+      responses:
+        '201':
+          description: 배정됨. 남은 멤버 목록과 재발급 안내를 함께 준다.
+          content:
+            application/json:
+              example:
+                data:
+                  members:
+                    - { agentId: '{{AGENT_BE}}', agentName: be-laptop, teamRole: BACKEND }
+                  notice: 배정된 에이전트는 POST /api/agents/token/refresh로 토큰을 재발급해야 태스크·노트 API를 쓸 수 있습니다.
+        '403':
+          description: 대표가 아님 · 다른 조직의 에이전트 · G1 이후
+          content:
+            application/json:
+              examples:
+                남의조직에이전트:
+                  value: { error: { code: AGENT_NOT_IN_ORG, message: agent does not belong to this organization } }
+                시작된프로젝트:
+                  value: { error: { code: PROJECT_STARTED, message: project has started; members are frozen } }
+        '409':
+          description: 역할이 이미 찼거나, 그 에이전트가 이미 배정됨
+          content:
+            application/json:
+              examples:
+                역할중복:
+                  value: { error: { code: ROLE_ALREADY_ASSIGNED, message: BACKEND is already assigned in this project } }
+                에이전트중복:
+                  value: { error: { code: AGENT_ALREADY_ASSIGNED, message: this agent is already a member of the project } }
+
+  /projects/{projectId}/members/{agentId}:
+    delete:
+      tags: [프로젝트]
+      summary: 배정 해제 (대표 전용)
+      description: |
+        **역할 교체는 해제 후 재배정으로 한다.** UPDATE 경로를 두면 한 역할에 둘이 잠깐 겹칠 수 있다.
+        G1(`started_at`) 이후에는 해제도 막힌다.
+      security: [{ userToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - name: agentId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          example: '{{AGENT_BE}}'
+      responses:
+        '200':
+          description: 해제됨. 남은 멤버 목록을 준다.
+          content:
+            application/json:
+              example:
+                data: { members: [] }
+        '403':
+          description: 대표가 아니거나 G1 이후
+          content:
+            application/json:
+              example:
+                error: { code: PROJECT_STARTED, message: project has started; members are frozen }
+        '404':
+          description: 배정되지 않은 에이전트
+          content:
+            application/json:
+              example:
+                error: { code: MEMBER_NOT_FOUND, message: agent is not a member of this project }
+
+  /agents/me:
+    get:
+      tags: [CLI 연결]
+      summary: 에이전트 자기 설정
+      description: |
+        Executor가 기동할 때 자기 프로젝트·역할·동시 실행 상한을 읽는다. 이 값들을 Executor 쪽 설정
+        파일에 적어두면 서버에서 바꿔도 반영되지 않으므로, 서버가 정본을 준다.
+      security: [{ agentToken: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              example:
+                data:
+                  agentId: 2012e1df-0beb-43fd-ac09-d893ba56b01e
+                  projectId: '{{PROJECT_ID}}'
+                  teamRole: BACKEND
+                  maxConcurrent: 2
+
+  /projects/{projectId}/tasks:
+    get:
+      tags: [태스크·노트]
+      summary: 태스크 목록
+      description: |
+        웹 UI(사람 토큰)와 Executor 폴링(에이전트 토큰)이 **같은 엔드포인트**를 쓴다.
+
+        에이전트 토큰이면 `teamRole` 질의를 무시하고 자기 역할로 강제 필터한다 — 남의 역할 태스크가
+        목록에 아예 없어야 "잡아보고 403"을 반복하지 않는다.
+      security: [{ agentToken: [] }, { userToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - { name: state, in: query, schema: { type: string, enum: [READY, CLAIMED, IN_PROGRESS, VERIFYING, AWAITING_APPROVAL, BLOCKED, ESCALATED, DONE] } }
+        - { name: teamRole, in: query, schema: { type: string, enum: [FRONTEND, BACKEND] }, description: 에이전트 토큰이면 무시된다 }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+      responses:
+        '200':
+          description: 생성 순서대로. 정렬이 결정적이어야 폴링이 같은 태스크를 두고 경합하지 않는다.
+          content:
+            application/json:
+              example:
+                data:
+                  tasks:
+                    - { id: '{{TASK_BE}}', title: 'T-001 참여 신청 API 구현', state: READY, teamRole: BACKEND, retryCount: 0 }
+
+  /tasks/{taskId}/briefing:
+    get:
+      tags: [태스크·노트]
+      summary: 태스크 브리핑 — 프롬프트·settings.json 재료 한 번에
+      description: |
+        Executor는 팀원 노트북에서 돌아 DB를 직접 못 본다. 여러 엔드포인트를 조합하게 하면 조합 방식이
+        Executor마다 갈리므로 서버가 한 번에 준다 — 명세, 서버가 렌더한 인계 노트 블록(`notesBlock`),
+        쓸 수 있는 경로, `.claude/settings.json`에 그대로 깔 `claudeSettings`, 그리고 V2가 돌릴 `specTests`.
+
+        **CLAIM 전에도 받을 수 있다.** Executor가 작업공간을 먼저 만들고, claim은 모델이 도구로 하기 때문이다.
+        남의 역할 태스크는 403이다 — 명세·노트를 미리 보지 못하게 한다.
+      security: [{ agentToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/TaskId' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              example:
+                data:
+                  task: { id: '{{TASK_BE}}', title: 'T-001 참여 신청 API 구현', state: READY }
+                  repo: { id: '{{REPO_API}}', fullName: acme/study-api, defaultBranch: main, devBranch: dev }
+                  spec: { featureKey: F-03, title: 참여 신청 API, content: 'WHEN 정원이 찬 스터디에 신청하면 THEN 409를 반환한다' }
+                  notesBlock: "[인계 노트]\n#1 [명세 이탈] quota check moved to service\n  · handler was too late\n  영향: contracts/F-03.yaml"
+                  writablePaths: [{ pathPattern: 'src/**', access: write, ownerRole: BACKEND }]
+                  claudeSettings:
+                    permissions:
+                      deny: ['Read(**/.env*)', 'Read(!**/.env.example)', 'Edit(/contracts/**)', 'Edit(**/secrets/**)']
+                  specTests: [{ id: 5f0e..., criterion: 정원이 찬 스터디 신청은 409다, lockedAt: '2026-09-21T00:00:00.000Z' }]
+                  policyHash: '{{POLICY_HASH}}'
+
+  /tasks/{taskId}/branch:
+    patch:
+      tags: [태스크·노트]
+      summary: 작업 브랜치 보고
+      description: |
+        Executor가 worktree를 만들면서 정한 브랜치 이름을 서버에 알린다. 서버가 정본을 들고 있어야
+        재실행·이어받기에서 같은 브랜치를 쓰고 나중에 PR을 열 때도 이 값을 본다.
+
+        **이미 값이 있으면 덮어쓰지 않는다** — 브랜치가 바뀌면 이전 작업물을 찾을 수 없게 된다.
+      security: [{ agentToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/TaskId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [branchName]
+              properties:
+                branchName: { type: string, maxLength: 200, pattern: '^[A-Za-z0-9._/-]+$' }
+            example: { branchName: 'task/1d5c8f2a' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              example:
+                data: { id: '{{TASK_BE}}', branchName: 'task/1d5c8f2a', state: CLAIMED }
+
+  /artifacts/{artifactId}/verifications:
+    post:
+      tags: [검증]
+      summary: 브릿지 단계(V2·V4) 보고
+      description: |
+        V2(PM 시험지)와 V4(린트)는 작업공간이 있어야 돌 수 있어 제출 시점에는 결과가 물리적으로
+        존재할 수 없다. 그래서 이 단계만 브릿지가 나중에 보고한다.
+
+        **V1A·V1B·V3은 받지 않는다**(403 `VERIFICATION_STAGE_NOT_REPORTABLE`). 로컬이 보고한 V3를
+        서버가 받으면 "로컬을 신뢰하지 않는다"는 V3의 전제가 무너진다.
+
+        `SKIPPED`는 반드시 `detail.reason`을 함께 보낸다 — 사유 없는 SKIPPED는 나중에 PASS와 구분되지 않는다.
+
+        V2를 `PASS`로 보고해도 서버가 `spec_tests.locked_at < artifacts.created_at`을 다시 확인하고,
+        산출물보다 늦게 잠긴 시험지가 있으면 `FAIL`로 뒤집는다.
+      security: [{ agentToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/ArtifactId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [stage, result]
+              properties:
+                stage: { type: string, enum: [V2, V4] }
+                result: { type: string, enum: [PASS, FAIL, SKIPPED] }
+                detail: { type: object }
+                durationMs: { type: integer, minimum: 0 }
+            examples:
+              린트통과:
+                value: { stage: V4, result: PASS, detail: { command: 'npm run lint' }, durationMs: 4200 }
+              시험지없음:
+                value: { stage: V2, result: SKIPPED, detail: { reason: '작업공간에 vitest가 설치돼 있지 않다' } }
+              린트실패:
+                value: { stage: V4, result: FAIL, detail: { exitCode: 1, output: "src/index.ts:3:1 error" } }
+      responses:
+        '201':
+          description: |
+            기록됨. 응답은 이 산출물의 **전체** 결론이다 — 필요한 단계(V3·V2·V4)가 모두 들어오고
+            하나도 FAIL이 아니면 `DONE`(gateMode가 AUTO가 아니면 `AWAITING_APPROVAL`)이 된다.
+          content:
+            application/json:
+              example:
+                data:
+                  artifactId: 44444444-4444-4444-4444-444444444444
+                  attempt: 1
+                  stages:
+                    - { stage: V1A, result: SKIPPED }
+                    - { stage: V1B, result: SKIPPED }
+                    - { stage: V2, result: SKIPPED }
+                    - { stage: V3, result: PASS }
+                    - { stage: V4, result: PASS }
+                  outcome: DONE
+                  taskState: DONE
+                  retryCount: 0
+        '400':
+          description: 사유 없는 SKIPPED
+          content:
+            application/json:
+              example:
+                error: { code: VALIDATION_ERROR, message: SKIPPED must carry detail.reason }
+        '403':
+          description: 서버가 판정하는 단계이거나, 남의 태스크다
+          content:
+            application/json:
+              examples:
+                서버판정단계:
+                  value: { error: { code: VERIFICATION_STAGE_NOT_REPORTABLE, message: stage V3 is judged by the server } }
+                남의태스크:
+                  value: { error: { code: NOT_TASK_ASSIGNEE, message: task is assigned to another agent } }
+        '409':
+          description: |
+            같은 단계를 두 번 보고했다. 재제출은 attempt가 올라간 **새 산출물**이므로, FAIL을 PASS로
+            갈아치우는 경로는 없다.
+          content:
+            application/json:
+              example:
+                error: { code: VERIFICATION_ALREADY_RECORDED, message: V4 is already recorded for this artifact }
+    get:
+      tags: [검증]
+      summary: 검증 결과 조회
+      description: 무엇이 PASS였고 무엇을 **왜** 못 돌렸는지 본다. SKIPPED의 `detail.reason`이 그 답이다.
+      security: [{ agentToken: [] }, { userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/ArtifactId' }]
+      responses:
+        '200':
+          description: stage 순
+          content:
+            application/json:
+              example:
+                data:
+                  verifications:
+                    - stage: V1A
+                      result: SKIPPED
+                      executedBy: server
+                      detail: { reason: 'contracts 테이블 미구현 — ⑦ 이후 가능' }
+                    - stage: V3
+                      result: FAIL
+                      executedBy: server
+                      durationMs: 732
+                      detail:
+                        reason: 'changed_paths가 커밋의 실제 diff와 다르다'
+                        undeclared: [README.md]
+                        overdeclared: []

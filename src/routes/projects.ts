@@ -1,0 +1,99 @@
+import { Router, type Request } from 'express';
+import { z } from 'zod';
+import {
+  assignMember,
+  createProject,
+  getProject,
+  unassignMember,
+  type Actor,
+} from '../domain/project/service.js';
+import { TEAM_ROLES } from '../domain/roles.js';
+import { AppError } from '../errors.js';
+import { authenticate, orgIdOf, requireRepresentative, requireSameOrg } from '../middleware/auth.js';
+import { validate } from '../middleware/validate.js';
+
+export const projectsRouter = Router();
+
+// 멤버 배정 전에 발급된 에이전트 토큰에는 project_id가 없다. 배정 뒤 반드시 재발급해야
+// 태스크·노트 API를 쓸 수 있다 — 안 하면 403 NOT_PROJECT_MEMBER가 난다.
+const REFRESH_NOTICE =
+  '배정된 에이전트는 POST /api/agents/token/refresh로 토큰을 재발급해야 태스크·노트 API를 쓸 수 있습니다.';
+
+function actorOf(req: Request): Actor {
+  if (!req.user) throw new AppError('UNAUTHENTICATED', 'authentication required');
+  return { userId: req.user.id, orgId: orgIdOf(req), orgRole: req.user.orgRole };
+}
+
+const orgIdParamsSchema = z.object({ orgId: z.string().uuid() });
+const projectIdParamsSchema = z.object({ projectId: z.string().uuid() });
+const memberParamsSchema = projectIdParamsSchema.extend({ agentId: z.string().uuid() });
+
+// autonomyPreset은 여기서 enum으로 막지 않는다 — 서비스가 422로 "무엇이 허용되는지"까지 답한다.
+const createProjectBodySchema = z.object({
+  name: z.string().trim().min(1).max(128),
+  autonomyPreset: z.string().min(1),
+  pmBudgetUsd: z.number().positive(),
+  budgetUsd: z.number().positive().optional(),
+  deadline: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'deadline must be YYYY-MM-DD').optional(),
+  repoIds: z.array(z.string().uuid()).min(1).max(20),
+});
+
+// POST /api/orgs/:orgId/projects — 프로젝트 생성(대표 전용).
+// 한 트랜잭션에서 프로젝트·레포 연결·정책 사본 17행·헌법 스냅샷·policy_hash가 함께 만들어진다.
+projectsRouter.post(
+  '/orgs/:orgId/projects',
+  validate({ params: orgIdParamsSchema, body: createProjectBodySchema }),
+  authenticate,
+  requireSameOrg,
+  requireRepresentative,
+  async (req, res) => {
+    const { orgId } = req.params as z.infer<typeof orgIdParamsSchema>;
+    const body = req.body as z.infer<typeof createProjectBodySchema>;
+    const detail = await createProject(orgId, req.user!.id, body);
+    res.status(201).json({ data: detail });
+  },
+);
+
+const assignMemberBodySchema = z.object({
+  agentId: z.string().uuid(),
+  teamRole: z.enum(TEAM_ROLES),
+});
+
+// POST /api/projects/:projectId/members — 역할 배정(대표 전용). G1 이후에는 403.
+projectsRouter.post(
+  '/projects/:projectId/members',
+  validate({ params: projectIdParamsSchema, body: assignMemberBodySchema }),
+  authenticate,
+  requireRepresentative,
+  async (req, res) => {
+    const { projectId } = req.params as z.infer<typeof projectIdParamsSchema>;
+    const body = req.body as z.infer<typeof assignMemberBodySchema>;
+    const members = await assignMember(actorOf(req), projectId, body.agentId, body.teamRole);
+    res.status(201).json({ data: { members, notice: REFRESH_NOTICE } });
+  },
+);
+
+// DELETE /api/projects/:projectId/members/:agentId — 배정 해제(대표 전용).
+// 역할 교체는 해제 후 재배정으로 한다.
+projectsRouter.delete(
+  '/projects/:projectId/members/:agentId',
+  validate({ params: memberParamsSchema }),
+  authenticate,
+  requireRepresentative,
+  async (req, res) => {
+    const { projectId, agentId } = req.params as z.infer<typeof memberParamsSchema>;
+    const members = await unassignMember(actorOf(req), projectId, agentId);
+    res.status(200).json({ data: { members } });
+  },
+);
+
+// GET /api/projects/:projectId — 대표 또는 이 프로젝트에 배정된 에이전트의 주인만.
+projectsRouter.get(
+  '/projects/:projectId',
+  validate({ params: projectIdParamsSchema }),
+  authenticate,
+  async (req, res) => {
+    const { projectId } = req.params as z.infer<typeof projectIdParamsSchema>;
+    res.status(200).json({ data: await getProject(actorOf(req), projectId) });
+  },
+);

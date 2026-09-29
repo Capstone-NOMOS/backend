@@ -1,0 +1,749 @@
+Project NOMOS {
+  database_type: 'PostgreSQL'
+  Note: '''
+  NOMOS — 에이전트 협업 조율 서버
+  ★ 최종 목표 스키마. Phase 1 실제 구현은 migrations/ 참조
+  스키마 원본은 마이그레이션 파일. 이 문서는 그것을 그린 것
+  '''
+}
+
+// ═══════════ 조직 ═══════════
+
+Table organizations {
+  id            uuid        [pk, default: `gen_random_uuid()`]
+  name          text        [not null]
+  constitution  jsonb       [not null, default: `'{}'`, note: '★ 011에서 실제 추가. 기술스택·코딩규칙. 최신본 — 과거 판정 근거는 projects.constitution']
+  created_by    uuid        [note: '★ FK는 DEFERRABLE INITIALLY DEFERRED — 커밋 시점 검사 (users와 순환)']
+  created_at    timestamptz [not null, default: `now()`]
+}
+
+Table users {
+  id               uuid        [pk, default: `gen_random_uuid()`]
+  org_id           uuid        [note: '★ 003: NULL 허용 — 가입 직후엔 조직 없음. NULL→값 한 번만']
+  login_id         text        [note: '★ 003: 로컬 계정 아이디']
+  password_hash    text        [note: '★ 003: scrypt$<salt>$<key>. 평문 저장 금지']
+  nickname         text        [note: '★ 003']
+  connect_key_hash text        [note: '★ 003: CLI 연결 키의 sha256. 평문은 가입·교체 응답에 1회만']
+  github_id        bigint      [note: '★ 003: NULL 허용 — GitHub 계정 없이 가입 가능']
+  github_login     text        [note: '★ 003: NULL 허용']
+  org_key          text        [not null, note: '★ 008: GENERATED AS coalesce(org_id::text, "-") STORED. agents 복합 FK 타깃']
+  name             text
+  org_role         text        [not null, default: 'MEMBER', note: 'MEMBER | REPRESENTATIVE']
+  created_at       timestamptz [not null, default: `now()`]
+
+  Note: '''
+  team_role 없음 — 역할은 project_members에서 프로젝트마다 배정
+  한 사용자는 하나의 조직에만 속함 (다중 조직 Won't).
+  org_id는 NULL→값으로 한 번만 바뀐다. 다른 조직으로 옮기는 경로 없음 (UPDATE ... WHERE org_id IS NULL)
+
+  ★ 부분 유니크 인덱스 — DBML 표현 불가, 마이그레이션에 직접:
+    CREATE UNIQUE INDEX uq_representative ON users(org_id)
+      WHERE org_role = 'REPRESENTATIVE';
+    CREATE UNIQUE INDEX uq_users_login_id ON users(login_id)
+      WHERE login_id IS NOT NULL;
+    CREATE UNIQUE INDEX uq_users_connect_key ON users(connect_key_hash)
+      WHERE connect_key_hash IS NOT NULL;
+    CREATE UNIQUE INDEX uq_users_org_github ON users(org_id, github_id)
+      WHERE org_id IS NOT NULL AND github_id IS NOT NULL;
+  '''
+}
+
+Table invites {
+  id         uuid        [pk, default: `gen_random_uuid()`]
+  org_id     uuid        [not null]
+  token      text        [not null, unique, note: 'randomBytes(16).base64url']
+  created_by uuid        [not null]
+  expires_at timestamptz [not null, note: '기본 7일']
+  team_role  text        [note: '★ 003: FRONTEND | BACKEND. NULL이면 미지정']
+  used_by    uuid        [note: 'NULL이면 미사용']
+  used_at    timestamptz
+  created_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (org_id, created_at)
+  }
+  Note: '''
+  ★ 신규 — 설계서 §3.0 A-4 초대 링크
+  무효해도 404가 아니라 200 + valid:false (토큰 존재 여부 비노출)
+  수락은 로그인한 사용자 기준. users.org_id와 그 사용자의 agents.org_id를 함께 채운다.
+  이미 같은 조직 소속이면 초대를 소비하지 않고 성공 — 멱등. 다른 조직 소속이면 409
+  project_id는 projects가 생기는 Phase 2에서 추가
+
+  ★ CHECK — 마이그레이션에 직접:
+    CONSTRAINT invites_role_chk CHECK (team_role IS NULL OR team_role IN ('FRONTEND','BACKEND'))
+  '''
+}
+
+Table agents {
+  id             uuid        [pk, default: `gen_random_uuid()`]
+  user_id        uuid        [not null]
+  org_id         uuid        [note: '★ 003: NULL 허용 — 가입 직후 연결 시 조직 없음. 조직 가입 시 채움']
+  name           text        [not null]
+  harness        text        [not null, note: 'claude-code@2.1.32']
+  skills         "text[]"    [not null, default: `'{}'`]
+  max_concurrent integer     [not null, default: 2]
+  status         text        [not null, default: 'pending', note: 'pending | online | offline']
+  org_key        text        [not null, note: '★ 008: GENERATED. (user_id, org_key)로 users를 참조해 org 불변식을 DB가 강제']
+  settings_hash  text        [note: '.claude/settings.json 해시 — 서버 기대값과 대조. policy_hash와 다른 질문에 답한다(아래)']
+  last_seen_at   timestamptz
+  created_at     timestamptz [not null, default: `now()`]
+
+  indexes {
+    (user_id, name) [unique, note: '★ 003: org_id가 NULL일 수 있어 (org_id, name)에서 변경']
+  }
+  Note: '''
+  N:1 허용. 실험 통제는 project_members가 담당
+  불변식: agents.org_id = users.org_id (조직 생성·초대 수락 시 함께 갱신)
+
+  ★ 008 — 이 불변식을 DB가 강제한다:
+    CREATE UNIQUE INDEX uq_users_id_org_key ON users(id, org_key)
+    FK (user_id, org_key) → users(id, org_key) DEFERRABLE INITIALLY DEFERRED
+    org_id은 NULL을 허용하므로 그대로 복합 FK를 걸면 MATCH SIMPLE이 검사를 통째로 건너뛴다.
+    NULL을 '-'로 접은 생성 컬럼을 써서 항상 검사되게 한다 (007 lock_key와 같은 수법).
+    DEFERRABLE인 이유: 조직 가입은 users → agents 두 문장이라 중간 상태가 잠시 어긋난다.
+
+  settings_hash vs policy_hash — 새 컬럼을 만들지 않는다. 둘은 다른 질문에 답한다:
+    policy_hash   서버가 정한 정책 스냅샷의 식별자. 토큰과 events.policy_hash에 실린다
+                  → "이 행동은 어느 스냅샷 기준으로 판정됐나"
+    settings_hash 에이전트 노트북에 실제로 깔린 settings.json의 해시
+                  → "그 스냅샷대로 로컬에 정말 깔렸나" (미설치·변조 탐지)
+  settings.json은 정책 스냅샷에서 생성되므로 policy_hash가 바뀌면 settings_hash도 바뀐다
+  같은 (user_id, name)으로 다시 연결하면 새 행을 만들지 않고 갱신 — CLI 재설치 대응
+
+  ★ CHECK — 마이그레이션에 직접:
+    CONSTRAINT agents_status_chk CHECK (status IN ('pending','online','offline'))
+  '''
+}
+
+// ═══════════ 레포·경로 ═══════════
+
+Table repos {
+  id             uuid        [pk, default: `gen_random_uuid()`]
+  org_id         uuid        [not null]
+  full_name      text        [not null, note: 'our-company/study-app-api']
+  github_repo_id bigint      [note: '★ GitHub 숫자 ID. rename 되어도 불변']
+  dev_branch   text [not null, default: 'dev', note: '기능 완료 시 머지 대상']
+  dev_base_url text [note: '★ dev 배포 주소. V1B·통합 테스트가 호출. NULL이면 V1B는 SKIPPED']
+  clone_url    text [note: '012. 서버가 커밋 diff를 읽을 곳(V3). NULL이면 V3는 SKIPPED']
+  default_branch text        [not null, default: 'main']
+  created_at     timestamptz [not null, default: `now()`]
+
+  indexes {
+    (org_id, full_name) [unique]
+  }
+  Note: '삭제·연결해제 API 없음 — repo_paths가 태스크·검증에서 참조됨'
+}
+
+Table repo_paths {
+  id           uuid        [pk, default: `gen_random_uuid()`]
+  repo_id      uuid        [not null]
+  path_pattern text        [not null, note: 'glob. **, *, 리터럴만']
+  owner_role   text        [note: 'FRONTEND | BACKEND. NULL = 무소유. ★ 003: QA 삭제']
+  access       text        [not null, note: 'write | read | denied']
+  action_key   text        [note: 'action_catalog 참조. NULL이면 code:own_path. ★ 004: 비밀 파일 행은 secret:touch']
+  priority     integer     [not null, note: '클수록 우선. ★ 005: 레포 안에서 유일 — 0~99 seed · 100~199 scan · 200~299 manual · 900+ 조직 상한']
+  source       text        [not null, default: 'manual', note: 'seed | scan | manual']
+  created_at   timestamptz [not null, default: `now()`]
+
+  indexes {
+    (repo_id, path_pattern) [unique]
+    (repo_id, priority) [unique, note: '★ 005: 동점 사전순 폴백이 발동하지 않게']
+  }
+  Note: '''
+  4곳에서 소비: 온보딩 화면 / 브릿지 settings.json 생성
+  / SCOPE_DENIED 판정(M5′) / V3 diff 검증
+  access와 action_key는 독립 축
+  레포 연결 시 15행 시드 (source='seed', 005). owner_role은 전부 NULL로 시작
+  action_key는 action_catalog 정책표의 "탐지" 열 중 경로로 표현되는 것 (package.json dep:add는 내용 diff로 판정)
+  '**/'는 0개 이상의 디렉터리 — '**/.env*'는 루트와 하위 디렉터리의 .env 모두 매칭
+  '**/'로 시작하지 않는 패턴은 레포 루트에 고정 ('contracts/**', 'Dockerfile')
+  경로 매칭은 대소문자 무시 — Claude Code가 그렇게 동작하고(실측), Windows·macOS 파일시스템도 구분하지 않음
+  시드 규칙을 바꾸면 source='seed' 행만 골라 기존 레포에도 반영 (004·005가 선례)
+  priority 900+ 행(조직 상한)은 API로 추가·수정 불가. 예외는 더 높은 priority의 허용 행 ('**/.env.example' 950)
+  action_key·priority는 API로 수정 불가 — 재현성
+
+  ★ CHECK — 마이그레이션에 직접 (003에서 QA 허용 CHECK를 교체):
+    CONSTRAINT repo_paths_owner_role_chk
+      CHECK (owner_role IS NULL OR owner_role IN ('FRONTEND','BACKEND'))
+
+  ★ 005 — 마이그레이션에 직접:
+    CONSTRAINT repo_paths_priority_band_chk CHECK (
+         (source = 'seed'   AND (priority BETWEEN 0 AND 99 OR priority >= 900))
+      OR (source = 'scan'   AND priority BETWEEN 100 AND 199)
+      OR (source = 'manual' AND priority BETWEEN 200 AND 299))
+    CREATE UNIQUE INDEX uq_repo_paths_priority ON repo_paths(repo_id, priority)
+  '''
+}
+
+// ═══════════ 프로젝트 ═══════════
+
+Table projects {
+  id                uuid            [pk, default: `gen_random_uuid()`]
+  org_id            uuid            [not null]
+  name              text            [not null]
+  mode              text            [note: 'SEQUENTIAL | CONTRACT_PARALLEL | HYBRID. NULL이면 G1에서 PM 제안']
+  autonomy_preset   text            [not null, note: '★ L1 | L2 | L3 | L4. 표시용 아님 — 선택 시 action_catalog.mode_lN 열을 project_policies로 복사']
+  policy_hash       text            [not null]
+  constitution      jsonb           [not null, default: `'{}'`, note: '★ G1 시점 org 헌법 사본. org가 바뀌어도 불변']
+  constitution_hash text            [note: '★ 판정 근거 복원용']
+  deadline          date
+  budget_usd        "numeric(10,2)" [note: '프로젝트 전체(PM + 에이전트) 상한. 선택']
+  pm_budget_usd     "numeric(10,2)" [not null, note: '★ PM 예산 — 필수. PM은 NOMOS 키로 돌므로 우리 돈. 초과 시 budget:exceed']
+  status            text            [not null, default: 'planning', note: 'planning | active | halted | completed | aborted']
+  halt_reason       text            [note: '★ manual | budget | escalation']
+  halted_at         timestamptz     [note: '★']
+  halted_by         uuid            [note: '★ 수동 정지일 때만']
+  created_by        uuid            [not null]
+  started_at        timestamptz     [note: 'G1 승인 시각. NOT NULL이면 정책·헌법 변경 불가']
+  created_at        timestamptz     [not null, default: `now()`]
+
+  Note: '''
+  status='halted'면 권한 검증 0단계에서 모든 도구 호출 거부
+  멈춤은 명령이 아니라 상태 — 브릿지가 오프라인이어도 산출물이 못 들어옴
+  CHECK (status <> 'halted' OR halt_reason IS NOT NULL)
+  '''
+}
+
+Table project_repos {
+  project_id uuid [not null]
+  repo_id    uuid [not null]
+
+  indexes {
+    (project_id, repo_id) [pk]
+  }
+  Note: '활성 프로젝트끼리 repo_id 중복 금지 — 앱 레벨 검증'
+}
+
+Table project_members {
+  project_id uuid [not null]
+  agent_id   uuid [not null]
+  team_role  text [not null, note: 'FRONTEND | BACKEND. QA 삭제']
+
+  indexes {
+    (project_id, agent_id) [pk]
+    (project_id, team_role) [unique, note: '역할당 1개 — 실험 통제']
+  }
+}
+
+// ═══════════ 정책 사다리 ═══════════
+
+Table action_catalog {
+  action_key  text    [pk, note: '콜론:구분 — db:migration']
+  label       text    [not null]
+  rung        integer [not null, unique, note: '1~17 — 정책표의 # 열']
+  locked_mode text    [note: '🔒 레벨과 무관하게 고정. 3=AUTO, 14=HUMAN, 15·16·17=FORBIDDEN. 나머지는 NULL']
+  detection   text    [not null, note: '★ 004: 탐지 기준 — diff 경로·MCP 호출 등']
+  mode_l1     text    [not null, note: '★ 004: AUTO | PM_REVIEW | HUMAN | FORBIDDEN']
+  mode_l2     text    [not null, note: '★ 004']
+  mode_l3     text    [not null, note: '★ 004']
+  mode_l4     text    [not null, note: '★ 004']
+  lock_key    text    [not null, note: '★ 007: GENERATED AS coalesce(locked_mode, "-") STORED. project_policies 복합 FK 타깃']
+
+  Note: '''
+  허용 레벨 = 행동별 승인 정책표. "레벨"은 자율성 정도가 아니라 행동마다 누가 승인하는가.
+  17행. 원본은 migrations/004_policy_levels.sql. 레포가 분리돼 git:merge_integration 없음
+
+  판정 주체
+    AUTO      서버 코드가 판정 (스코프·테스트·커밋 존재) — 결정적
+    PM_REVIEW PM은 반려만 할 수 있음. 통과는 AUTO 검증이 결정
+    HUMAN     담당 사람(대표 또는 해당 역할)의 승인 카드 → approvals
+    FORBIDDEN 시도 자체를 거부, events에 기록 — 결정적
+
+  ★ CHECK — 마이그레이션에 직접:
+    action_catalog_mode_chk   mode_l1~l4 IN ('AUTO','PM_REVIEW','HUMAN','FORBIDDEN')
+    action_catalog_locked_chk locked_mode IS NULL OR 네 레벨 모두 = locked_mode
+  '''
+}
+
+Table project_policies {
+  project_id uuid [not null]
+  action_key text [not null]
+  mode       text [not null, note: 'AUTO | PM_REVIEW | HUMAN | FORBIDDEN']
+  lock_key   text [not null, note: '★ 007: action_catalog.lock_key 사본. 잠금 여부를 위조 못 하게 하는 FK 열']
+
+  indexes {
+    (project_id, action_key) [pk]
+  }
+  Note: '''
+  해석된 행을 저장 — 리플레이 재현성. 판정은 이 테이블만 본다
+  프로젝트 생성 시 autonomy_preset의 mode_lN 열로 17행 복사
+  🔒 행(action_catalog.locked_mode NOT NULL)은 mode = locked_mode 고정 — 대표도 못 바꿈
+  비잠금 행은 G1 전(projects.started_at IS NULL)까지 대표가 조정 가능
+  PM_REVIEW: PM은 반려(REJECT)만 가능. 통과는 AUTO 검증이 결정 — LLM은 게이트를 열 수 없다
+
+  ★ 007에서 구현. 🔒 고정을 DB가 강제한다 (앱 검증이 아니라):
+    project_policies_lock_fk    FK (action_key, lock_key) → action_catalog(action_key, lock_key)
+    project_policies_locked_chk CHECK (lock_key = '-' OR mode = lock_key)
+    locked_mode가 NULL이면 복합 FK 검사가 통째로 생략되므로(MATCH SIMPLE),
+    NULL을 '-'로 접은 생성 컬럼을 FK 타깃으로 쓴다
+  '''
+}
+
+// ═══════════ 계획 ═══════════
+
+Table plans {
+  id           uuid        [pk, default: `gen_random_uuid()`]
+  project_id   uuid        [not null]
+  run_id       uuid        [note: '실험 회차 — events.run_id와 동일 값']
+  dag_snapshot jsonb       [not null, note: '태스크·의존 관계 전체']
+  dag_hash     text        [not null, note: 'M6a 비교용. sha256(canonicalJson)']
+  source       text        [not null, default: 'planner', note: 'planner | replay']
+  mode         text        [note: 'PM이 제안한 진행 모드']
+  approved_at  timestamptz [note: 'G1 승인 = 잠김']
+  created_at   timestamptz [not null, default: `now()`]
+
+  indexes {
+    (project_id, created_at)
+    (run_id)
+  }
+  Note: '''
+  ★ M6를 둘로 쪼개기 위한 테이블
+    M6a 계획 결정성 = 같은 입력 3회 → dag_hash 유사도 (LLM이라 변동)
+    M6b 실행 결정성 = source='replay'로 같은 DAG 주입 3회 → 전이 시퀀스 일치율
+  M6b가 P4 "계획은 유동, 실행은 결정적"의 유일한 증명 경로
+  '''
+}
+
+// ═══════════ 명세·계약 ═══════════
+
+Table specs {
+  id            uuid        [pk, default: `gen_random_uuid()`]
+  project_id    uuid        [not null]
+  feature_key   text        [not null, note: 'F-01, F-03']
+  title         text        [not null]
+  content       text        [not null, note: 'EARS 마크다운']
+  version       integer     [not null, default: 1]
+  superseded_by uuid
+  approved_at   timestamptz [note: 'G1 또는 G2 승인']
+  created_at    timestamptz [not null, default: `now()`]
+
+  indexes {
+    (project_id, feature_key, version) [unique]
+  }
+}
+
+Table spec_tests {
+  id         uuid        [pk, default: `gen_random_uuid()`]
+  spec_id    uuid        [not null]
+  criterion  text        [not null, note: 'EARS 조항 원문 — IF ~ THEN']
+  test_code  text        [not null, note: 'vitest. PM이 생성']
+  locked_at  timestamptz [note: 'G1 승인 = 잠김. 구현자가 수정 불가']
+  created_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (spec_id)
+  }
+  Note: '''
+  ★ 007에서 구현
+  ★ V2의 시험지. "출제자와 응시자가 다르다"의 증거
+  locked_at < artifacts.created_at 이어야 함
+  '''
+}
+
+Table contracts {
+  id            uuid        [pk, default: `gen_random_uuid()`]
+  project_id    uuid        [not null]
+  spec_id       uuid        [not null]
+  version       integer     [not null, default: 1]
+  schema_yaml   text        [not null, note: 'OpenAPI 조각']
+  status        text        [not null, default: 'negotiating', note: 'negotiating | locked | superseded']
+  round         integer     [not null, default: 0, note: '3 초과 시 PM 중재']
+  proposed_by   uuid        [not null, note: 'BE가 초안']
+  locked_at     timestamptz
+  superseded_by uuid
+  created_at    timestamptz [not null, default: `now()`]
+
+  indexes {
+    (project_id, spec_id, version) [unique]
+  }
+  Note: 'v1→v1.1은 UPDATE가 아니라 새 행'
+}
+
+Table contract_proposals {
+  id          uuid        [pk, default: `gen_random_uuid()`]
+  contract_id uuid        [not null]
+  round       integer     [not null]
+  agent_id    uuid        [not null]
+  kind        text        [not null, note: 'PROPOSE | COUNTER | ACCEPT']
+  schema_yaml text
+  rationale   text        [note: '역제안 근거. EARS 수용기준 참조']
+  created_at  timestamptz [not null, default: `now()`]
+
+  indexes {
+    (contract_id, round)
+  }
+}
+
+// ═══════════ 태스크 ═══════════
+
+Table tasks {
+  id                 uuid        [pk, default: `gen_random_uuid()`]
+  project_id         uuid        [not null]
+  plan_id            uuid        [note: '★ 어느 계획에서 나왔나 — M6b 리플레이 그룹핑']
+  spec_id            uuid        [note: '통합 태스크는 NULL']
+  contract_id        uuid
+  repo_id            uuid        [not null, note: '멀티레포 — 어디서 작업하나']
+  kind               text        [not null, default: 'IMPLEMENT', note: 'IMPLEMENT | INTEGRATION | REWORK']
+  team_role          text        [note: '★ 009: FRONTEND | BACKEND. NULL = 역할 제한 없음(통합 태스크). claim_task가 검사']
+  title              text        [not null]
+  assignee_agent_id  uuid
+  state              text        [not null, default: 'READY']
+  blocked_reason     text        [note: '★ DISPUTE | DEPENDENCY | QUESTION. state=BLOCKED와 짝 (M2 분모는 DISPUTE만)']
+  branch_name        text        [note: 'task/T-042-fe']
+  retry_count        integer     [not null, default: 0, note: '3회 → ESCALATED']
+  ping_pong_count    integer     [not null, default: 0, note: '3회 → 대표']
+  blocked_by_task_id uuid
+  created_at         timestamptz [not null, default: `now()`]
+  updated_at         timestamptz [not null, default: `now()`]
+
+  indexes {
+    (project_id, state)
+    (assignee_agent_id, state)
+    (plan_id)
+  }
+  Note: '''
+  8개 상태: READY | CLAIMED | IN_PROGRESS | VERIFYING
+  | AWAITING_APPROVAL | BLOCKED | ESCALATED | DONE
+  (SUBMITTED 폐기 — VERIFYING에 병합. 원문 "9개"는 오기)
+  ★ 006에서 구현. contract_id는 contracts 테이블이 생길 때 FK를 건다 (지금은 컬럼만)
+  ★ 009: team_role 추가. 기본값을 주지 않는다 — '지정을 잊은 것'과 '일부러 열어둔 것'은 다르다
+
+  ★ CHECK — 마이그레이션에 직접:
+    tasks_blocked_pair_chk CHECK ((state = 'BLOCKED') = (blocked_reason IS NOT NULL))
+  events의 프로젝션. 진실은 events
+  프로젝트 halt 시 상태를 얼림. 중단된 IN_PROGRESS는 READY로 회수
+  '''
+}
+
+Table task_deps {
+  task_id    uuid [not null]
+  depends_on uuid [not null]
+
+  indexes {
+    (task_id, depends_on) [pk]
+  }
+}
+
+Table notes {
+  id              uuid        [pk, default: `gen_random_uuid()`]
+  project_id      uuid        [not null]
+  seq             integer     [not null, note: '프로젝트별 1부터. 트랜잭션 안에서 채번']
+  task_id         uuid
+  spec_id         uuid
+  repo_id         uuid
+  kind            text        [not null, note: 'IMPLEMENTED | DECIDED | GOTCHA | DEVIATION']
+  headline        text        [not null, note: '≤60자']
+  key_points      "text[]"    [not null, note: '1~5개, 각 ≤120자']
+  affects         "text[]"    [not null, default: `'{}'`, note: '소유 범위 밖이어도 허용(보고)']
+  author_agent_id uuid        [not null]
+  on_behalf_of    text        [not null, note: 'P3']
+  supersedes      uuid        [note: '정정은 새 행 — reply_to 없음']
+  created_at      timestamptz [not null, default: `now()`]
+
+  indexes {
+    (project_id, seq) [unique]
+    (project_id, spec_id)
+  }
+  Note: '''
+  ★ 010에서 구현
+  ★ 인계 노트. 대화 채널이 아니라 기록
+  본문 text 컬럼 없음 (칸을 주면 길게 채움). 수신자 지정 없음 — 브로드캐스트
+  제목은 서버가 조립: #{seq} - {team_role 한글} {feature_key} {kind 한글}
+  검증 위반은 422 거부 — 자르지 않음. 이벤트는 NOTE_PUBLISHED만 (읽기는 기록 안 함)
+  연결(spec_id·repo_id·task_id)은 태스크에서 물려받는다 — 클라이언트가 고르지 않는다
+
+  ★ CHECK — 마이그레이션에 직접. CHECK 안에서는 서브쿼리를 못 쓰므로
+     배열 원소별 길이는 DB가 볼 수 없다. 그건 앱이 422로 답한다(인덱스·글자수 포함):
+    notes_kind_chk              kind IN ('IMPLEMENTED','DECIDED','GOTCHA','DEVIATION')
+    notes_key_points_count_chk  cardinality(key_points) BETWEEN 1 AND 5
+    notes_affects_count_chk     cardinality(affects) <= 10
+    notes_deviation_affects_chk kind <> 'DEVIATION' OR cardinality(affects) > 0
+    notes_headline_len_chk      length(headline) <= 60
+    notes_budget_chk            length(headline) + length(array_to_string(key_points,'')) <= 700
+                                → 원소별 길이를 못 보는 DB가 총량을 지키는 자리다
+    notes_no_newline_chk        줄바꿈 금지 (한 항목에 문단을 밀어넣는 우회 차단)
+    notes_no_heading_chk        마크다운 머리표(#) 금지
+  '''
+}
+
+Table feature_branches {
+  id          uuid        [pk, default: `gen_random_uuid()`]
+  project_id  uuid        [not null]
+  spec_id     uuid        [not null]
+  repo_id     uuid        [not null]
+  branch_name text        [not null, note: 'feature/F-03 — 통합 브랜치 없음']
+  base_sha    text        [not null]
+  status      text        [not null, default: 'open', note: 'open | merged | abandoned']
+  created_at  timestamptz [not null, default: `now()`]
+
+  indexes {
+    (project_id, spec_id, repo_id) [unique]
+  }
+  Note: '''
+레포마다 하나. branch_name = feature/F-03
+status='merged'는 해당 레포의 dev 브랜치에 머지됐다는 뜻
+크로스 레포 머지는 없음 — 레포가 각자 dev로 수렴
+'''
+}
+
+// ═══════════ 산출물·검증 ═══════════
+
+Table artifacts {
+  id                uuid        [pk, default: `gen_random_uuid()`]
+  task_id           uuid        [not null]
+  commit_sha        text        [not null]
+  changed_paths     "text[]"    [not null, note: 'V3 대상']
+  triggered_actions "text[]"    [not null, default: `'{}'`, note: '제출 시점 판정된 사다리 칸']
+  gate_mode         text        [not null, note: '적용된 최고 엄격도']
+  attempt           integer     [not null, default: 1]
+  created_at        timestamptz [not null, default: `now()`]
+
+  indexes {
+    (task_id, attempt) [unique]
+  }
+  Note: '''
+  ★ 009에서 구현
+  판정 결과를 사실로 고정 — repo_paths·정책이 바뀌어도 불변
+  submit_artifact가 제출 시점에 triggered_actions·gate_mode를 계산해 넣는다
+  gate_mode는 걸린 칸들 중 가장 엄격한 판정 (FORBIDDEN > HUMAN > PM_REVIEW > AUTO)
+
+  ★ CHECK — 마이그레이션에 직접:
+    artifacts_paths_chk CHECK (cardinality(changed_paths) > 0)
+    UNIQUE (task_id, attempt) — 같은 시도 번호가 둘이면 재시도 횟수(M3)가 어긋난다
+  '''
+}
+
+Table verifications {
+  id          uuid        [pk, default: `gen_random_uuid()`]
+  artifact_id uuid        [not null]
+  stage       text        [not null, note: 'V1A | V1B | V2 | V3 | V4 | INTEGRATION']
+  result      text        [not null, note: 'PASS | FAIL | SKIPPED']
+  executed_by text        [not null, note: 'server | bridge']
+  detail      jsonb       [not null, default: `'{}'`]
+  duration_ms integer
+  created_at  timestamptz [not null, default: `now()`]
+
+  indexes {
+    (artifact_id, stage)
+  }
+  Note: '''
+  ★ 012에서 구현.
+
+  단계마다 무엇을 대조하는가 —
+    V1A 계약 대조 (server). contracts.schema_yaml(OpenAPI)과 실제 응답의 스키마·상태코드·필드명을
+      기계적으로 비교한다. **명세(EARS) 대조가 아니다** — 자연어를 읽고 판정하는 단계가 아니므로
+      P2(판정자는 LLM이 아니다)에 걸리지 않는다. contracts 테이블이 아직 없어 지금은 SKIPPED이고,
+      사유도 "contracts 테이블 미구현 — ⑦ 이후 가능"으로 기록한다.
+      사유를 "LLM 판정 필요"로 적으면 P2를 근거로 영원히 안 붙는다.
+    V1B 실제 응답 (server). repos.dev_base_url을 호출한다. 계약이 없는 동안은 살아 있는지만 본다.
+    V2 PM 시험지 (bridge). spec_tests.test_code를 작업공간에서 돌린다.
+      PASS로 올라와도 서버가 spec_tests.locked_at < artifacts.created_at을 다시 확인하고,
+      산출물보다 늦게 잠긴 시험지가 있으면 FAIL로 뒤집는다.
+    V3 경로 검사 (server). 신고한 changed_paths가 아니라 커밋의 **실제** diff를 읽어
+      (1) 신고와 일치하는지 (2) 모든 경로가 3·4단계를 통과하는지 본다.
+    V4 린트 (bridge).
+
+  server 실행분(V1A·V1B·V3)이 로컬을 신뢰하지 않아도 되는 검증이다.
+  브릿지는 V2·V4만 보고할 수 있다(POST /api/artifacts/:id/verifications).
+
+  DBML로 표현 못 하는 것 —
+    CONSTRAINT verifications_stage_chk    CHECK (stage IN ('V1A','V1B','V2','V3','V4','INTEGRATION'))
+    CONSTRAINT verifications_result_chk   CHECK (result IN ('PASS','FAIL','SKIPPED'))
+    CONSTRAINT verifications_executor_chk CHECK (executed_by IN ('server','bridge'))
+    CONSTRAINT verifications_skip_reason_chk CHECK (result <> 'SKIPPED' OR detail ? 'reason')
+    CONSTRAINT uq_verifications_stage     UNIQUE (artifact_id, stage)
+
+  SKIPPED가 세 번째 값인 이유: "못 돌렸다"를 PASS로 적으면 M5가 조용히 부풀려진다.
+  사유 없는 SKIPPED는 나중에 PASS와 구분되지 않으므로 DB가 막는다.
+  재제출은 attempt가 올라간 **새 artifact**다 — 같은 산출물의 한 단계를 두 번 적어
+  FAIL을 PASS로 갈아치울 수 없다.
+  '''
+}
+
+// ═══════════ 이의제기·승인 ═══════════
+
+Table disputes {
+  id               uuid        [pk, default: `gen_random_uuid()`]
+  project_id       uuid        [not null]
+  raised_by        uuid        [not null]
+  target_task_id   uuid        [not null, note: '위반 주장 대상']
+  blocking_task_id uuid        [not null, note: '막힌 쪽 = 제기자']
+  category         text        [not null]
+  evidence         jsonb       [not null, note: '없으면 제기 거부']
+  verdict          text        [note: 'UPHELD | REJECTED | MEDIATED. 코드만 씀']
+  rationale        text        [note: '★ PM이 쓰는 유일한 칸 — 설명. 판정 아님']
+  resolved_by      text        [note: 'auto | pm | human — M2 분자는 auto만']
+  resolved_at      timestamptz
+  created_at       timestamptz [not null, default: `now()`]
+
+  indexes {
+    (project_id, created_at)
+  }
+  Note: 'PM은 verdict를 뒤집을 수 없음'
+}
+
+Table approvals {
+  id           uuid        [pk, default: `gen_random_uuid()`]
+  project_id   uuid        [not null]
+  gate         text        [not null, note: 'G1 | G2 | G3 | ACTION']
+  action_key   text        [note: 'gate=ACTION일 때']
+  subject_id   uuid        [note: 'task_id 또는 contract_id']
+  payload      jsonb       [not null, note: '승인 카드 내용. G3 피드백 분류도 여기']
+  decision     text        [note: 'APPROVE | REJECT. NULL이면 대기']
+  decided_by   uuid
+  reason       text
+  requested_at timestamptz [not null, default: `now()`]
+  decided_at   timestamptz
+
+  indexes {
+    (project_id, decision)
+  }
+  Note: '''
+  HUMAN 판정 = 승인 카드. decided_by는 대표 또는 해당 역할의 사람
+  PM_REVIEW도 여기 — PM의 결정은 decided_by NULL, decision은 REJECT만 가능
+  PM이 반려하지 않으면 통과 여부는 AUTO 검증이 결정 (PM이 APPROVE로 게이트를 열 수 없음)
+  '''
+}
+
+// ═══════════ 이벤트 ═══════════
+
+Table events {
+  id              bigserial       [pk, note: '곧 sequence_no — 재연결 복구']
+  org_id          uuid            [note: '★ 003: NULL 허용 — 조직 가입 전 행동(USER_SIGNED_UP, AGENT_CONNECTED 등)']
+  project_id      uuid
+  type            text            [not null]
+  actor_agent_id  uuid
+  on_behalf_of    text            [not null, note: 'user_id 또는 system:pm·system:planner. P3 구현체']
+  payload         jsonb           [not null]
+  idempotency_key text            [unique]
+  run_id          uuid            [note: 'M6 — ⚠️ 1일차부터 존재해야 함']
+  arm             text            [note: 'A | B | C']
+  injected_fault  text
+  policy_hash     text
+  token_cost      "numeric(10,6)"
+  latency_ms      integer
+  path_violation  boolean         [note: 'M5′']
+  owner_role      text
+  ts              timestamptz     [not null, default: `now()`]
+
+  indexes {
+    (org_id, id)
+    (run_id, arm, type)
+    (project_id, ts)
+  }
+  Note: '''
+  append-only. UPDATE·DELETE 금지
+  쓰기 경로는 appendEvent(tx, ...) 하나뿐. 상태 변경과 같은 트랜잭션
+  type은 text다 — CHECK로 어휘를 막지 않는다. 정본은 src/domain/events/types.ts의 EventType이다
+
+  현재 쓰는 타입:
+    계정·조직  USER_SIGNED_UP · CONNECT_KEY_ROTATED · AGENT_CONNECTED · GITHUB_LINKED
+               ORG_CREATED · INVITE_CREATED · INVITE_ACCEPTED · MEMBER_JOINED
+    레포·정책  REPO_CONNECTED · REPO_PATH_UPDATED · PM_REVIEW_DEGRADED
+    프로젝트   PROJECT_CREATED · MEMBER_ASSIGNED · MEMBER_UNASSIGNED   ★ 011
+    작업       TASK_CLAIMED · ARTIFACT_SUBMITTED · NOTE_PUBLISHED
+    거부       TOOL_DENIED (payload.stage로 어느 단계인지 구분)
+  ⚠️ 실험 컬럼 7개는 Phase 1에서 안 써도 컬럼은 있어야 함
+     나중에 추가하면 그때까지 쌓인 이벤트가 전부 NULL
+  '''
+}
+
+// ═══════════ 인증 ═══════════
+
+Table agent_tokens {
+  id          uuid        [pk, default: `gen_random_uuid()`]
+  agent_id    uuid        [not null]
+  token_hash  text        [not null, note: '평문 저장 금지']
+  kind        text        [not null, default: 'refresh', note: 'refresh']
+  expires_at  timestamptz [not null]
+  revoked_at  timestamptz
+  created_at  timestamptz [not null, default: `now()`]
+
+  indexes {
+    (agent_id, kind)
+    token_hash [unique]
+  }
+  Note: 'access token은 JWT라 저장 안 함 — 서명만 검증 (§5.1)'
+}
+
+Table oauth_sessions {
+  id            uuid        [pk, default: `gen_random_uuid()`]
+  user_id       uuid
+  github_token_enc text     [note: '★ 007: 암호화해서 저장. 컬럼 이름이 평문 저장을 막는 첫 방어선. 키는 KMS, 로컬은 환경변수 폴백']
+  scope         text
+  expires_at    timestamptz
+  created_at    timestamptz [not null, default: `now()`]
+}
+
+// ═══════════ 관계 ═══════════
+
+Ref: users.org_id > organizations.id [delete: cascade]
+Ref: invites.org_id > organizations.id [delete: cascade]
+Ref: invites.created_by > users.id
+Ref: invites.used_by > users.id
+Ref: agents.user_id > users.id [delete: cascade]
+Ref: agents.org_id > organizations.id [delete: cascade]
+Ref: repos.org_id > organizations.id [delete: cascade]
+Ref: repo_paths.repo_id > repos.id [delete: cascade]
+Ref: repo_paths.action_key > action_catalog.action_key
+
+Ref: projects.org_id > organizations.id [delete: cascade]
+Ref: projects.created_by > users.id
+Ref: projects.halted_by > users.id
+Ref: project_repos.project_id > projects.id [delete: cascade]
+Ref: project_repos.repo_id > repos.id
+Ref: project_members.project_id > projects.id [delete: cascade]
+Ref: project_members.agent_id > agents.id
+Ref: project_policies.project_id > projects.id [delete: cascade]
+Ref: project_policies.action_key > action_catalog.action_key
+
+Ref: plans.project_id > projects.id [delete: cascade]
+
+Ref: specs.project_id > projects.id [delete: cascade]
+Ref: specs.superseded_by > specs.id
+Ref: spec_tests.spec_id > specs.id [delete: cascade]
+Ref: contracts.project_id > projects.id [delete: cascade]
+Ref: contracts.spec_id > specs.id
+Ref: contracts.proposed_by > agents.id
+Ref: contracts.superseded_by > contracts.id
+Ref: contract_proposals.contract_id > contracts.id [delete: cascade]
+Ref: contract_proposals.agent_id > agents.id
+
+Ref: tasks.project_id > projects.id [delete: cascade]
+Ref: tasks.plan_id > plans.id
+Ref: tasks.spec_id > specs.id
+Ref: tasks.contract_id > contracts.id
+Ref: tasks.repo_id > repos.id
+Ref: tasks.assignee_agent_id > agents.id
+Ref: tasks.blocked_by_task_id > tasks.id
+Ref: task_deps.task_id > tasks.id [delete: cascade]
+Ref: task_deps.depends_on > tasks.id
+Ref: notes.project_id > projects.id [delete: cascade]
+Ref: notes.task_id > tasks.id
+Ref: notes.spec_id > specs.id
+Ref: notes.repo_id > repos.id
+Ref: notes.author_agent_id > agents.id
+Ref: notes.supersedes > notes.id
+
+Ref: feature_branches.project_id > projects.id [delete: cascade]
+Ref: feature_branches.spec_id > specs.id
+Ref: feature_branches.repo_id > repos.id
+
+Ref: artifacts.task_id > tasks.id [delete: cascade]
+Ref: verifications.artifact_id > artifacts.id [delete: cascade]
+
+Ref: disputes.project_id > projects.id [delete: cascade]
+Ref: disputes.raised_by > agents.id
+Ref: disputes.target_task_id > tasks.id
+Ref: disputes.blocking_task_id > tasks.id
+
+Ref: approvals.project_id > projects.id [delete: cascade]
+Ref: approvals.decided_by > users.id
+Ref: approvals.action_key > action_catalog.action_key
+
+Ref: events.org_id > organizations.id
+Ref: events.project_id > projects.id
+Ref: events.actor_agent_id > agents.id
+
+Ref: agent_tokens.agent_id > agents.id [delete: cascade]
+Ref: oauth_sessions.user_id > users.id [delete: cascade]
