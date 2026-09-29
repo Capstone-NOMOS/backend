@@ -377,8 +377,11 @@ EC2 1대(Docker) + RDS PostgreSQL 16 + KMS + SSM. 콘솔 절차는 `docs/deploy-
   **SSM Run Command**로 EC2에서 그 이미지의 배포 파일을 꺼내 `deploy.sh`를 돈다. 수동 배포와 같은 경로다
   (migrate → 서버 교체 → 헬스체크). 롤백은 Run workflow에 이전 태그를 넣는다(빌드·테스트를 건너뛴다).
 - **AWS 자격 증명은 OIDC다.** 액세스 키를 GitHub Secrets에 넣지 말 것. 역할의 신뢰 정책은 `sub`를
-  `repo:<소유자>/<레포>:environment:production`으로 묶는다(`deploy/github-actions-trust.json`) — 그래서 deploy 잡의
+  `<접두사>:environment:production`으로 묶는다(`deploy/github-actions-trust.json`) — 그래서 deploy 잡의
   `environment: production`을 빼면 역할을 못 받고, 다른 브랜치·PR의 워크플로는 운영 권한을 얻지 못한다.
+  **접두사는 `repo:소유자/레포`가 아니다.** 이 레포는 GitHub의 불변 subject(`use_immutable_subject`)라 소유자·레포 id가 붙는다
+  (`repo:Capstone-NOMOS@327380436/backend@1375402955`). 추측하지 말고
+  `gh api repos/<소유자>/<레포>/actions/oidc/customization/sub`의 `sub_claim_prefix`를 그대로 쓴다 — 이름 형식으로 적었다가 실제로 막혔다.
   권한은 `deploy/github-actions-policy.json`(ECR 한 리포지토리 푸시 + 그 인스턴스에만 SendCommand).
 - 설정값은 **production 환경의 Variables**(`AWS_REGION`·`AWS_DEPLOY_ROLE_ARN`·`ECR_REPOSITORY`·`EC2_INSTANCE_ID`)다.
   전부 비밀이 아니다. 앱 비밀값은 지금처럼 SSM Parameter Store에만 둔다 — CI에 복사하지 말 것.
