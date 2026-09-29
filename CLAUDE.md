@@ -370,8 +370,9 @@ EC2 1대(Docker) + RDS PostgreSQL 16 + KMS + SSM. 콘솔 절차는 `docs/deploy-
 
 브랜치는 `dev`에서 따서 PR로 `dev`에 합치고, 배포할 때 `dev → main`으로 머지한다. **`main`에 들어온 것이 곧 운영이다.**
 
-- `ci.yml` — PR(`main`·`dev` 대상)과 `dev` push에서 타입체크 + 전체 테스트. PostgreSQL 서비스 컨테이너를
+- `ci.yml` — `dev` 대상 PR과 `dev` push에서 타입체크 + 전체 테스트. PostgreSQL 서비스 컨테이너를
   `vitest.config.ts`와 **같은 포트·DB 이름**(`55432/nomos_test`)으로 띄운다 — CI용 접속 문자열을 따로 두지 말 것.
+  `dev → main` PR에서는 돌지 않는다 — 머지 직후 deploy가 같은 코드를 다시 테스트하므로 중복이다.
 - `deploy.yml` — `main` push에서 `ci.yml`을 다시 돌린 뒤(`workflow_call`) 이미지를 `sha-<7자리>` 태그로 ECR에 올리고,
   **SSM Run Command**로 EC2에서 그 이미지의 배포 파일을 꺼내 `deploy.sh`를 돈다. 수동 배포와 같은 경로다
   (migrate → 서버 교체 → 헬스체크). 롤백은 Run workflow에 이전 태그를 넣는다(빌드·테스트를 건너뛴다).
