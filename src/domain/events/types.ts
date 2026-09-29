@@ -19,7 +19,9 @@ export type EventType =
   | 'MEMBER_ASSIGNED'
   | 'MEMBER_UNASSIGNED'
   | 'REPO_UPDATED'
-  | 'TASKS_IMPORTED';
+  | 'TASKS_IMPORTED'
+  | 'SPEC_CREATED'
+  | 'TASK_CREATED';
 
 // payload에 연결 키·토큰·비밀번호 같은 비밀값을 절대 넣지 않는다. events는 지워지지 않는다.
 
@@ -193,13 +195,37 @@ export type RepoUpdatedPayload = {
   after: { githubRepoId: number | null; cloneUrl: string | null };
 };
 
-// 명세·태스크를 파일에서 들여왔다(scripts/seed-remote-tasks.ts). 생성 API가 생기기 전까지의 유일한 경로다.
+// 과거 기록용 — 더 이상 새로 남기지 않는다. 명세·태스크 생성은 경로(API·들여오기·PM)와 무관하게
+// 항목마다 SPEC_CREATED·TASK_CREATED를 남기고 source로 가른다(domain/authoring). 이미 쌓인 행을 읽을 때만 쓴다.
 export type TasksImportedPayload = {
   source: string;
   specIds: string[];
   taskIds: string[];
   specTestCount: number;
   dependencyCount: number;
+};
+
+// 명세·태스크를 누가 어떤 경로로 만들었나. 지표는 이 값으로 가른다 —
+// human(대표가 API로) · import(seed:tasks 파일) · pm(PM 에이전트, 미구현).
+export type AuthoringSource = 'human' | 'import' | 'pm';
+
+export type SpecCreatedPayload = {
+  source: AuthoringSource;
+  specId: string;
+  featureKey: string;
+  testCount: number;
+  lockedTestCount: number;
+};
+
+export type TaskCreatedPayload = {
+  source: AuthoringSource;
+  taskId: string;
+  title: string;
+  repoId: string;
+  teamRole: string | null;
+  kind: string;
+  specId: string | null;
+  dependsOn: string[];
 };
 
 export type EventPayloadMap = {
@@ -224,4 +250,6 @@ export type EventPayloadMap = {
   MEMBER_UNASSIGNED: MemberUnassignedPayload;
   REPO_UPDATED: RepoUpdatedPayload;
   TASKS_IMPORTED: TasksImportedPayload;
+  SPEC_CREATED: SpecCreatedPayload;
+  TASK_CREATED: TaskCreatedPayload;
 };

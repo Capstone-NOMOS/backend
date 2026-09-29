@@ -37,6 +37,9 @@ export type ErrorCode =
   | 'NOT_TASK_ASSIGNEE'
   | 'TASK_STATE_INVALID'
   | 'NOTE_INVALID'
+  | 'PLAN_INVALID'
+  | 'PLAN_CONFLICT'
+  | 'PROJECT_NOT_OPEN'
   | 'PROJECT_NOT_FOUND'
   | 'INVALID_AUTONOMY_PRESET'
   | 'REPO_IN_ACTIVE_PROJECT'
@@ -93,6 +96,12 @@ const STATUS_BY_CODE: Record<ErrorCode, number> = {
   // 422 — 형식 위반이다. 자르지 않고 어디가 틀렸는지 돌려준다.
   NOTE_INVALID: 422,
   PROJECT_NOT_FOUND: 404,
+  // 명세·태스크 작성 검증 위반. details에 위반 전부를 싣는다(하나씩 고치고 다시 보내게 하지 않는다).
+  PLAN_INVALID: 422,
+  // 사전 검사를 통과했는데 DB 유일 제약에 걸렸다 — 동시 요청이 먼저 같은 키를 썼다.
+  PLAN_CONFLICT: 409,
+  // 끝났거나(completed·aborted) 멈춘(halted) 프로젝트에는 명세·태스크를 만들 수 없다.
+  PROJECT_NOT_OPEN: 409,
   // 422 — zod가 아니라 서비스가 판정한다. 어휘 위반은 형식 오류와 구분해서 알려준다.
   INVALID_AUTONOMY_PRESET: 422,
   // 409 — 같은 레포를 두 활성 프로젝트가 쓰면 경로 소유권이 겹친다.

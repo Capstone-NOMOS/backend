@@ -140,11 +140,329 @@ components:
           type: string
           enum: [expired, used, not_found]
           description: 'valid=false일 때만 있다'
+    SignupResult:
+      type: object
+      required: [userId, connectKey]
+      properties:
+        userId: { type: string, format: uuid }
+        connectKey: { type: string, description: '평문은 이 응답에서 한 번만 나온다' }
+    ConnectKey:
+      type: object
+      required: [connectKey]
+      properties:
+        connectKey: { type: string }
+    AgentTokens:
+      type: object
+      required: [accessToken, refreshToken, agentId]
+      properties:
+        accessToken: { type: string }
+        refreshToken: { type: string }
+        agentId: { type: string, format: uuid }
+    AgentAccessToken:
+      type: object
+      required: [accessToken]
+      properties:
+        accessToken: { type: string }
+    AgentSelf:
+      type: object
+      required: [agentId, name, maxConcurrent, projectId, teamRole]
+      properties:
+        agentId: { type: string, format: uuid }
+        name: { type: string }
+        maxConcurrent: { type: integer }
+        projectId: { type: string, format: uuid }
+        teamRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true }
+    OrgCreated:
+      type: object
+      required: [orgId, userId]
+      properties:
+        orgId: { type: string, format: uuid }
+        userId: { type: string, format: uuid }
+    GithubRepo:
+      type: object
+      required: [fullName, githubRepoId, defaultBranch]
+      properties:
+        fullName: { type: string }
+        githubRepoId: { type: integer }
+        defaultBranch: { type: string }
+    ConnectedRepo:
+      type: object
+      required: [id, fullName, seededPathCount]
+      properties:
+        id: { type: string, format: uuid }
+        fullName: { type: string }
+        seededPathCount: { type: integer }
+    RepoSettings:
+      type: object
+      required: [id, fullName, githubRepoId, defaultBranch, devBranch, cloneUrl]
+      properties:
+        id: { type: string, format: uuid }
+        fullName: { type: string }
+        githubRepoId: { type: integer, nullable: true }
+        defaultBranch: { type: string }
+        devBranch: { type: string }
+        cloneUrl: { type: string, nullable: true }
+    RepoPath:
+      type: object
+      required: [id, repoId, pathPattern, ownerRole, access, actionKey, priority, source, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        repoId: { type: string, format: uuid }
+        pathPattern: { type: string }
+        ownerRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true, description: 'NULL이면 더 낮은 규칙의 소유 역할을 상속한다' }
+        access: { type: string, enum: [write, read, denied] }
+        actionKey: { type: string, nullable: true }
+        priority: { type: integer }
+        source: { type: string, enum: [seed, scan, manual] }
+        createdAt: { type: string, format: date-time }
+    InviteCreated:
+      type: object
+      required: [token, url, expiresAt, teamRole]
+      properties:
+        token: { type: string }
+        url: { type: string, description: '{FRONTEND_BASE_URL}/invites/{token}' }
+        expiresAt: { type: string, format: date-time }
+        teamRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true }
+    InviteAccepted:
+      type: object
+      required: [userId, orgId]
+      properties:
+        userId: { type: string, format: uuid }
+        orgId: { type: string, format: uuid }
+    DeviceCode:
+      type: object
+      required: [deviceCode, userCode, verificationUri, expiresIn, interval]
+      properties:
+        deviceCode: { type: string, description: 'poll 때 되돌려준다. 서버는 보관하지 않는다' }
+        userCode: { type: string, description: '사용자가 verificationUri에 입력할 코드' }
+        verificationUri: { type: string }
+        expiresIn: { type: integer }
+        interval: { type: integer, description: '이 초마다 poll한다' }
+    DeviceFlowStatus:
+      description: '폴링의 중간 상태도 200이다. connected가 되면 멈춘다'
+      oneOf:
+        - type: object
+          required: [status]
+          properties:
+            status: { type: string, enum: [pending, expired, denied] }
+        - type: object
+          required: [status, interval]
+          properties:
+            status: { type: string, enum: [slow_down] }
+            interval: { type: integer }
+        - type: object
+          required: [status, githubLogin]
+          properties:
+            status: { type: string, enum: [connected] }
+            githubLogin: { type: string }
+    ProjectRepo:
+      type: object
+      required: [id, orgId, fullName]
+      properties:
+        id: { type: string, format: uuid }
+        orgId: { type: string, format: uuid }
+        fullName: { type: string }
+    ProjectMember:
+      type: object
+      required: [agentId, agentName, teamRole, userId]
+      properties:
+        agentId: { type: string, format: uuid }
+        agentName: { type: string }
+        teamRole: { type: string, enum: [FRONTEND, BACKEND] }
+        userId: { type: string, format: uuid, description: '에이전트 주인' }
+    ProjectDetail:
+      type: object
+      required: [project, repos, members]
+      properties:
+        project: { $ref: '#/components/schemas/Project' }
+        repos: { type: array, items: { $ref: '#/components/schemas/ProjectRepo' } }
+        members: { type: array, items: { $ref: '#/components/schemas/ProjectMember' } }
+    Task:
+      type: object
+      required: [id, projectId, repoId, specId, kind, title, state, teamRole, assigneeAgentId, branchName, blockedReason, retryCount]
+      properties:
+        id: { type: string, format: uuid }
+        projectId: { type: string, format: uuid }
+        repoId: { type: string, format: uuid }
+        specId: { type: string, format: uuid, nullable: true }
+        kind: { type: string, enum: [IMPLEMENT, INTEGRATION, REWORK] }
+        title: { type: string }
+        state: { type: string, enum: [READY, CLAIMED, IN_PROGRESS, VERIFYING, AWAITING_APPROVAL, BLOCKED, ESCALATED, DONE] }
+        teamRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true }
+        assigneeAgentId: { type: string, format: uuid, nullable: true }
+        branchName: { type: string, nullable: true }
+        blockedReason: { type: string, enum: [DISPUTE, DEPENDENCY, QUESTION], nullable: true, description: 'state=BLOCKED일 때만 있다' }
+        retryCount: { type: integer, description: 'FAIL마다 오른다. 3이면 ESCALATED' }
+    Artifact:
+      type: object
+      required: [id, taskId, commitSha, changedPaths, triggeredActions, gateMode, attempt, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        taskId: { type: string, format: uuid }
+        commitSha: { type: string }
+        changedPaths: { type: array, items: { type: string } }
+        triggeredActions: { type: array, items: { type: string } }
+        gateMode: { type: string, enum: [AUTO, PM_REVIEW, HUMAN, FORBIDDEN] }
+        attempt: { type: integer }
+        createdAt: { type: string, format: date-time }
+    StageOutcome:
+      type: object
+      required: [stage, result]
+      properties:
+        stage: { type: string, enum: [V1A, V1B, V2, V3, V4, INTEGRATION] }
+        result: { type: string, enum: [PASS, FAIL, SKIPPED] }
+    VerificationSummary:
+      type: object
+      required: [artifactId, attempt, stages, outcome, taskState, retryCount]
+      properties:
+        artifactId: { type: string, format: uuid }
+        attempt: { type: integer }
+        stages: { type: array, items: { $ref: '#/components/schemas/StageOutcome' } }
+        outcome:
+          type: string
+          enum: [DONE, AWAITING_APPROVAL, RETRY, ESCALATED, PENDING, SETTLED]
+          description: 'PENDING은 아직 보고 안 된 단계가 있음, SETTLED는 이미 결론이 난 뒤에 온 보고'
+        taskState: { type: string, enum: [READY, CLAIMED, IN_PROGRESS, VERIFYING, AWAITING_APPROVAL, BLOCKED, ESCALATED, DONE] }
+        retryCount: { type: integer }
+        notice: { type: string, description: '결론은 났지만 빠져나올 경로가 없을 때의 안내(지금은 AWAITING_APPROVAL). 없으면 생략' }
+    SubmittedArtifact:
+      description: 'Artifact의 필드 전부 + 서버가 동기로 끝낸 검증 요약(verification)'
+      type: object
+      required: [id, taskId, commitSha, changedPaths, triggeredActions, gateMode, attempt, createdAt, verification]
+      properties:
+        id: { type: string, format: uuid }
+        taskId: { type: string, format: uuid }
+        commitSha: { type: string }
+        changedPaths: { type: array, items: { type: string } }
+        triggeredActions: { type: array, items: { type: string } }
+        gateMode: { type: string, enum: [AUTO, PM_REVIEW, HUMAN, FORBIDDEN] }
+        attempt: { type: integer }
+        createdAt: { type: string, format: date-time }
+        verification: { $ref: '#/components/schemas/VerificationSummary' }
+    Verification:
+      type: object
+      required: [id, artifactId, stage, result, executedBy, detail, durationMs]
+      properties:
+        id: { type: string, format: uuid }
+        artifactId: { type: string, format: uuid }
+        stage: { type: string, enum: [V1A, V1B, V2, V3, V4, INTEGRATION] }
+        result: { type: string, enum: [PASS, FAIL, SKIPPED] }
+        executedBy: { type: string, enum: [server, bridge] }
+        detail:
+          type: object
+          additionalProperties: true
+          description: '단계마다 다르다. SKIPPED면 reason이 반드시 있다. V3 FAIL이면 denialReason'
+        durationMs: { type: integer, nullable: true }
+    Note:
+      type: object
+      required: [id, projectId, seq, taskId, specId, repoId, kind, headline, keyPoints, affects, authorAgentId, onBehalfOf, supersedes, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        projectId: { type: string, format: uuid }
+        seq: { type: integer, description: '프로젝트 안에서 증가한다. since_seq로 증분 조회' }
+        taskId: { type: string, format: uuid, nullable: true }
+        specId: { type: string, format: uuid, nullable: true }
+        repoId: { type: string, format: uuid, nullable: true }
+        kind: { type: string, enum: [IMPLEMENTED, DECIDED, GOTCHA, DEVIATION] }
+        headline: { type: string }
+        keyPoints: { type: array, items: { type: string } }
+        affects: { type: array, items: { type: string } }
+        authorAgentId: { type: string, format: uuid }
+        onBehalfOf: { type: string }
+        supersedes: { type: string, format: uuid, nullable: true }
+        createdAt: { type: string, format: date-time }
+    PublishedNote:
+      description: 'Note의 필드 전부 + 서버가 조립한 제목(title)'
+      type: object
+      required: [id, projectId, seq, taskId, specId, repoId, kind, headline, keyPoints, affects, authorAgentId, onBehalfOf, supersedes, createdAt, title]
+      properties:
+        id: { type: string, format: uuid }
+        projectId: { type: string, format: uuid }
+        seq: { type: integer }
+        taskId: { type: string, format: uuid, nullable: true }
+        specId: { type: string, format: uuid, nullable: true }
+        repoId: { type: string, format: uuid, nullable: true }
+        kind: { type: string, enum: [IMPLEMENTED, DECIDED, GOTCHA, DEVIATION] }
+        headline: { type: string }
+        keyPoints: { type: array, items: { type: string } }
+        affects: { type: array, items: { type: string } }
+        authorAgentId: { type: string, format: uuid }
+        onBehalfOf: { type: string }
+        supersedes: { type: string, format: uuid, nullable: true }
+        createdAt: { type: string, format: date-time }
+        title: { type: string }
+    TaskSpec:
+      type: object
+      required: [id, featureKey, title, content]
+      properties:
+        id: { type: string, format: uuid }
+        featureKey: { type: string }
+        title: { type: string }
+        content: { type: string }
+    Spec:
+      type: object
+      required: [id, featureKey, title, content, version, createdAt, tests]
+      properties:
+        id: { type: string, format: uuid }
+        featureKey: { type: string, description: '프로젝트 안에서 유일(F-05 같은 기능 키)' }
+        title: { type: string }
+        content: { type: string, description: 'EARS 문장 — WHEN … THEN …' }
+        version: { type: integer }
+        createdAt: { type: string, format: date-time }
+        tests:
+          type: array
+          description: '시험지(V2가 팀원 노트북에서 실행하는 코드). 에이전트 토큰으로 보면 잠긴 것만 있다'
+          items: { $ref: '#/components/schemas/SpecTest' }
+    SpecTest:
+      type: object
+      required: [id, criterion, testCode, lockedAt]
+      properties:
+        id: { type: string, format: uuid }
+        criterion: { type: string }
+        testCode: { type: string }
+        lockedAt: { type: string, format: date-time, nullable: true }
+    BriefingPath:
+      type: object
+      required: [pathPattern, access, ownerRole]
+      properties:
+        pathPattern: { type: string }
+        access: { type: string, enum: [write, read, denied] }
+        ownerRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true }
+    TaskBriefing:
+      type: object
+      required: [task, repo, spec, notes, notesBlock, writablePaths, claudeSettings, specTests, policyHash]
+      properties:
+        task: { $ref: '#/components/schemas/Task' }
+        repo:
+          type: object
+          required: [id, fullName, defaultBranch, devBranch]
+          properties:
+            id: { type: string, format: uuid }
+            fullName: { type: string }
+            defaultBranch: { type: string }
+            devBranch: { type: string }
+        spec: { $ref: '#/components/schemas/TaskSpec', nullable: true }
+        notes: { type: array, items: { $ref: '#/components/schemas/Note' } }
+        notesBlock: { type: string }
+        writablePaths: { type: array, items: { $ref: '#/components/schemas/BriefingPath' } }
+        claudeSettings:
+          type: object
+          required: [permissions]
+          properties:
+            permissions:
+              type: object
+              required: [deny]
+              properties:
+                deny: { type: array, items: { type: string } }
+        specTests: { type: array, items: { $ref: '#/components/schemas/SpecTest' } }
+        policyHash: { type: string }
     Error:
       type: object
+      required: [error]
       properties:
         error:
           type: object
+          required: [code, message]
           properties:
             code:
               type: string
@@ -156,6 +474,12 @@ components:
               type: string
               description: POLICY_STALE에만 실린다. 다른 코드에서는 생략된다.
               example: policy_stale
+            details:
+              type: array
+              description: NOTE_INVALID에만 실린다 — 위반 항목 전부(필드·메시지). 다른 코드에서는 생략된다.
+              items:
+                type: object
+                additionalProperties: true
 
   responses:
     Unauthenticated:
@@ -228,6 +552,7 @@ tags:
   - name: 프로젝트
   - name: 초대
   - name: GitHub OAuth
+  - name: 명세·태스크 작성
   - name: 태스크·노트
   - name: 검증
 
@@ -258,6 +583,7 @@ paths:
           description: 가입됨
           content:
             application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/SignupResult' } } }
               example:
                 data:
                   userId: 3f2a1b4c-0000-0000-0000-000000000000
@@ -294,9 +620,7 @@ paths:
           description: 토큰 발급. `data.accessToken`을 Authorize의 userToken 칸에 붙여넣는다.
           content:
             application/json:
-              schema:
-                type: object
-                properties: { data: { $ref: '#/components/schemas/LoginResult' } }
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/LoginResult' } } }
               example:
                 data: { accessToken: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..., tokenType: Bearer, expiresIn: 86400 }
         '401':
@@ -320,9 +644,7 @@ paths:
           description: 조직이 없으면 orgId·orgName·orgRole이 null
           content:
             application/json:
-              schema:
-                type: object
-                properties: { data: { $ref: '#/components/schemas/Me' } }
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/Me' } } }
               examples:
                 대표:
                   value: { data: { userId: 1959e109-c60c-43f4-842f-dd18d9e7afab, loginId: rep, nickname: 대표, githubLogin: null, orgId: '{{ORG_ID}}', orgName: Acme Inc., orgRole: REPRESENTATIVE } }
@@ -346,6 +668,7 @@ paths:
           description: 새 연결 키 (평문은 이 응답에서 한 번만)
           content:
             application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/ConnectKey' } } }
               example:
                 data: { connectKey: o9m9J-utE-VIKTelv9j8AAAiVTDPHX0d7ikdFu48aig }
         '401':
@@ -387,6 +710,7 @@ paths:
           description: 등록됨. access는 1시간, refresh는 30일.
           content:
             application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/AgentTokens' } } }
               example:
                 data: { agentId: 2012e1df-0beb-43fd-ac09-d893ba56b01e, accessToken: eyJ..., refreshToken: XtvVbBmp... }
         '400':
@@ -424,6 +748,7 @@ paths:
           description: 새 access 토큰
           content:
             application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/AgentAccessToken' } } }
               example:
                 data: { accessToken: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9... }
         '401':
@@ -457,6 +782,7 @@ paths:
           description: 생성됨
           content:
             application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/OrgCreated' } } }
               example:
                 data: { orgId: '{{ORG_ID}}', userId: 1959e109-c60c-43f4-842f-dd18d9e7afab }
         '409':
@@ -482,6 +808,7 @@ paths:
           description: 레포 목록
           content:
             application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [repos], properties: { repos: { type: array, items: { $ref: '#/components/schemas/GithubRepo' } } } } } }
               example:
                 data: { repos: [] }
         '403':
@@ -505,12 +832,7 @@ paths:
           description: 멤버 목록
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  data:
-                    type: object
-                    properties: { members: { type: array, items: { $ref: '#/components/schemas/Member' } } }
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [members], properties: { members: { type: array, items: { $ref: '#/components/schemas/Member' } } } } } }
               example:
                 data:
                   members:
@@ -540,12 +862,7 @@ paths:
           description: 에이전트 목록
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  data:
-                    type: object
-                    properties: { agents: { type: array, items: { $ref: '#/components/schemas/OrgAgent' } } }
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [agents], properties: { agents: { type: array, items: { $ref: '#/components/schemas/OrgAgent' } } } } } }
               example:
                 data:
                   agents:
@@ -572,12 +889,7 @@ paths:
           description: 연결 순서대로
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  data:
-                    type: object
-                    properties: { repos: { type: array, items: { $ref: '#/components/schemas/RepoListItem' } } }
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [repos], properties: { repos: { type: array, items: { $ref: '#/components/schemas/RepoListItem' } } } } } }
               example:
                 data:
                   repos:
@@ -625,6 +937,7 @@ paths:
           description: 연결됨
           content:
             application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [repos], properties: { repos: { type: array, items: { $ref: '#/components/schemas/ConnectedRepo' } } } } } }
               example:
                 data: { repos: [{ id: 2ea71bc6-05b8-4725-9fa0-2b2eec9d3674, fullName: acme/extra-repo, seededPathCount: 15 }] }
         '409':
@@ -667,6 +980,7 @@ paths:
           description: 바뀐 설정
           content:
             application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [repo], properties: { repo: { $ref: '#/components/schemas/RepoSettings' } } } } }
               example:
                 data:
                   repo: { id: '{{REPO_API}}', fullName: acme/study-api, githubRepoId: 987654321, defaultBranch: main, devBranch: dev, cloneUrl: null }
@@ -700,6 +1014,7 @@ paths:
           description: 시드 15행 + 대표가 추가한 것
           content:
             application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [paths], properties: { paths: { type: array, items: { $ref: '#/components/schemas/RepoPath' } } } } } }
               example:
                 data:
                   paths:
@@ -743,6 +1058,7 @@ paths:
           description: 추가됨
           content:
             application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [path], properties: { path: { $ref: '#/components/schemas/RepoPath' } } } } }
               example:
                 data: { path: { id: 33333333-3333-3333-3333-333333333333, pathPattern: 'api/**', ownerRole: BACKEND, access: write, priority: 200, source: manual } }
         '400':
@@ -793,6 +1109,7 @@ paths:
           description: 변경됨
           content:
             application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [path], properties: { path: { $ref: '#/components/schemas/RepoPath' } } } } }
               example:
                 data: { path: { id: '{{PATH_ID}}', pathPattern: 'tests/**', ownerRole: BACKEND, access: write, priority: 20, source: seed } }
         '409':
@@ -826,6 +1143,7 @@ paths:
           description: 발급됨
           content:
             application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/InviteCreated' } } }
               example:
                 data: { token: '{{INVITE_TOKEN}}', url: 'http://localhost:3001/invites/{{INVITE_TOKEN}}', expiresAt: '2026-09-25T00:00:00.000Z', teamRole: BACKEND }
         '403':
@@ -852,9 +1170,7 @@ paths:
           description: 유효하든 아니든 200. 무효면 `reason`으로 만료·사용됨·없음을 구분한다
           content:
             application/json:
-              schema:
-                type: object
-                properties: { data: { $ref: '#/components/schemas/InvitePreview' } }
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/InvitePreview' } } }
               examples:
                 유효:
                   value: { data: { orgName: Acme Inc., valid: true, teamRole: BACKEND, expiresAt: '2026-09-25T00:00:00.000Z' } }
@@ -884,6 +1200,7 @@ paths:
           description: 합류됨
           content:
             application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/InviteAccepted' } } }
               example:
                 data: { userId: 2a5f7d0d-60ce-4937-a67a-a567a41c8ddb, orgId: '{{ORG_ID}}' }
         '409':
@@ -914,6 +1231,7 @@ paths:
           description: 사용자 코드와 인증 URL
           content:
             application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/DeviceCode' } } }
               example:
                 data: { deviceCode: dev-code, userCode: ABCD-1234, verificationUri: https://github.com/login/device, expiresIn: 900, interval: 5 }
         '502':
@@ -950,6 +1268,7 @@ paths:
           description: 진행 상태 또는 연결 완료
           content:
             application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/DeviceFlowStatus' } } }
               examples:
                 승인대기:
                   value: { data: { status: pending } }
@@ -979,6 +1298,7 @@ paths:
           description: 선점됨
           content:
             application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/Task' } } }
               example:
                 data: { id: '{{TASK_BE}}', state: CLAIMED, assigneeAgentId: 2012e1df-0beb-43fd-ac09-d893ba56b01e, teamRole: BACKEND }
         '401':
@@ -1053,6 +1373,7 @@ paths:
             `RETRY`(FAIL — 태스크가 READY로 돌아가고 retry_count가 올랐다) · `ESCALATED`(3회째 FAIL).
           content:
             application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/SubmittedArtifact' } } }
               example:
                 data:
                   id: 44444444-4444-4444-4444-444444444444
@@ -1112,6 +1433,7 @@ paths:
           description: attempt 내림차순
           content:
             application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [artifacts], properties: { artifacts: { type: array, items: { $ref: '#/components/schemas/Artifact' } } } } } }
               example:
                 data:
                   artifacts:
@@ -1157,6 +1479,7 @@ paths:
           description: 발행됨
           content:
             application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/PublishedNote' } } }
               example:
                 data:
                   id: 55555555-5555-5555-5555-555555555555
@@ -1229,6 +1552,7 @@ paths:
           description: 최신순 목록
           content:
             application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [notes], properties: { notes: { type: array, items: { $ref: '#/components/schemas/Note' } } } } } }
               example:
                 data:
                   notes:
@@ -1256,12 +1580,7 @@ paths:
           description: 프로젝트 목록
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  data:
-                    type: object
-                    properties: { projects: { type: array, items: { $ref: '#/components/schemas/Project' } } }
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [projects], properties: { projects: { type: array, items: { $ref: '#/components/schemas/Project' } } } } } }
               example:
                 data:
                   projects:
@@ -1315,6 +1634,7 @@ paths:
           description: 생성됨
           content:
             application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/ProjectDetail' } } }
               example:
                 data:
                   project:
@@ -1378,6 +1698,7 @@ paths:
           description: 상세
           content:
             application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/ProjectDetail' } } }
               example:
                 data:
                   project:
@@ -1435,6 +1756,7 @@ paths:
           description: 배정됨. 남은 멤버 목록과 재발급 안내를 함께 준다.
           content:
             application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [members, notice], properties: { members: { type: array, items: { $ref: '#/components/schemas/ProjectMember' } }, notice: { type: string } } } } }
               example:
                 data:
                   members:
@@ -1481,6 +1803,7 @@ paths:
           description: 해제됨. 남은 멤버 목록을 준다.
           content:
             application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [members], properties: { members: { type: array, items: { $ref: '#/components/schemas/ProjectMember' } } } } } }
               example:
                 data: { members: [] }
         '403':
@@ -1509,6 +1832,7 @@ paths:
           description: OK
           content:
             application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/AgentSelf' } } }
               example:
                 data:
                   agentId: 2012e1df-0beb-43fd-ac09-d893ba56b01e
@@ -1516,7 +1840,178 @@ paths:
                   teamRole: BACKEND
                   maxConcurrent: 2
 
+  /projects/{projectId}/specs:
+    get:
+      tags: [명세·태스크 작성]
+      summary: 명세 목록 (시험지 포함)
+      description: |
+        태스크를 만들 때 명세를 고르는 목록이다. 볼 수 있는 범위는 태스크 목록과 같다 — 사람은 볼 수 있는 프로젝트
+        (대표는 전체, 팀원은 배정된 것), 에이전트는 자기 프로젝트. **에이전트 토큰으로 보면 잠긴 시험지만 있다**
+        (브리핑과 같은 규칙 — 초안을 보면 "통과하도록 코드를 맞추는" 대상이 된다).
+      security: [{ userToken: [] }, { agentToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/ProjectId' }]
+      responses:
+        '200':
+          description: featureKey 순
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [specs], properties: { specs: { type: array, items: { $ref: '#/components/schemas/Spec' } } } } } }
+              example:
+                data:
+                  specs:
+                    - id: 5d1f0c3e-7a2b-4c1d-9e8f-0a1b2c3d4e5f
+                      featureKey: F-05
+                      title: 스터디 대기열 신청
+                      content: WHEN 정원이 찬 스터디에 신청하면 THEN 202와 waitlistPosition을 반환한다
+                      version: 1
+                      createdAt: '2026-09-30T02:00:00.000Z'
+                      tests:
+                        - { id: 6e2a1d4f-8b3c-4d2e-af90-1b2c3d4e5f60, criterion: 정원이 찬 신청은 202와 대기 순번, testCode: 'expect(res.status).toBe(202)', lockedAt: '2026-09-30T02:00:00.000Z' }
+        '403':
+          description: 볼 수 없는 프로젝트
+          content:
+            application/json:
+              example:
+                error: { code: NOT_PROJECT_MEMBER, message: you are not a member of this project }
+    post:
+      tags: [명세·태스크 작성]
+      summary: 명세 생성 (대표 전용)
+      description: |
+        명세 1개와 시험지(수용 기준) 여러 개를 만든다. 프로젝트가 `planning`·`active`일 때만.
+
+        **시험지의 `locked`는 필수이고, 만들 때만 정한다.** 잠근 시험지만 V2의 근거가 된다
+        (`locked_at < artifacts.created_at`). 나중에 잠그는 API는 없다 — 이미 제출된 산출물보다 늦게 잠긴 시험지가 생기기 때문이다.
+
+        **시험지는 V2에서 팀원 노트북에서 실행되는 코드다.**
+
+        검증 위반은 전부 모아 **422 `PLAN_INVALID`**의 `details`로 돌려준다(같은 featureKey 등).
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/ProjectId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [featureKey, title, content]
+              properties:
+                featureKey: { type: string, maxLength: 32 }
+                title: { type: string, maxLength: 200 }
+                content: { type: string, maxLength: 20000 }
+                tests:
+                  type: array
+                  maxItems: 30
+                  items:
+                    type: object
+                    required: [criterion, testCode, locked]
+                    properties:
+                      criterion: { type: string, maxLength: 500 }
+                      testCode: { type: string, maxLength: 50000 }
+                      locked: { type: boolean, description: '필수. true면 지금 잠긴다(V2 근거)' }
+            example:
+              featureKey: F-05
+              title: 스터디 대기열 신청
+              content: WHEN 정원이 찬 스터디에 신청하면 THEN 202와 waitlistPosition을 반환한다
+              tests:
+                - { criterion: 정원이 찬 신청은 202와 대기 순번, testCode: 'expect(res.status).toBe(202)', locked: true }
+      responses:
+        '201':
+          description: 만들어진 명세
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/Spec' } } }
+              example:
+                data: { id: 5d1f0c3e-7a2b-4c1d-9e8f-0a1b2c3d4e5f, featureKey: F-05, title: 스터디 대기열 신청, content: 'WHEN … THEN …', version: 1, createdAt: '2026-09-30T02:00:00.000Z', tests: [] }
+        '403':
+          description: 대표가 아니거나 다른 조직
+          content:
+            application/json:
+              example:
+                error: { code: NOT_REPRESENTATIVE, message: this action requires the organization representative }
+        '409':
+          description: 끝났거나 멈춘 프로젝트(completed·aborted·halted)
+          content:
+            application/json:
+              example:
+                error: { code: PROJECT_NOT_OPEN, message: 'project is completed; specs and tasks can be added only while planning or active' }
+        '422':
+          description: 검증 위반 전부
+          content:
+            application/json:
+              example:
+                error:
+                  code: PLAN_INVALID
+                  message: 명세·태스크 검증 실패 1건
+                  details: [{ where: 'specs[F-05]', message: '명세 F-05가 프로젝트에 이미 있다 (다시 보낸 건 아닌가?)' }]
+
   /projects/{projectId}/tasks:
+    post:
+      tags: [명세·태스크 작성]
+      summary: 태스크 생성 (대표 전용)
+      description: |
+        만들어진 태스크는 `READY`라 배정된 에이전트가 바로 수령할 수 있다. 프로젝트가 `planning`·`active`일 때만.
+
+        - `repoId` — 이 프로젝트에 연결된 레포만
+        - `specId` — **IMPLEMENT는 필수**, INTEGRATION·REWORK는 생략 가능
+        - `teamRole` — 필수. `null`은 역할 제한 없음(통합 태스크)
+        - `dependsOn` — 이 프로젝트의 기존 태스크 id. 선행이 DONE이 돼야 수령할 수 있다
+        - 같은 제목은 거부한다(버튼 두 번 누르기 방지)
+
+        검증 위반은 전부 모아 **422 `PLAN_INVALID`**의 `details`로 돌려준다.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/ProjectId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, teamRole, repoId]
+              properties:
+                title: { type: string, maxLength: 200 }
+                teamRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true }
+                kind: { type: string, enum: [IMPLEMENT, INTEGRATION, REWORK], default: IMPLEMENT }
+                repoId: { type: string, format: uuid }
+                specId: { type: string, format: uuid, nullable: true }
+                dependsOn: { type: array, maxItems: 50, items: { type: string, format: uuid } }
+            example:
+              title: T-052 대기열 신청 버튼
+              teamRole: FRONTEND
+              repoId: '{{REPO_API}}'
+              specId: null
+              kind: INTEGRATION
+              dependsOn: []
+      responses:
+        '201':
+          description: 만들어진 태스크(READY)
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/Task' } } }
+              example:
+                data: { id: 7f3b2e5a-9c4d-4e3f-b0a1-2c3d4e5f6071, projectId: '{{PROJECT_ID}}', repoId: '{{REPO_API}}', specId: null, kind: INTEGRATION, title: T-052 대기열 신청 버튼, state: READY, teamRole: FRONTEND, assigneeAgentId: null, branchName: null, blockedReason: null, retryCount: 0 }
+        '403':
+          description: 대표가 아니거나 다른 조직
+          content:
+            application/json:
+              example:
+                error: { code: NOT_REPRESENTATIVE, message: this action requires the organization representative }
+        '409':
+          description: 끝났거나 멈춘 프로젝트
+          content:
+            application/json:
+              example:
+                error: { code: PROJECT_NOT_OPEN, message: 'project is halted; specs and tasks can be added only while planning or active' }
+        '422':
+          description: 검증 위반 전부
+          content:
+            application/json:
+              example:
+                error:
+                  code: PLAN_INVALID
+                  message: 명세·태스크 검증 실패 2건
+                  details:
+                    - { where: 'tasks[task]', message: '레포 … 는 이 프로젝트에 연결돼 있지 않다 (연결된 레포: acme/study-api)' }
+                    - { where: 'tasks[task]', message: '구현(IMPLEMENT) 태스크에는 명세가 필요하다 (명세 없이 만들 수 있는 건 INTEGRATION·REWORK)' }
     get:
       tags: [태스크·노트]
       summary: 태스크 목록
@@ -1536,6 +2031,7 @@ paths:
           description: 생성 순서대로. 정렬이 결정적이어야 폴링이 같은 태스크를 두고 경합하지 않는다.
           content:
             application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [tasks], properties: { tasks: { type: array, items: { $ref: '#/components/schemas/Task' } } } } } }
               example:
                 data:
                   tasks:
@@ -1559,6 +2055,7 @@ paths:
           description: OK
           content:
             application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/TaskBriefing' } } }
               example:
                 data:
                   task: { id: '{{TASK_BE}}', title: 'T-001 참여 신청 API 구현', state: READY }
@@ -1598,6 +2095,7 @@ paths:
           description: OK
           content:
             application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/Task' } } }
               example:
                 data: { id: '{{TASK_BE}}', branchName: 'task/1d5c8f2a', state: CLAIMED }
 
@@ -1644,6 +2142,7 @@ paths:
             하나도 FAIL이 아니면 `DONE`(gateMode가 AUTO가 아니면 `AWAITING_APPROVAL`)이 된다.
           content:
             application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/VerificationSummary' } } }
               example:
                 data:
                   artifactId: 44444444-4444-4444-4444-444444444444
@@ -1691,6 +2190,7 @@ paths:
           description: stage 순
           content:
             application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [verifications], properties: { verifications: { type: array, items: { $ref: '#/components/schemas/Verification' } } } } } }
               example:
                 data:
                   verifications:

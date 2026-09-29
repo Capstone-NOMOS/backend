@@ -90,8 +90,14 @@ DB 제약으로 올릴 수 있는 불변식은 마이그레이션으로 올려 �
 테이블을 가로질러야 알 수 있어 CHECK로 표현 못 하는 것만 `tests/helpers/assert-invariants.ts`에 넣고,
 `tests/setup-invariants.ts`의 전역 `afterEach`가 매 테스트 뒤에 확인한다. afterAll로 몰면 어느 테스트가 깼는지를 잃는다.
 
-`npm run dev`로 띄우면 <http://localhost:3000/docs>에 Swagger UI가 올라온다(`NODE_ENV=production`에서는 마운트하지 않는다).
-`docs/openapi.yaml`은 **손으로 쓴 문서라 코드와 자동 동기화되지 않는다** — 어긋나면 코드가 맞다. 자동 생성(zod-to-openapi)은 나중 과제.
+`npm run dev`로 띄우면 <http://localhost:3000/docs>에 Swagger UI가 올라온다(운영은 `DOCS_ENABLED` + Basic Auth — 배포 절 참고).
+`docs/openapi.yaml`은 **손으로 쓰지만 테스트가 코드와 대조하는 계약이다.** FE가 여기서 타입을 생성한다(`openapi-typescript`) — 그래서 모든 성공 응답에 `schema`가 있어야 한다(example은 타입이 되지 않는다).
+- `tests/setup-invariants.ts`가 Express `res.json`을 감싸 **테스트가 내는 모든 `/api` 응답**을 문서의 schema로 검사한다(`tests/helpers/openapi-contract.ts`, ajv).
+  문서에 없는 필드가 오면 실패다(객체는 기본 `additionalProperties: false`) — "문서엔 `userId`, 실제는 `id`"가 실제로 있었다. 에러 응답은 공통 `Error` 형태만 본다.
+- `tests/openapi-contract.test.ts`가 **라우트와 문서가 1:1**인지(`src/routes/*.ts`를 전부 읽는다), 모든 2xx에 schema가 있는지, 그리고 **모든 성공 응답을 실제 HTTP로 한 번 이상 받는지** 확인한다.
+  API를 추가하면 문서에 경로·schema를 쓰고 그 흐름에 호출 한 줄을 넣어야 CI가 통과한다.
+- 응답 필드를 바꾸면 문서를 같이 고친다 — 안 고치면 테스트가 잡는다. 스키마는 `components.schemas`에 두고 응답에서는 `$ref`로 쓴다.
+- 코드로 생성하지 않고 손으로 쓰는 이유: 사람이 읽는 설명(한국어 description·예시)이 문서의 절반이라 YAML이 읽기 쉽다. 대신 틀리면 테스트가 잡는다.
 `{{PROJECT_ID}}` 같은 자리표는 `/docs/openapi.json`을 서빙할 때마다 DB에서 읽어 채우므로(`src/openapi/spec.ts`) 재시드 후 새로고침만 하면 된다.
 
 수동으로 서버를 띄워 API를 손으로 찔러보는 절차는 `docs/manual-test.md`에 있다 — 기동·환경변수·API 25개 curl 예시·시나리오 대본.
@@ -287,6 +293,30 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
   노트는 에이전트의 **자기 보고**이므로 검증 결과(`verifications`)를 대체하지 않는다 — 화면에 둘 다 필요하다.
 - 프롬프트 주입은 `read_notes` 호출에 의존하지 않는다(`domain/note/injection.ts`). 서버가 골라 넣는다.
 
+### 명세·태스크 작성 (`domain/authoring`)
+
+대표가 API(`POST /projects/:id/specs`·`/tasks`)로, 운영자가 `seed:tasks` 파일로, 나중에 PM이 계획으로 만든다 —
+**경로가 셋이어도 검증(`validate.ts`)·트랜잭션 흐름(`apply.ts`의 `authorInTransaction`)은 한 벌이다.** 서버는 pool에서 꺼낸 연결을,
+스크립트는 자기 연결을 넘기기만 한다. 한쪽에만 검사를 추가하면 다른 경로가 느슨해진다.
+
+- **이 폴더는 운영자 노트북의 `seed:tasks`가 import한다.** `config/env`·`config/db`·`logger`를 직접이든 간접이든 런타임 import하지 말 것
+  (`import type`만). 서버 비밀값 없이는 스크립트가 뜨지 않는다 — 빈 임시 폴더에서 서버 변수를 지우고 스크립트를 띄우는 테스트가 고정한다.
+  `pool`을 쓰는 `service.ts`만 예외이고, 스크립트는 그 파일을 import하지 않는다.
+- **이 폴더와 `import-tasks.ts`의 SQL은 SELECT·INSERT뿐이다**(폴더 전체를 읽는 소스 검사 테스트). 수정·삭제가 필요해지면 그 함수는 폴더 밖에 둔다.
+- 흐름: BEGIN → **프로젝트 행 `FOR NO KEY UPDATE`** → 권한(대표)·상태(`planning`·`active`만, 아니면 409 `PROJECT_NOT_OPEN`) → 검증 → INSERT → 이벤트 → COMMIT.
+  잠금이 사전 검사(같은 제목·같은 명세 키)와 INSERT 사이의 경합을 막는다. **`FOR UPDATE`로 바꾸지 말 것** — 외래 키 검사의 `FOR KEY SHARE`와 충돌해
+  작성 중에 그 프로젝트를 참조하는 모든 INSERT(이벤트·노트·제출)가 줄을 선다. 두 성질 모두 테스트가 잠금을 실제로 잡고 확인한다.
+- 검증 위반은 **전부 모아 422 `PLAN_INVALID`**(`details: [{ where, message }]`). 사전 검사를 지나 DB 유일 제약에 걸린 경우만 409 `PLAN_CONFLICT`.
+- **IMPLEMENT는 명세 필수**, INTEGRATION·REWORK는 생략 가능. 같은 제목은 거부(재실행·버튼 두 번 방지) — **REWORK가 같은 제목을 쓰게 되면 이 규칙을 다시 본다.**
+- **시험지의 `locked`는 필수이고 만들 때만 정한다.** 기본값을 두면 빠뜨린 시험지가 조용히 잠기지 않아 V2가 근거 없이 돈다. 나중에 잠그는 API를 두지 말 것 —
+  이미 제출된 산출물보다 늦게 잠긴 시험지가 생긴다(`locked_at < artifacts.created_at`). `specs.approved_at`은 비워 둔다(G1이 채운다).
+- **시험지는 V2에서 팀원 노트북에서 실행되는 코드다.** 지금은 대표만 쓰지만, PM이 쓰게 되면 사람 검토 없이 남의 노트북에서 코드가 도는 경로가 생긴다 — 그때 검토 단계를 넣는다.
+- 이벤트는 항목마다 `SPEC_CREATED`·`TASK_CREATED`이고 `payload.source`가 `human`·`import`·`pm`이다. 지표는 이 값으로 가른다.
+  예전의 묶음 요약 `TASKS_IMPORTED`는 더 이상 남기지 않는다(이미 쌓인 행을 읽을 때만 타입이 남아 있다).
+- 이렇게 만든 태스크는 `plan_id`가 NULL이다(PM 계획인 `plans` 행이 없다) — **M6b 리플레이 그룹핑에서 빠진다.** 모듈 이름이 `plan`이 아닌 이유도 `plans` 테이블과 헷갈리지 않게다.
+- 명세 목록(`GET .../specs`)의 범위는 태스크 목록과 같다. 에이전트에게는 잠긴 시험지만 보인다(브리핑과 같은 규칙).
+- 수정·삭제·명세 개정(`superseded_by`)은 아직 없다.
+
 ### 프로젝트와 멤버
 
 - 프로젝트 생성은 **한 트랜잭션**에서 프로젝트 행·레포 연결·`project_policies` 17행 복사·헌법 스냅샷·`policy_hash`를
@@ -357,8 +387,8 @@ EC2 1대(Docker) + RDS PostgreSQL 16 + KMS + SSM. 콘솔 절차는 `docs/deploy-
   mirror(로컬)에서만. 운영에서 경로를 받으면 서버 파일시스템의 다른 git 저장소를 읽을 수 있다. 이 검증을 느슨하게 하지 말 것. mirror 검사기는 `git clone -- <url>`로
   한 겹 더 막고, 기존 mirror의 원격을 매번 `set-url`로 맞춘다(안 그러면 주소를 바꿔도 옛 원격에서 받아 새 커밋을 FAIL로 판정한다).
 - **`seed:tasks`**(`scripts/lib/import-tasks.ts`)는 운영 DB에 쓰려고 있는 도구라 운영 표시로 막지 않는다. 안전은 구조에서 온다:
-  INSERT만(소스를 검사하는 테스트가 DELETE·UPDATE·TRUNCATE를 막는다), 한 트랜잭션, 틀린 곳을 전부 모아 거부, 같은 파일 재실행은
-  중복으로 거부, `--as`는 그 조직 대표, 기본 dry-run. 서버 `env.ts`를 거치지 않고 `DATABASE_URL`만 읽는다(`appendEvent`는 타입만 import한다).
+  검증·쓰기는 API와 같은 `domain/authoring` 한 벌을 탄다(아래 "명세·태스크 작성"). 이 스크립트는 JSON 해석과 `--as` 확인만 한다.
+  기본 dry-run이고, dry-run도 실제와 같은 경로로 끝까지 돈 뒤 ROLLBACK한다. 서버 `env.ts`를 거치지 않고 `DATABASE_URL`만 읽는다.
 - **브릿지 push**(`bridge/push.ts`): `submit_artifact`가 서버에 제출하기 **전에** 서버에 기록된 태스크 브랜치
   (`tasks.branch_name`)만 push한다. main·dev·레포의 `default_branch`·`dev_branch`는 거부(대소문자 무시), force 없음,
   HEAD가 태스크 브랜치이고 커밋이 그 브랜치에 있어야 한다. 실패하면 **제출하지 않는다**(재시도 횟수가 오르지 않는다).
@@ -414,7 +444,7 @@ const { repoId } = req.params as z.infer<typeof repoIdParamsSchema>
 
 ### 라우터 마운트
 
-라우터 10개(`auth`, `agents`, `orgs`, `repos`, `repo-paths`, `invites`, `oauth`, `tasks`, `notes`, `projects`)가 전부 `app.use("/api", ...)`로 마운트되고(`/health`·`/docs`는 `/api` 밖), 각 파일이 `/orgs/:orgId/...` 같은 전체 경로를 직접 선언한다. 그래서 URL 접두사가 아니라 **도메인 기준**으로 파일이 나뉜다 — 예를 들어 `POST /api/orgs/:orgId/repos`는 URL은 orgs 밑이지만 `routes/repos.ts`에 있고, `POST /api/orgs/:orgId/invites`는 `routes/invites.ts`에 있다.
+라우터 11개(`auth`, `agents`, `orgs`, `repos`, `repo-paths`, `invites`, `oauth`, `tasks`, `notes`, `projects`, `specs`)가 전부 `app.use("/api", ...)`로 마운트되고(`/health`·`/docs`는 `/api` 밖), 각 파일이 `/orgs/:orgId/...` 같은 전체 경로를 직접 선언한다. 그래서 URL 접두사가 아니라 **도메인 기준**으로 파일이 나뉜다 — 예를 들어 `POST /api/orgs/:orgId/repos`는 URL은 orgs 밑이지만 `routes/repos.ts`에 있고, `POST /api/orgs/:orgId/invites`는 `routes/invites.ts`에 있다.
 
 
 ## 스키마 변경 규칙

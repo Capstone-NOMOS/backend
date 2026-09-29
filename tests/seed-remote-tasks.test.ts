@@ -1,4 +1,8 @@
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { applyImport, ImportRefused, planImport, type ImportDoc } from '../scripts/lib/import-tasks.js';
 import { pool } from '../src/config/db.js';
@@ -48,7 +52,8 @@ const DOC: ImportDoc = {
       content: 'WHEN 정원이 차면 THEN 대기열에 올린다',
       tests: [
         { criterion: '202를 준다', testCode: 'expect(1).toBe(1)', locked: true },
-        { criterion: '초안', testCode: 'expect(2).toBe(2)' },
+        // locked는 필수다 — 빠뜨리면 조용히 false가 되어 V2가 근거 없이 돌던 것을 막는다.
+        { criterion: '초안', testCode: 'expect(2).toBe(2)', locked: false },
       ],
     },
   ],
@@ -65,7 +70,8 @@ async function counts() {
     tests: await n(`SELECT count(*)::int AS n FROM spec_tests`),
     tasks: await n(`SELECT count(*)::int AS n FROM tasks`),
     deps: await n(`SELECT count(*)::int AS n FROM task_deps`),
-    events: await n(`SELECT count(*)::int AS n FROM events WHERE type = 'TASKS_IMPORTED'`),
+    // 들여오기도 API와 같은 이벤트를 항목마다 남긴다(source='import'). 예전의 묶음 요약 TASKS_IMPORTED는 더 이상 없다.
+    events: await n(`SELECT count(*)::int AS n FROM events WHERE type IN ('SPEC_CREATED', 'TASK_CREATED')`),
   };
 }
 
@@ -102,7 +108,7 @@ describe('seed-remote-tasks', () => {
 
     const result = await run({ projectId });
 
-    expect(await counts()).toMatchObject({ specs: 1, tests: 2, tasks: 2, deps: 1, events: 1 });
+    expect(await counts()).toMatchObject({ specs: 1, tests: 2, tasks: 2, deps: 1, events: 3 });
     const tasks = await pool.query(`SELECT title, state, team_role, kind, spec_id FROM tasks ORDER BY title`);
     expect(tasks.rows.map((r) => [r.title, r.state, r.team_role, r.kind])).toEqual([
       ['T-051 대기열 API', 'READY', 'BACKEND', 'IMPLEMENT'],
@@ -112,11 +118,16 @@ describe('seed-remote-tasks', () => {
     // 잠근 시험지만 locked_at이 있다 — 잠기지 않은 초안은 에이전트에게 내려가지 않는다.
     const locked = await pool.query(`SELECT criterion FROM spec_tests WHERE locked_at IS NOT NULL`);
     expect(locked.rows.map((r) => r.criterion)).toEqual(['202를 준다']);
-    const event = await pool.query(`SELECT on_behalf_of, payload FROM events WHERE type = 'TASKS_IMPORTED'`);
-    expect(event.rows[0]).toMatchObject({
-      on_behalf_of: userId,
-      payload: { source: 'seed-remote-tasks', specTestCount: 2, dependencyCount: 1 },
-    });
+    const events = await pool.query(
+      `SELECT type, on_behalf_of, payload FROM events WHERE type IN ('SPEC_CREATED', 'TASK_CREATED') ORDER BY id`,
+    );
+    expect(events.rows.map((e) => [e.type, e.on_behalf_of, e.payload.source])).toEqual([
+      ['SPEC_CREATED', userId, 'import'],
+      ['TASK_CREATED', userId, 'import'],
+      ['TASK_CREATED', userId, 'import'],
+    ]);
+    expect(events.rows[0]!.payload).toMatchObject({ testCount: 2, lockedTestCount: 1 });
+    expect(result.dependencyCount).toBe(1);
   });
 
   it('같은 파일을 다시 돌리면 중복으로 거부하고 아무것도 늘지 않는다', async () => {
@@ -193,13 +204,40 @@ describe('seed-remote-tasks', () => {
     }
   });
 
-  // 구조적 안전장치: 이 모듈의 SQL에는 INSERT·SELECT만 있다. 누가 "정리" 기능을 끼워 넣으면 여기서 깨진다.
+  // 구조적 안전장치: 이 도구가 도는 코드(스크립트 + domain/authoring 폴더 **전체**)의 SQL에는 INSERT·SELECT만 있다.
+  // 파일 목록이 아니라 폴더로 보는 이유: 폴더에 새 파일이 생겨도 빠지지 않게. 누가 "정리" 기능을 끼워 넣으면 여기서 깨진다.
+  // 예외는 행 잠금 절(FOR NO KEY UPDATE) 하나 — 데이터를 바꾸지 않는다.
   it('SQL은 INSERT·SELECT뿐이다 — 지우거나 고치는 문장이 없다', () => {
-    const source = readFileSync(new URL('../scripts/lib/import-tasks.ts', import.meta.url), 'utf8');
-    const sql = [...source.matchAll(/`([^`]*)`/g)].map((m) => m[1]!).filter((s) => /\b(SELECT|INSERT)\b/i.test(s) || /\b(DELETE|UPDATE|TRUNCATE|DROP|ALTER)\b/i.test(s));
-    expect(sql.length).toBeGreaterThan(5);
+    const dir = new URL('../src/domain/authoring/', import.meta.url);
+    const files = [
+      new URL('../scripts/lib/import-tasks.ts', import.meta.url),
+      ...readdirSync(dir)
+        .filter((f) => f.endsWith('.ts'))
+        .map((f) => new URL(f, dir)),
+    ];
+    expect(files.length).toBeGreaterThan(4);
+    const sql = files
+      .flatMap((file) => [...readFileSync(file, 'utf8').matchAll(/`([^`]*)`/g)].map((m) => m[1]!))
+      .map((s) => s.replace(/\bFOR NO KEY UPDATE\b/gi, ''))
+      .filter((s) => /\b(SELECT|INSERT)\b/i.test(s) || /\b(DELETE|UPDATE|TRUNCATE|DROP|ALTER)\b/i.test(s));
+    expect(sql.length).toBeGreaterThan(8);
     for (const statement of sql) {
       expect(statement, statement).not.toMatch(/\b(DELETE|UPDATE|TRUNCATE|DROP|ALTER)\b/i);
     }
+  });
+
+  // 운영자 노트북에는 서버 비밀값(JWT_SECRET 등)이 없다. 이 스크립트가 직접이든 간접이든 src/config/env.ts를
+  // 끌고 오면 거기서 죽는다. 사람이 눈으로 지키기 어려운 규칙이라 실제로 띄워 본다.
+  // 레포 루트에서 띄우면 로컬 .env가 빈칸을 채워 통과해 버린다 — 빈 임시 폴더에서, 서버 변수를 지운 채 띄운다.
+  it('서버 설정 없이 뜬다 — env.ts를 끌고 오지 않는다', () => {
+    const cwd = mkdtempSync(path.join(tmpdir(), 'nomos-seed-tasks-'));
+    const script = fileURLToPath(new URL('../scripts/seed-remote-tasks.ts', import.meta.url));
+    const tsx = fileURLToPath(new URL('../node_modules/tsx/dist/cli.mjs', import.meta.url));
+    const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, NODE_ENV: 'development' };
+    // 인자 없이 띄우면 모듈을 전부 불러온 뒤 사용법을 찍고 코드 2로 끝난다.
+    const run = spawnSync(process.execPath, [tsx, script], { cwd, env, encoding: 'utf8' });
+    expect(run.stderr).toContain('사용법');
+    expect(run.stderr).not.toMatch(/JWT_SECRET|Invalid environment|is required/i);
+    expect(run.status).toBe(2);
   });
 });
