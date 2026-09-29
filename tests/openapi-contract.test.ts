@@ -189,23 +189,25 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     await call('DELETE', `/projects/${projectId}/members/${repAgentId}`, rep);
     await call('POST', `/projects/${projectId}/members`, rep, { agentId: beAgentId, teamRole: 'BACKEND' });
 
-    // 명세·태스크는 만드는 API가 없다(PM 영역). Phase 2 테이블이라 직접 INSERT한다 — 픽스처 규칙의 예외.
-    const spec = await pool.query(
-      `INSERT INTO specs (project_id, feature_key, title, content) VALUES ($1, 'F-03', '참여 신청', 'WHEN 정원이 차면 THEN 409') RETURNING id`,
-      [projectId],
-    );
-    const task = await pool.query(
-      `INSERT INTO tasks (project_id, repo_id, spec_id, title, state, kind, team_role)
-       VALUES ($1, $2, $3, 'T-1 참여신청 API', 'READY', 'IMPLEMENT', 'BACKEND') RETURNING id`,
-      [projectId, repoId, spec.rows[0]!.id],
-    );
-    const taskId = task.rows[0]!.id as string;
+    // 명세·태스크 작성
+    const spec = await call('POST', `/projects/${projectId}/specs`, rep, {
+      featureKey: 'F-03',
+      title: '참여 신청',
+      content: 'WHEN 정원이 차면 THEN 409',
+      tests: [{ criterion: '정원 초과는 409', testCode: 'expect(res.status).toBe(409)', locked: true }],
+    });
+    await call('GET', `/projects/${projectId}/specs`, rep);
+    const task = await call('POST', `/projects/${projectId}/tasks`, rep, {
+      title: 'T-1 참여신청 API', teamRole: 'BACKEND', repoId, specId: spec.data.id,
+    });
+    const taskId = task.data.id as string;
 
     // 에이전트 — 배정 뒤 재발급해야 project_id가 담긴다
     const agent = (await call('POST', '/agents/token/refresh', null, { refreshToken: beConn.data.refreshToken })).data
       .accessToken as string;
     await call('GET', '/agents/me', agent);
     await call('GET', `/projects/${projectId}/tasks`, agent);
+    await call('GET', `/projects/${projectId}/specs`, agent);
     await call('GET', `/projects/${projectId}/tasks`, rep);
     await call('GET', `/tasks/${taskId}/briefing`, agent);
     await call('PATCH', `/tasks/${taskId}/branch`, agent, { branchName: `task/${taskId}` });

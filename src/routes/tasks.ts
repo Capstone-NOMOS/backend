@@ -12,7 +12,9 @@ import {
   submitArtifact,
 } from '../domain/task/service.js';
 import { TEAM_ROLES } from '../domain/roles.js';
-import { orgIdOf } from '../middleware/auth.js';
+import { createTask } from '../domain/authoring/service.js';
+import { taskFieldsSchema } from '../domain/authoring/schema.js';
+import { authenticate, orgIdOf, requireRepresentative } from '../middleware/auth.js';
 import { agentContextOf, authenticateAgent, authenticateAny } from '../middleware/agent-auth.js';
 import { validate } from '../middleware/validate.js';
 import {
@@ -149,6 +151,29 @@ tasksRouter.get(
           query,
         );
     res.json({ data: { tasks } });
+  },
+);
+
+// 선행 태스크는 이 프로젝트의 기존 태스크 id로만 가리킨다(묶음 안 임시 키는 파일 들여오기·PM 전용).
+// specId는 IMPLEMENT에 필수 — 형식만 여기서 보고, "필수인가"는 서비스가 다른 위반과 함께 422로 모아 돌려준다.
+const createTaskBodySchema = taskFieldsSchema
+  .extend({
+    repoId: z.string().uuid(),
+    specId: z.string().uuid().nullable().default(null),
+    dependsOn: z.array(z.string().uuid()).max(50).default([]),
+  })
+  .strict();
+
+// POST /api/projects/:projectId/tasks — 태스크 생성(대표 전용). 만들어진 태스크는 READY라 바로 수령할 수 있다.
+tasksRouter.post(
+  '/projects/:projectId/tasks',
+  validate({ params: projectIdParamsSchema, body: createTaskBodySchema }),
+  authenticate,
+  requireRepresentative,
+  async (req, res) => {
+    const { projectId } = req.params as z.infer<typeof projectIdParamsSchema>;
+    const body = req.body as z.infer<typeof createTaskBodySchema>;
+    res.status(201).json({ data: await createTask(req.user!.id, projectId, body) });
   },
 );
 

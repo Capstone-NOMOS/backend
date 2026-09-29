@@ -399,6 +399,20 @@ components:
         featureKey: { type: string }
         title: { type: string }
         content: { type: string }
+    Spec:
+      type: object
+      required: [id, featureKey, title, content, version, createdAt, tests]
+      properties:
+        id: { type: string, format: uuid }
+        featureKey: { type: string, description: '프로젝트 안에서 유일(F-05 같은 기능 키)' }
+        title: { type: string }
+        content: { type: string, description: 'EARS 문장 — WHEN … THEN …' }
+        version: { type: integer }
+        createdAt: { type: string, format: date-time }
+        tests:
+          type: array
+          description: '시험지(V2가 팀원 노트북에서 실행하는 코드). 에이전트 토큰으로 보면 잠긴 것만 있다'
+          items: { $ref: '#/components/schemas/SpecTest' }
     SpecTest:
       type: object
       required: [id, criterion, testCode, lockedAt]
@@ -538,6 +552,7 @@ tags:
   - name: 프로젝트
   - name: 초대
   - name: GitHub OAuth
+  - name: 명세·태스크 작성
   - name: 태스크·노트
   - name: 검증
 
@@ -1825,7 +1840,178 @@ paths:
                   teamRole: BACKEND
                   maxConcurrent: 2
 
+  /projects/{projectId}/specs:
+    get:
+      tags: [명세·태스크 작성]
+      summary: 명세 목록 (시험지 포함)
+      description: |
+        태스크를 만들 때 명세를 고르는 목록이다. 볼 수 있는 범위는 태스크 목록과 같다 — 사람은 볼 수 있는 프로젝트
+        (대표는 전체, 팀원은 배정된 것), 에이전트는 자기 프로젝트. **에이전트 토큰으로 보면 잠긴 시험지만 있다**
+        (브리핑과 같은 규칙 — 초안을 보면 "통과하도록 코드를 맞추는" 대상이 된다).
+      security: [{ userToken: [] }, { agentToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/ProjectId' }]
+      responses:
+        '200':
+          description: featureKey 순
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [specs], properties: { specs: { type: array, items: { $ref: '#/components/schemas/Spec' } } } } } }
+              example:
+                data:
+                  specs:
+                    - id: 5d1f0c3e-7a2b-4c1d-9e8f-0a1b2c3d4e5f
+                      featureKey: F-05
+                      title: 스터디 대기열 신청
+                      content: WHEN 정원이 찬 스터디에 신청하면 THEN 202와 waitlistPosition을 반환한다
+                      version: 1
+                      createdAt: '2026-09-30T02:00:00.000Z'
+                      tests:
+                        - { id: 6e2a1d4f-8b3c-4d2e-af90-1b2c3d4e5f60, criterion: 정원이 찬 신청은 202와 대기 순번, testCode: 'expect(res.status).toBe(202)', lockedAt: '2026-09-30T02:00:00.000Z' }
+        '403':
+          description: 볼 수 없는 프로젝트
+          content:
+            application/json:
+              example:
+                error: { code: NOT_PROJECT_MEMBER, message: you are not a member of this project }
+    post:
+      tags: [명세·태스크 작성]
+      summary: 명세 생성 (대표 전용)
+      description: |
+        명세 1개와 시험지(수용 기준) 여러 개를 만든다. 프로젝트가 `planning`·`active`일 때만.
+
+        **시험지의 `locked`는 필수이고, 만들 때만 정한다.** 잠근 시험지만 V2의 근거가 된다
+        (`locked_at < artifacts.created_at`). 나중에 잠그는 API는 없다 — 이미 제출된 산출물보다 늦게 잠긴 시험지가 생기기 때문이다.
+
+        **시험지는 V2에서 팀원 노트북에서 실행되는 코드다.**
+
+        검증 위반은 전부 모아 **422 `PLAN_INVALID`**의 `details`로 돌려준다(같은 featureKey 등).
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/ProjectId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [featureKey, title, content]
+              properties:
+                featureKey: { type: string, maxLength: 32 }
+                title: { type: string, maxLength: 200 }
+                content: { type: string, maxLength: 20000 }
+                tests:
+                  type: array
+                  maxItems: 30
+                  items:
+                    type: object
+                    required: [criterion, testCode, locked]
+                    properties:
+                      criterion: { type: string, maxLength: 500 }
+                      testCode: { type: string, maxLength: 50000 }
+                      locked: { type: boolean, description: '필수. true면 지금 잠긴다(V2 근거)' }
+            example:
+              featureKey: F-05
+              title: 스터디 대기열 신청
+              content: WHEN 정원이 찬 스터디에 신청하면 THEN 202와 waitlistPosition을 반환한다
+              tests:
+                - { criterion: 정원이 찬 신청은 202와 대기 순번, testCode: 'expect(res.status).toBe(202)', locked: true }
+      responses:
+        '201':
+          description: 만들어진 명세
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/Spec' } } }
+              example:
+                data: { id: 5d1f0c3e-7a2b-4c1d-9e8f-0a1b2c3d4e5f, featureKey: F-05, title: 스터디 대기열 신청, content: 'WHEN … THEN …', version: 1, createdAt: '2026-09-30T02:00:00.000Z', tests: [] }
+        '403':
+          description: 대표가 아니거나 다른 조직
+          content:
+            application/json:
+              example:
+                error: { code: NOT_REPRESENTATIVE, message: this action requires the organization representative }
+        '409':
+          description: 끝났거나 멈춘 프로젝트(completed·aborted·halted)
+          content:
+            application/json:
+              example:
+                error: { code: PROJECT_NOT_OPEN, message: 'project is completed; specs and tasks can be added only while planning or active' }
+        '422':
+          description: 검증 위반 전부
+          content:
+            application/json:
+              example:
+                error:
+                  code: PLAN_INVALID
+                  message: 명세·태스크 검증 실패 1건
+                  details: [{ where: 'specs[F-05]', message: '명세 F-05가 프로젝트에 이미 있다 (다시 보낸 건 아닌가?)' }]
+
   /projects/{projectId}/tasks:
+    post:
+      tags: [명세·태스크 작성]
+      summary: 태스크 생성 (대표 전용)
+      description: |
+        만들어진 태스크는 `READY`라 배정된 에이전트가 바로 수령할 수 있다. 프로젝트가 `planning`·`active`일 때만.
+
+        - `repoId` — 이 프로젝트에 연결된 레포만
+        - `specId` — **IMPLEMENT는 필수**, INTEGRATION·REWORK는 생략 가능
+        - `teamRole` — 필수. `null`은 역할 제한 없음(통합 태스크)
+        - `dependsOn` — 이 프로젝트의 기존 태스크 id. 선행이 DONE이 돼야 수령할 수 있다
+        - 같은 제목은 거부한다(버튼 두 번 누르기 방지)
+
+        검증 위반은 전부 모아 **422 `PLAN_INVALID`**의 `details`로 돌려준다.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/ProjectId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, teamRole, repoId]
+              properties:
+                title: { type: string, maxLength: 200 }
+                teamRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true }
+                kind: { type: string, enum: [IMPLEMENT, INTEGRATION, REWORK], default: IMPLEMENT }
+                repoId: { type: string, format: uuid }
+                specId: { type: string, format: uuid, nullable: true }
+                dependsOn: { type: array, maxItems: 50, items: { type: string, format: uuid } }
+            example:
+              title: T-052 대기열 신청 버튼
+              teamRole: FRONTEND
+              repoId: '{{REPO_API}}'
+              specId: null
+              kind: INTEGRATION
+              dependsOn: []
+      responses:
+        '201':
+          description: 만들어진 태스크(READY)
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/Task' } } }
+              example:
+                data: { id: 7f3b2e5a-9c4d-4e3f-b0a1-2c3d4e5f6071, projectId: '{{PROJECT_ID}}', repoId: '{{REPO_API}}', specId: null, kind: INTEGRATION, title: T-052 대기열 신청 버튼, state: READY, teamRole: FRONTEND, assigneeAgentId: null, branchName: null, blockedReason: null, retryCount: 0 }
+        '403':
+          description: 대표가 아니거나 다른 조직
+          content:
+            application/json:
+              example:
+                error: { code: NOT_REPRESENTATIVE, message: this action requires the organization representative }
+        '409':
+          description: 끝났거나 멈춘 프로젝트
+          content:
+            application/json:
+              example:
+                error: { code: PROJECT_NOT_OPEN, message: 'project is halted; specs and tasks can be added only while planning or active' }
+        '422':
+          description: 검증 위반 전부
+          content:
+            application/json:
+              example:
+                error:
+                  code: PLAN_INVALID
+                  message: 명세·태스크 검증 실패 2건
+                  details:
+                    - { where: 'tasks[task]', message: '레포 … 는 이 프로젝트에 연결돼 있지 않다 (연결된 레포: acme/study-api)' }
+                    - { where: 'tasks[task]', message: '구현(IMPLEMENT) 태스크에는 명세가 필요하다 (명세 없이 만들 수 있는 건 INTEGRATION·REWORK)' }
     get:
       tags: [태스크·노트]
       summary: 태스크 목록

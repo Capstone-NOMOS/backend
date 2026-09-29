@@ -3,7 +3,7 @@
 //   npm run seed:tasks -- <projectId> <파일.json> --as <대표 loginId>            # 계획만 보여준다 (dry-run)
 //   npm run seed:tasks -- <projectId> <파일.json> --as <대표 loginId> --apply    # 실제로 쓴다
 //
-// 파일 형식은 scripts/examples/tasks.example.json. 안전장치는 scripts/lib/import-tasks.ts 머리 주석.
+// 파일 형식은 scripts/examples/tasks.example.json(시험지의 locked는 필수). 안전장치는 scripts/lib/import-tasks.ts 머리 주석.
 //
 // 서버의 env.ts를 거치지 않는다 — 행을 넣는 데 JWT_SECRET·COMMIT_INSPECTOR 같은 서버 설정은 필요 없고,
 // 그걸 요구하면 운영 DB에 붙을 때 가짜 값을 채워 넣게 된다. DATABASE_URL만 읽는다.
@@ -47,9 +47,10 @@ function printPlan(plan: ImportPlan): void {
     out(`  [명세] ${spec.featureKey} ${spec.title} (시험지 ${spec.tests.length}, 잠금 ${locked})`);
   }
   for (const task of plan.tasks) {
-    const spec = task.spec === null ? '-' : 'newKey' in task.spec ? task.spec.newKey : `기존 ${task.spec.existingId}`;
-    const deps = task.dependsOn.map((d) => ('ref' in d ? d.ref : `기존 ${d.existingId}`)).join(', ') || '-';
-    out(`  [태스크] ${task.ref} ${task.title} | ${task.repo} | ${task.teamRole ?? '역할 무관'} | ${task.kind} | 명세 ${spec} | 선행 ${deps}`);
+    const spec = task.spec === null ? '-' : 'featureKey' in task.spec ? task.spec.featureKey : `기존 ${task.spec.id}`;
+    const deps = task.dependsOn.map((d) => ('ref' in d ? d.ref : `기존 ${d.id}`)).join(', ') || '-';
+    const repo = 'fullName' in task.repo ? task.repo.fullName : task.repo.id;
+    out(`  [태스크] ${task.ref} ${task.title} | ${repo} | ${task.teamRole ?? '역할 무관'} | ${task.kind} | 명세 ${spec} | 선행 ${deps}`);
   }
 }
 
@@ -77,15 +78,16 @@ async function main(): Promise<void> {
     const plan = await planImport(client, { projectId: args.projectId, asLoginId: args.asLoginId, doc });
     printPlan(plan);
 
+    // dry-run도 실제와 같은 경로(검증·INSERT·이벤트)로 끝까지 돌고 ROLLBACK한다 — 미리보기가 통과하면 --apply도 통과한다.
+    const result = await applyImport(client, plan, { dryRun: !args.apply });
     if (!args.apply) {
       out();
-      out('dry-run — 아무것도 쓰지 않았다. 넣으려면 --apply를 붙여 다시 실행하라.');
+      out('dry-run — 검증을 통과했고 아무것도 쓰지 않았다. 넣으려면 --apply를 붙여 다시 실행하라.');
       return;
     }
-    const result = await applyImport(client, plan);
     out();
     out(`✓ 넣었다 — 명세 ${result.specIds.length}, 시험지 ${result.specTestCount}, 태스크 ${result.taskIds.length}, 선행 관계 ${result.dependencyCount}`);
-    out(`  이벤트 TASKS_IMPORTED (대표 ${args.asLoginId} 명의)`);
+    out(`  이벤트 SPEC_CREATED·TASK_CREATED (source=import, 대표 ${args.asLoginId} 명의)`);
   } finally {
     client.release();
     await pool.end();
