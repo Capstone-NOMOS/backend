@@ -1,0 +1,56 @@
+# 타입체크 + 전체 테스트. PR·dev push에서 돌고, deploy.yml이 배포 전에 같은 것을 부른다(workflow_call).
+#
+# 테스트는 실제 PostgreSQL을 쓴다(DB 목킹 금지). vitest.config.ts가 localhost:55432/nomos_test에 붙으므로
+# 서비스 컨테이너를 같은 포트·이름으로 띄운다 — 접속 문자열을 CI용으로 따로 두지 않는다.
+name: ci
+
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [dev]
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: nomos_test
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # 테스트 일부가 임시 git 저장소에 커밋한다(mirror 검사기·브릿지 push). 러너에는 신원이 없다.
+      - run: |
+          git config --global user.name ci
+          git config --global user.email ci@localhost
+          git config --global init.defaultBranch main
+
+      - run: npm run typecheck
+
+      - run: npm test
