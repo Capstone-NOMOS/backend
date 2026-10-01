@@ -305,21 +305,24 @@ npm run db:psql -- "SELECT type, coalesce(payload->>'stage','-') AS stage FROM e
 
 ### Executor — 브릿지 본체
 
-팀원 노트북에서 도는 프로그램. 서버 주소는 `~/.nomos/credentials`의 `baseUrl`에서 오므로
-로컬에서 개발하고 배포 후 그 값만 바꾼다.
+팀원 노트북에서 도는 프로그램. npm 패키지 `@capstone-nomos/cli`(bin `nomos`)로 배포되고, 팀원은
+`npx @capstone-nomos/cli@latest connect` 한 줄로 로그인 → 배정 대기 → 폴링까지 간다.
+서버 주소는 `~/.nomos/credentials`의 `baseUrl`에서 온다. 이 레포에서 소스로 돌릴 때:
 
 ```bash
+npm run executor -- connect --server http://localhost:3000   # --를 빼면 npm이 플래그를 가져간다
 npm run executor once     # READY 태스크 하나만 처리하고 종료 (개발·데모용)
 npm run executor start    # 10초 폴링
 npm run executor clean    # worktree 정리
 ```
 
-준비물 두 개:
+노트북에 두는 것:
 
 | 파일 | 내용 |
 |---|---|
-| `~/.nomos/credentials` (0600) | `{ baseUrl, accessToken, refreshToken, agentId }` — `npm run seed`가 만든다 |
-| `~/.nomos/repos.json` | `{ "acme/study-api": "C:/path/to/repo" }` — Executor는 어느 디렉터리가 그 레포인지 알 방법이 없다 |
+| `~/.nomos/credentials` (0600) | `{ baseUrl, accessToken, refreshToken, agentId }` — `connect`·`login`이 쓴다(`npm run seed`도 만든다) |
+| `~/.nomos/repos/<조직>/<레포>` | 태스크의 레포. 없으면 CLI가 브리핑의 `repo.cloneUrl`(NULL이면 `github.com/{fullName}`)에서 받고, 태스크마다 fetch해 `origin/<기본 브랜치>`에서 분기한다 |
+| `~/.nomos/repos.json` (선택) | `{ "acme/study-api": "C:/path/to/repo" }` — 이미 받아 둔 레포를 쓰고 싶을 때만. 적혀 있으면 그 경로가 우선이고 fetch하지 않는다 |
 
 한 태스크의 흐름:
 

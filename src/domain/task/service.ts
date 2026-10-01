@@ -315,7 +315,7 @@ export type BriefingPath = { pathPattern: string; access: string; ownerRole: str
 
 export type TaskBriefing = {
   task: Task;
-  repo: { id: string; fullName: string; defaultBranch: string; devBranch: string };
+  repo: { id: string; fullName: string; defaultBranch: string; devBranch: string; cloneUrl: string | null };
   spec: TaskSpec | null;
   notes: Note[];
   // 서버가 렌더한 인계 노트 블록. Executor가 같은 형식을 다시 만들면 둘이 갈라진다.
@@ -363,7 +363,8 @@ export async function getTaskBriefing(ctx: AgentContext, taskId: string): Promis
     return {
       task,
       // 브릿지가 push를 거부할 브랜치를 알아야 한다(default_branch·dev_branch에는 push하지 않는다).
-      repo: { id: repo.id, fullName: repo.fullName, defaultBranch: repo.defaultBranch, devBranch: repo.devBranch },
+      // cloneUrl: CLI가 이 노트북에 레포가 없으면 받아 둔다(NULL이면 github.com/{fullName}).
+      repo: { id: repo.id, fullName: repo.fullName, defaultBranch: repo.defaultBranch, devBranch: repo.devBranch, cloneUrl: repo.cloneUrl },
       spec: task.specId === null ? null : await findSpecForTask(tx, task.specId),
       // read_notes 호출에 의존하지 않는다 — 서버가 골라서 넣는다.
       notes,

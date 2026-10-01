@@ -16,6 +16,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.scripts.json --noEmit",
     "db:psql": "tsx scripts/db-psql.ts",
     "executor": "tsx src/executor/cli.ts",
+    "build:cli": "node -e \"require('fs').rmSync('packages/cli/dist',{recursive:true,force:true})\" && tsc -p tsconfig.cli.json",
+    "check:cli-package": "tsx scripts/check-cli-package.ts",
     "verify:settings": "tsx scripts/verify-workspace-settings.ts",
     "seed:tasks": "tsx scripts/seed-remote-tasks.ts"
   },

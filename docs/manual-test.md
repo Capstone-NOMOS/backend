@@ -297,8 +297,32 @@ curl -s -X POST $BASE/agents/device/poll -H 'Content-Type: application/json' --d
 - 같은 deviceCode로 다시 poll하면 `expired` — 토큰은 한 번만 나간다.
 - 10분이 지나면 승인은 410, poll은 `expired`.
 - userCode는 대소문자·하이픈을 무시한다(`wdjbmjht`도 된다).
-- CLI로 한 번에: `npm run executor login http://localhost:3000` → 브라우저가 열린다(프론트의 `/connect/device`가 아직 없으면 위 curl로 승인).
-  연결 키 경로는 `npm run executor login http://localhost:3000 --connect-key`.
+- CLI로 한 번에: `npm run executor -- connect --server http://localhost:3000` → 브라우저가 열린다(프론트의 `/connect/device`가 아직 없으면 위 curl로 승인).
+  로그인 뒤 배정을 기다렸다가 자동으로 폴링을 시작한다. 로그인만 하려면 `npm run executor -- login http://localhost:3000`,
+  연결 키 경로는 `npm run executor -- login http://localhost:3000 --connect-key`.
+  **`--`를 빼면 안 된다** — npm이 `--connect-key`·`--name`·`--server`를 자기 옵션으로 가져가 스크립트에 전달하지 않는다.
+  배포된 패키지(`npx @capstone-nomos/cli …`)에는 이 문제가 없다.
+
+#### CLI 패키지(@capstone-nomos/cli)
+
+팀원은 서버 레포를 받지 않고 `npx @capstone-nomos/cli@latest connect` 한 줄로 시작한다(`--server` 기본값은 운영 주소).
+패키지는 `src/executor`·`src/bridge`만 `packages/cli/dist`로 빌드한 것이다(`tsconfig.cli.json`).
+
+```bash
+npm run build:cli            # packages/cli/dist
+npm run check:cli-package    # pack → 임시 폴더에 설치 → 다른 폴더에서 --version·doctor → MCP 서버 띄워 도구 목록 확인
+```
+
+로컬 서버에 패키지로 붙어 보려면: `npm run build:cli && npx ./packages/cli connect --server http://localhost:3000`.
+
+배포는 `cli-v<버전>` 태그 push(`.github/workflows/publish-cli.yml`, Trusted Publishing). **첫 버전만** 손으로 올린다 —
+Trusted Publisher는 패키지가 있어야 등록할 수 있다.
+
+1. npmjs.com에서 조직 `capstone-nomos`를 만든다(공개 패키지는 무료). 팀원을 멤버로 초대한다.
+2. `npm login` → `npm run build:cli && npm run check:cli-package` → `cd packages/cli && npm publish --access public`
+3. npmjs.com → 패키지 Settings → **Trusted Publisher**: GitHub Actions, 조직 `Capstone-NOMOS`, 레포 `backend`, 워크플로 `publish-cli.yml`.
+   그리고 같은 화면에서 토큰 publish를 막는다(Require two-factor and disallow tokens).
+4. 이후: `packages/cli/package.json`의 version을 올려 커밋 → `git tag cli-v0.1.1 && git push origin cli-v0.1.1`.
 
 ### 조직
 
