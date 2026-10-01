@@ -28,8 +28,10 @@ info:
     **응답 스키마(`schema`)는 일부 엔드포인트에만 있다.** 없는 곳은 `example`이 기준이다.
 
 servers:
-  - url: http://localhost:3000/api
-    description: 로컬 개발 서버
+  # 상대 경로 — Swagger UI가 이 문서를 서빙한 서버(로컬이든 운영이든)로 요청을 보낸다.
+  # 절대 주소(http://localhost:3000)로 두면 운영 Swagger의 Try it out이 사용자 노트북의 localhost로 나가 브라우저가 막는다.
+  - url: /api
+    description: 이 문서를 서빙한 서버
 
 components:
   securitySchemes:
