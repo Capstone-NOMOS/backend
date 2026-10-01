@@ -53,6 +53,31 @@ npm run dev       # 포트 3000
 > 필수이고(`DOCS_BASIC_AUTH`), 원격에서는 미사용 초대 토큰을 example에 채우지 않는다 — 채우면 문서를 보는
 > 사람 누구나 조직에 들어올 수 있다. 배포 절차는 `docs/deploy-aws.md`.
 
+### 내장 PM — 서버를 거쳐 PM의 실제 응답 보기 (중계 모드)
+
+결제(`ANTHROPIC_API_KEY`) 전까지는 **중계 모드**로 돌린다. 서버가 모델을 직접 부르지 않고, 대표 노트북의
+`executor pm-worker`가 작업을 가져가 **자기 Claude Code(구독)**로 실행한 뒤 결과를 돌려준다. 나머지 흐름(응답 해석·검증·교정·저장)은
+API 모드와 같다. 결제가 붙으면 `.env`를 `PM_PROVIDER=api` + `ANTHROPIC_API_KEY`로 바꾸면 끝이고, pm-worker는 필요 없다.
+
+```bash
+# 1) .env에 PM_PROVIDER=relay 를 두고 서버를 띄운다
+npm run seed && npm run dev
+
+# 2) 다른 터미널 — 대표(rep)의 에이전트로 연결한다. 연결 키는 시드 출력의 rep 행.
+#    (~/.nomos/credentials를 rep 것으로 덮어쓴다. be-laptop으로 돌아가려면 seed를 다시 돌린다)
+NOMOS_CONNECT_KEY=<rep 연결 키> npm run executor -- login http://localhost:3000 --connect-key --name rep-laptop   # -- 필수: 없으면 npm이 --플래그를 가져간다
+npm run executor pm-worker      # 켜 둔다. 이 노트북의 claude가 로그인돼 있어야 한다
+```
+
+3) Swagger(userToken = rep)에서 `POST /projects/{projectId}/pm/plans`에 `{ "instruction": "..." }` → 202와 계획 id.
+   pm-worker 터미널에 `PM 작업 … claude 실행 중`이 뜬다(보통 수십 초~1분).
+4) `GET /projects/{projectId}/pm/plans/{planId}`를 몇 초 간격으로 → `status: ready`면 **`draft`가 PM이 낸 JSON 그대로**다.
+   `failed`면 `error.reason`을 본다(`timeout`이면 pm-worker가 안 켜져 있었다, `api_error`면 노트북의 claude 실행 실패 — 메시지가 `error.detail`에).
+5) 마음에 들면 `POST .../apply`로 명세·태스크가 생긴다. 고칠 게 있으면 `POST .../revise`에 `{ "feedback": "..." }`.
+
+비용은 구독에서 나가지만, `PM_CALL` 이벤트에는 같은 토큰을 API 가격으로 환산한 값이 기록된다(`payload.provider: relay`) —
+예산(`pmBudgetUsd`) 검사도 그 값으로 한다.
+
 ---
 
 ## 1. 준비
@@ -381,6 +406,8 @@ curl -s -X PATCH $BASE/repos/$REPO_API/paths/$PATH_ID -H "Authorization: Bearer 
 | GET | `/api/projects/:projectId` | user(대표 또는 배정된 에이전트의 주인) | 200 | 403 `NOT_PROJECT_MEMBER`, 404 `PROJECT_NOT_FOUND` |
 | POST | `/api/projects/:projectId/members` | user(대표) | 201 | 409 `ROLE_ALREADY_ASSIGNED` · `AGENT_ALREADY_ASSIGNED`, 403 `AGENT_NOT_IN_ORG` · `PROJECT_STARTED` |
 | DELETE | `/api/projects/:projectId/members/:agentId` | user(대표) | 200 | 404 `MEMBER_NOT_FOUND`, 403 `PROJECT_STARTED` |
+| POST | `/api/projects/:projectId/start` | user(대표) | 200 | 422 `PROJECT_START_INVALID`(태스크 없음·역할 공백), 409 `PROJECT_ALREADY_STARTED` |
+| GET | `/api/agents/me/tasks` | agent | 200 | 403 `NOT_PROJECT_MEMBER` |
 
 ```bash
 curl -s -X POST $BASE/orgs/$ORG_ID/projects -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json'   --data "{\"name\":\"p2\",\"autonomyPreset\":\"L2\",\"pmBudgetUsd\":40,\"repoIds\":[\"$REPO_API\"]}"
@@ -390,7 +417,19 @@ curl -s $BASE/projects/$PROJECT_ID -H "Authorization: Bearer $TOKEN"
 curl -s -X POST $BASE/projects/$PROJECT_ID/members -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json'   --data "{\"agentId\":\"$AGENT_ID\",\"teamRole\":\"BACKEND\"}"
 
 curl -s -X DELETE $BASE/projects/$PROJECT_ID/members/$AGENT_ID -H "Authorization: Bearer $TOKEN"
+
+# 프로젝트 시작(G1). npm run seed는 이미 시작한 프로젝트를 만든다 — 시작 흐름을 보려면 npm run seed -- --planning
+curl -s -X POST $BASE/projects/$PROJECT_ID/start -H "Authorization: Bearer $TOKEN"
+
+# 에이전트가 지금 가져갈 수 있는 태스크(웹소켓 푸시와 같은 목록)
+curl -s $BASE/agents/me/tasks -H "Authorization: Bearer $AGENT_TOKEN"
 ```
+
+- **시작 전에는 에이전트가 태스크를 가져갈 수 없다**(claim 409 `PROJECT_NOT_STARTED`). 시작하면 서버가 역할별 담당 에이전트에게 태스크를 푸시한다.
+- 시작 뒤에는 멤버 배정·해제가 403이다. 시작하기 전에 태스크가 쓰는 역할을 전부 배정해야 한다(아니면 422로 어느 역할이 비었는지 알려준다).
+- 웹소켓은 `ws://localhost:3000/api/agents/stream`. 연결 뒤 첫 메시지로 `{"type":"auth","token":"<에이전트 access token>"}`를 보내면
+  `ready` 뒤에 `{"type":"tasks","tasks":[...]}`가 오고, 프로젝트 상태가 바뀔 때마다 다시 온다. 브라우저 콘솔에서:
+  `const ws = new WebSocket('ws://localhost:3000/api/agents/stream'); ws.onopen = () => ws.send(JSON.stringify({type:'auth', token:'…'})); ws.onmessage = (e) => console.log(e.data)`
 
 - 생성은 한 트랜잭션에서 **프로젝트 · 레포 연결 · 정책 사본 17행 · 헌법 스냅샷 · `policy_hash`**를 함께 만든다.
   판정은 이후 `action_catalog`가 아니라 이 사본만 본다.

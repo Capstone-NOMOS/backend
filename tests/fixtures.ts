@@ -25,16 +25,27 @@ export async function createTestAgent(userId: string, name = 'laptop'): Promise<
 // 프로젝트 생성 서비스는 Phase 2에 있으므로, 스키마 테스트용으로 행만 직접 만든다.
 // policy_hash는 계산하지 않되 프로젝트마다 다른 값을 넣는다 — 같은 값을 쓰면
 // policy_hash를 키로 쓰는 스냅샷 캐시에서 서로 다른 프로젝트가 같은 칸을 물린다.
+// started: 시작(G1)한 프로젝트로 만든다 — 시작 전에는 태스크를 가져갈 수 없다(PROJECT_NOT_STARTED).
+// 수령·제출을 다루는 테스트용이다. 시작 자체(검사·이벤트)는 startProject로 따로 검증한다(tests/project-start.test.ts).
 export async function createTestProject(input: {
   orgId: string;
   userId: string;
   name?: string;
+  started?: boolean;
 }): Promise<string> {
   const id = randomUUID();
   await pool.query(
-    `INSERT INTO projects (id, org_id, name, autonomy_preset, policy_hash, pm_budget_usd, created_by)
-     VALUES ($1, $2, $3, 'L2', $4, 40, $5)`,
-    [id, input.orgId, input.name ?? '스터디 관리 웹앱 v1', `test-policy-${id}`, input.userId],
+    `INSERT INTO projects (id, org_id, name, autonomy_preset, policy_hash, pm_budget_usd, created_by, status, started_at)
+     VALUES ($1, $2, $3, 'L2', $4, 40, $5, $6, $7)`,
+    [
+      id,
+      input.orgId,
+      input.name ?? '스터디 관리 웹앱 v1',
+      `test-policy-${id}`,
+      input.userId,
+      input.started ? 'active' : 'planning',
+      input.started ? new Date() : null,
+    ],
   );
   return id;
 }

@@ -12,6 +12,7 @@
 //   executor once              READY 태스크 하나만 처리하고 종료 (개발·데모용)
 //   executor start             10초 폴링
 //   executor clean             worktree 정리
+//   nomos pm-worker            (대표 전용, 서버가 PM_PROVIDER=relay일 때) PM의 모델 호출을 이 노트북의 Claude Code로 대신 실행
 //
 // 서버를 옮길 때 baseUrl만 바꾸면 안 된다. 토큰은 발급한 서버의 서명 키와 그 DB의 agents 행에 묶여 있어
 // 다른 서버에서는 전부 401이다. 원격에 가입해 받은 연결 키로 login을 다시 해야 한다.
@@ -26,18 +27,21 @@ import {
   updateAccessToken,
   writeCredentials,
 } from '../bridge/credentials.js';
-import { NomosClient } from '../bridge/nomos-client.js';
+import { NomosApiError, NomosClient } from '../bridge/nomos-client.js';
 import { connect, DEFAULT_SERVER, serverCalls } from './connect.js';
 import { deviceLogin } from './device-login.js';
 import { cliVersion, mcpServerPath } from './paths.js';
 import { checkTools } from './preflight.js';
+import { handleNextPmJob } from './pm-worker.js';
 import { buildTaskPrompt } from './prompt.js';
 import { runClaude } from './runner.js';
+import { streamTaskSource } from './stream-source.js';
 import { pollingTaskSource, type TaskSource, type TaskSummary } from './task-source.js';
 import { runLint, runSpecTests, type SpecTest, type StageReport } from './verify.js';
 import { ensureRepo } from './repo-checkout.js';
 import { cleanWorkspaces, headSha, prepareWorkspace } from './workspace.js';
 
+// 푸시가 오지 않아도 이 간격으로 한 번씩 다시 본다(끊겼을 때는 이 간격으로 폴링한다).
 const POLL_INTERVAL_MS = 10_000;
 
 function log(line: string): void {
@@ -158,11 +162,11 @@ async function reportBridgeStages(
 async function once(): Promise<void> {
   const client = createClient();
   const self = await client.describeSelf();
-  const source = pollingTaskSource(client, self.projectId);
+  const source = pollingTaskSource(client);
 
   const [task] = await source.nextTasks(1);
   if (!task) {
-    log('READY 태스크가 없다');
+    log('지금 가져갈 수 있는 태스크가 없다(프로젝트 시작 전이거나, 선행 태스크가 끝나지 않았거나, READY가 없다)');
     return;
   }
   await handleTask(client, self.projectId, task);
@@ -171,28 +175,43 @@ async function once(): Promise<void> {
 async function start(): Promise<void> {
   const client = createClient();
   const self = await client.describeSelf();
-  const source: TaskSource = pollingTaskSource(client, self.projectId);
+  // 서버 푸시(웹소켓)로 받는다. 끊겨 있는 동안은 같은 목록을 HTTP로 읽는다.
+  const source: TaskSource = streamTaskSource({
+    baseUrl: readCredentials()!.baseUrl,
+    accessToken: () => readCredentials()!.accessToken,
+    refresh: async () => {
+      if ((await serverCalls({ read: readCredentials, updateAccessToken }).refresh()) === 'rejected') {
+        throw new Error('refresh token이 거부됐다 — connect를 다시 실행하라');
+      }
+    },
+    fallback: () => pollingTaskSource(client).nextTasks(Number.MAX_SAFE_INTEGER),
+    log,
+  });
   log(`시작 — 프로젝트 ${self.projectId}, 역할 ${self.teamRole}, 동시 실행 ${self.maxConcurrent} (${source.kind})`);
 
   const inFlight = new Set<string>();
+  // 태스크 하나가 끝나면 자리가 난다 — 다음 푸시나 간격을 기다리지 않고 바로 다시 본다.
+  let finished: () => void = () => {};
 
   for (;;) {
     try {
       const capacity = self.maxConcurrent - inFlight.size;
       if (capacity > 0) {
-        for (const task of await source.nextTasks(capacity)) {
-          // 이미 처리 중인 태스크는 건너뛴다. 폴링은 같은 목록을 여러 번 준다.
-          if (inFlight.has(task.id)) continue;
+        // 처리 중인 것도 목록에 남아 있을 수 있으니(수령 전) 그만큼 더 받아 거른다.
+        for (const task of (await source.nextTasks(capacity + inFlight.size)).filter((t) => !inFlight.has(t.id)).slice(0, capacity)) {
           inFlight.add(task.id);
           void handleTask(client, self.projectId, task)
             .catch((err) => log(`태스크 ${task.id} 실패: ${err instanceof Error ? err.message : String(err)}`))
-            .finally(() => inFlight.delete(task.id));
+            .finally(() => {
+              inFlight.delete(task.id);
+              finished();
+            });
         }
       }
     } catch (err) {
-      log(`폴링 실패: ${err instanceof Error ? err.message : String(err)}`);
+      log(`태스크 목록 실패: ${err instanceof Error ? err.message : String(err)}`);
     }
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+    await Promise.race([source.waitForChange(POLL_INTERVAL_MS), new Promise<void>((resolve) => (finished = resolve))]);
   }
 }
 
@@ -347,6 +366,23 @@ async function refresh(): Promise<void> {
   }
 }
 
+const PM_POLL_INTERVAL_MS = 3_000;
+
+async function pmWorker(): Promise<void> {
+  const client = createClient();
+  log('pm-worker 시작 — 대표가 PM에 계획을 요청하면 여기서 claude가 돈다 (Ctrl+C로 종료)');
+  for (;;) {
+    try {
+      if (await handleNextPmJob(client, log)) continue;
+    } catch (err) {
+      // 설정이 틀린 경우는 기다려도 풀리지 않는다 — 바로 멈춘다.
+      if (err instanceof NomosApiError && (err.code === 'PM_RELAY_DISABLED' || err.code === 'NOT_REPRESENTATIVE')) throw err;
+      log(`폴링 실패: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, PM_POLL_INTERVAL_MS));
+  }
+}
+
 async function main(): Promise<void> {
   const command = process.argv[2];
   if (command === 'connect') return connectCommand(process.argv.slice(3));
@@ -359,6 +395,7 @@ async function main(): Promise<void> {
   if (command === 'refresh') return refresh();
   if (command === 'once') return once();
   if (command === 'start') return start();
+  if (command === 'pm-worker') return pmWorker();
   if (command === 'clean') {
     const { pruned, removed } = cleanWorkspaces();
     log(`worktree prune: ${pruned.join(', ') || '없음'} / 삭제: ${removed ?? '없음'}`);
@@ -371,6 +408,7 @@ async function main(): Promise<void> {
       '  doctor                                       설치 상태 점검',
       '  login [주소] [--name 이름] [--connect-key]   로그인만',
       '  refresh | once | start | clean | --version',
+      '  pm-worker                                    (대표 전용, 서버가 PM_PROVIDER=relay일 때) PM 모델 호출을 이 노트북의 Claude Code로',
       '',
     ].join('\n'),
   );

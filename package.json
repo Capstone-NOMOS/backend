@@ -22,6 +22,7 @@
     "seed:tasks": "tsx scripts/seed-remote-tasks.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.129.0",
     "@aws-sdk/client-kms": "^3.1141.0",
     "@aws-sdk/client-ssm": "^3.1141.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
@@ -30,6 +31,7 @@
     "node-pg-migrate": "^7.9.1",
     "pg": "^8.13.1",
     "swagger-ui-express": "^5.0.1",
+    "ws": "^8.21.3",
     "zod": "^3.24.1"
   },
   "devDependencies": {
@@ -43,8 +45,7 @@
     "ignore": "^7.0.9",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",
-    "vitest": "^2.1.8",
-    "ws": "^8.21.3"
+    "vitest": "^2.1.8"
   },
   "overrides": {
     "node-pg-migrate": {

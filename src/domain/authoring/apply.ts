@@ -29,6 +29,17 @@ export type AuthoringInput = {
   source: AuthoringSource;
   specs: SpecInput[];
   tasks: TaskDraft[];
+  // PM 계획을 적용할 때 그 계획 id(tasks.plan_id). 사람이 만든 것은 null.
+  planId?: string | null;
+};
+
+// 같은 트랜잭션·같은 프로젝트 잠금 안에서 돌아야 하는 추가 작업(예: PM 계획 적용의 상태 확인·기록).
+// 이 폴더 밖의 SQL은 호출하는 쪽이 들고 온다 — 이 폴더는 SELECT·INSERT만 둔다.
+export type AuthoringHooks = {
+  // 잠금·권한·상태 확인 뒤, 검증 전.
+  beforeValidate?: (client: PoolClient) => Promise<void>;
+  // INSERT·이벤트 뒤, COMMIT 전(dryRun이면 부르지 않는다).
+  afterWrite?: (client: PoolClient, result: AuthoringResult) => Promise<void>;
 };
 
 export type AuthoringResult = {
@@ -41,7 +52,7 @@ export type AuthoringResult = {
 export async function authorInTransaction(
   client: PoolClient,
   input: AuthoringInput,
-  options: { dryRun?: boolean } = {},
+  options: { dryRun?: boolean; hooks?: AuthoringHooks } = {},
 ): Promise<AuthoringResult> {
   await client.query('BEGIN');
   try {
@@ -58,6 +69,8 @@ export async function authorInTransaction(
     if (!OPEN_STATUSES.has(project.status)) {
       throw new AppError('PROJECT_NOT_OPEN', `project is ${project.status}; specs and tasks can be added only while planning or active`);
     }
+
+    await options.hooks?.beforeValidate?.(client);
 
     const snapshot = await loadProjectSnapshot(client, project.id);
     const { problems, tasks } = validateAuthoring(snapshot, input);
@@ -93,7 +106,14 @@ export async function authorInTransaction(
       const specId = task.spec === null ? null : 'newKey' in task.spec ? specIdByKey.get(task.spec.newKey)! : task.spec.existingId;
       taskIdByRef.set(
         task.ref,
-        await insertTask(client, project.id, { repoId: task.repoId, specId, title: task.title, kind: task.kind, teamRole: task.teamRole }),
+        await insertTask(client, project.id, {
+          repoId: task.repoId,
+          specId,
+          title: task.title,
+          kind: task.kind,
+          teamRole: task.teamRole,
+          planId: input.planId ?? null,
+        }),
       );
     }
 
@@ -121,8 +141,10 @@ export async function authorInTransaction(
       });
     }
 
+    const result: AuthoringResult = { specs, taskIds: [...taskIdByRef].map(([ref, id]) => ({ ref, id })), dependencyCount };
+    if (!options.dryRun) await options.hooks?.afterWrite?.(client, result);
     await client.query(options.dryRun ? 'ROLLBACK' : 'COMMIT');
-    return { specs, taskIds: [...taskIdByRef].map(([ref, id]) => ({ ref, id })), dependencyCount };
+    return result;
   } catch (err) {
     await client.query('ROLLBACK');
     // 프로젝트를 잠그므로 이 경로끼리는 겹치지 않는다. 그래도 다른 경로가 같은 키를 먼저 썼다면 409로 돌려준다.

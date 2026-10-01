@@ -12,6 +12,7 @@ import { oauthRouter } from './routes/oauth.js';
 import { orgsRouter } from './routes/orgs.js';
 import { projectsRouter } from './routes/projects.js';
 import { specsRouter } from './routes/specs.js';
+import { pmRouter } from './routes/pm.js';
 import { repoPathsRouter } from './routes/repo-paths.js';
 import { reposRouter } from './routes/repos.js';
 import { tasksRouter } from './routes/tasks.js';
@@ -69,6 +70,7 @@ export function createApp(options: AppOptions = appOptionsFromEnv()): Express {
   app.use('/api', notesRouter);
   app.use('/api', projectsRouter);
   app.use('/api', specsRouter);
+  app.use('/api', pmRouter);
 
   // 수동 테스트용 Swagger UI. 켤지와 인증은 DOCS_ENABLED·DOCS_BASIC_AUTH가 정한다(NODE_ENV와 분리).
   if (options.docs !== null) {

@@ -139,7 +139,7 @@ describe('POST /projects/:projectId/tasks', () => {
     return { ...w, specId: spec.id };
   }
 
-  it('만든 태스크는 READY이고, 배정된 에이전트가 바로 수령할 수 있다', async () => {
+  it('만든 태스크는 READY이고, 배정된 에이전트는 프로젝트 시작 뒤에 수령할 수 있다', async () => {
     const w = await withSpec();
     const res = await call('POST', `/projects/${w.projectId}/tasks`, w.rep.token, {
       title: 'T-051 대기열 API',
@@ -154,6 +154,12 @@ describe('POST /projects/:projectId/tasks', () => {
     const agent = await connectAgent({ connectKey: w.be.connectKey, agentName: 'be-laptop', harness: 'test', skills: [], maxConcurrent: 1 });
     await assignMember({ userId: w.rep.userId, orgId: w.orgId, orgRole: 'REPRESENTATIVE' }, w.projectId, agent.agentId, 'BACKEND');
     const { accessToken } = await refreshAgentToken(agent.refreshToken);
+    // 시작(G1) 전에는 가져갈 수 없다.
+    const early = await call('POST', `/tasks/${task.id}/claim`, accessToken);
+    expect(early.status).toBe(409);
+    expect(early.body.error!.code).toBe('PROJECT_NOT_STARTED');
+
+    expect((await call('POST', `/projects/${w.projectId}/start`, w.rep.token)).status).toBe(200);
     const claimed = await call('POST', `/tasks/${task.id}/claim`, accessToken);
     expect(claimed.status).toBe(200);
     expect((claimed.body.data as unknown as { state: string }).state).toBe('CLAIMED');

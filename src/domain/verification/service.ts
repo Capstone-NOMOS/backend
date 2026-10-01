@@ -1,5 +1,6 @@
 import type { PoolClient } from 'pg';
 import { withTransaction, type Queryable } from '../../config/db.js';
+import { tasksChanged } from '../dispatch/tasks-changed.js';
 import { AppError } from '../../errors.js';
 import { logger } from '../../config/logger.js';
 import { appendEvent } from '../events/append.js';
@@ -348,6 +349,17 @@ export type BridgeVerificationInput = {
 };
 
 export async function recordBridgeVerification(
+  ctx: EventContext & { agentId: string },
+  artifactId: string,
+  input: BridgeVerificationInput,
+): Promise<VerificationSummary> {
+  const summary = await recordBridgeVerificationTx(ctx, artifactId, input);
+  // 커밋 뒤 — 결론(DONE·재시도)에 따라 가져갈 수 있는 태스크가 바뀐다.
+  tasksChanged(ctx.projectId);
+  return summary;
+}
+
+async function recordBridgeVerificationTx(
   ctx: EventContext & { agentId: string },
   artifactId: string,
   input: BridgeVerificationInput,

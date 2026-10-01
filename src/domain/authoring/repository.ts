@@ -108,16 +108,16 @@ export async function insertSpecTest(
   return toSpecTest(rows[0]!);
 }
 
-// plan_id는 비워 둔다 — 사람이 만든 태스크는 PM 계획(plans)에서 나온 것이 아니다. 그래서 M6b 리플레이 그룹핑에서 빠진다.
+// plan_id는 PM 계획을 적용할 때만 채운다. 사람이 만든 태스크는 NULL이라 M6b 리플레이 그룹핑에서 빠진다.
 export async function insertTask(
   db: Queryable,
   projectId: string,
-  task: { repoId: string; specId: string | null; title: string; kind: TaskKind; teamRole: TeamRole | null },
+  task: { repoId: string; specId: string | null; title: string; kind: TaskKind; teamRole: TeamRole | null; planId: string | null },
 ): Promise<string> {
   const { rows } = await db.query(
-    `INSERT INTO tasks (project_id, repo_id, spec_id, title, kind, team_role, state)
-     VALUES ($1, $2, $3, $4, $5, $6, 'READY') RETURNING id`,
-    [projectId, task.repoId, task.specId, task.title, task.kind, task.teamRole],
+    `INSERT INTO tasks (project_id, repo_id, spec_id, title, kind, team_role, state, plan_id)
+     VALUES ($1, $2, $3, $4, $5, $6, 'READY', $7) RETURNING id`,
+    [projectId, task.repoId, task.specId, task.title, task.kind, task.teamRole, task.planId],
   );
   return rows[0]!.id as string;
 }

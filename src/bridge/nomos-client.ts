@@ -138,6 +138,12 @@ export class NomosClient {
   }
 
   // 프롬프트와 .claude/settings.json을 만드는 데 필요한 것 한 번에.
+  // 지금 가져갈 수 있는 태스크(서버가 역할·선행·시작 여부로 거른 것). 웹소켓 푸시와 같은 목록이다.
+  async listClaimableTasks(): Promise<Record<string, unknown>[]> {
+    const data = (await this.request('GET', '/api/agents/me/tasks')) as { tasks: Record<string, unknown>[] };
+    return data.tasks;
+  }
+
   async getBriefing(taskId: string): Promise<Record<string, unknown>> {
     return (await this.request('GET', `/api/tasks/${taskId}/briefing`)) as Record<string, unknown>;
   }
@@ -152,6 +158,20 @@ export class NomosClient {
 
   async reportBranch(taskId: string, branchName: string): Promise<void> {
     await this.request('PATCH', `/api/tasks/${taskId}/branch`, { branchName });
+  }
+
+  // 중계 모드 PM 작업(대표 노트북의 pm-worker만).
+  async nextPmJob(): Promise<Record<string, unknown> | null> {
+    const data = (await this.request('GET', '/api/pm/jobs/next')) as { job: Record<string, unknown> | null };
+    return data.job;
+  }
+
+  async submitPmJobResult(jobId: string, result: unknown): Promise<void> {
+    await this.request('POST', `/api/pm/jobs/${jobId}/result`, result);
+  }
+
+  async failPmJob(jobId: string, message: string): Promise<void> {
+    await this.request('POST', `/api/pm/jobs/${jobId}/failure`, { message });
   }
 
   private async request(method: 'GET' | 'POST' | 'PATCH', path: string, body?: unknown): Promise<unknown> {

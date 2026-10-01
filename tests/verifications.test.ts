@@ -95,7 +95,7 @@ async function setup(options: { cloneUrl?: string | null; loginId?: string } = {
     options.cloneUrl === undefined ? 'file:///demo/acme-web.git' : options.cloneUrl,
   ]);
 
-  const projectId = await createTestProject({ orgId, userId });
+  const projectId = await createTestProject({ orgId, userId, started: true });
   await pool.query(`INSERT INTO project_repos (project_id, repo_id) VALUES ($1, $2)`, [projectId, repoId]);
   await pool.query(`INSERT INTO project_members (project_id, agent_id, team_role) VALUES ($1, $2, 'BACKEND')`, [
     projectId,
