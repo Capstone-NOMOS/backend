@@ -101,7 +101,6 @@ const DRAFT: PlanDraft = {
       featureKey: 'F-10',
       title: '스터디 참여 신청',
       content: 'WHEN 정원이 차면 THEN 시스템은 POST /api/studies/{id}/join에 409를 반환한다',
-      tests: [{ criterion: '정원 초과는 409', testCode: 'expect(res.status).toBe(409)' }],
     },
   ],
   tasks: [{ ref: 'api', title: 'T-10 참여 신청 API', repo: 'acme/study-api', teamRole: 'BACKEND', kind: 'IMPLEMENT', spec: 'F-10', dependsOn: [] }],

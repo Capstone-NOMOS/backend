@@ -89,7 +89,6 @@ const DRAFT: PlanDraft = {
       featureKey: 'F-10',
       title: '스터디 참여 신청',
       content: 'WHEN 정원이 차면 THEN 시스템은 409를 반환한다',
-      tests: [{ criterion: '정원 초과는 409', testCode: 'expect(res.status).toBe(409)' }],
     },
   ],
   tasks: [
@@ -140,7 +139,7 @@ async function events(type: string) {
 }
 
 describe('계획 요청 → 초안 → 적용', () => {
-  it('초안이 ready가 되고, 적용하면 명세·태스크가 plan_id와 함께 생기며 시험지는 전부 잠긴다', async () => {
+  it('초안이 ready가 되고, 적용하면 명세·태스크가 plan_id와 함께 생긴다 — PM은 시험지를 만들지 않는다', async () => {
     const w = await world();
     const calls = fakeModel(() => respond(DRAFT));
     const plan = await requestAndWait(w);
@@ -169,7 +168,9 @@ describe('계획 요청 → 초안 → 적용', () => {
       ['T-10 참여 신청 API', plan.id, 'READY'],
       ['T-11 참여 신청 버튼', plan.id, 'READY'],
     ]);
-    expect((await pool.query(`SELECT count(*)::int AS n FROM spec_tests WHERE locked_at IS NULL`)).rows[0].n).toBe(0);
+    // 시험지는 없다(V2는 SKIPPED). 명세 본문(계약 + 수용 기준)만 들어간다.
+    expect((await pool.query(`SELECT count(*)::int AS n FROM spec_tests`)).rows[0].n).toBe(0);
+    expect((await pool.query(`SELECT count(*)::int AS n FROM specs`)).rows[0].n).toBe(1);
     expect((await events('TASK_CREATED')).map((e) => [e.on_behalf_of, e.payload.source])).toEqual([
       [w.rep.userId, 'pm'],
       [w.rep.userId, 'pm'],

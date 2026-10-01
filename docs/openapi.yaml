@@ -449,7 +449,7 @@ components:
         content: { type: string }
     PlanDraft:
       type: object
-      description: 'PM이 낸 계획 초안. 적용하면 이 내용이 그대로 명세·태스크가 된다(시험지는 전부 잠긴다)'
+      description: 'PM이 낸 계획 초안. 적용하면 이 내용이 그대로 명세·태스크가 된다. PM은 시험지를 쓰지 않는다(명세에 시험지 0개 — V2는 SKIPPED)'
       required: [mode, rationale, estimate, specs, tasks]
       properties:
         mode: { type: string, enum: [SEQUENTIAL, CONTRACT_PARALLEL, HYBRID], description: '추천 진행 방식(기록용 — 실행 순서는 dependsOn이 정한다)' }
@@ -464,20 +464,11 @@ components:
           type: array
           items:
             type: object
-            required: [featureKey, title, content, tests]
+            required: [featureKey, title, content]
             properties:
               featureKey: { type: string }
               title: { type: string }
-              content: { type: string, description: 'EARS 수용 기준' }
-              tests:
-                type: array
-                description: '시험지 — 팀원 노트북에서 실행되는 코드다. 적용 전에 전문을 검토한다'
-                items:
-                  type: object
-                  required: [criterion, testCode]
-                  properties:
-                    criterion: { type: string }
-                    testCode: { type: string }
+              content: { type: string, description: '계약(API: 메서드·경로·상태코드·응답 필드 / 화면: 경로·동작·문구) + EARS 수용 기준' }
         tasks:
           type: array
           items:
@@ -2163,7 +2154,7 @@ paths:
       tags: [내장 PM]
       summary: 계획 초안 요청 (대표 전용)
       description: |
-        대표의 지시로 PM(NOMOS 내장, NOMOS 키로 실행)이 명세·시험지·태스크 DAG 초안을 만든다.
+        대표의 지시로 PM(NOMOS 내장)이 명세(API·화면 계약 + 수용 기준)와 태스크 DAG(어느 레포·어느 역할이 무엇을 어떤 순서로) 초안을 만든다.
         **202로 바로 답하고 PM은 뒤에서 돈다**(수십 초~수 분). `GET .../pm/plans/{planId}`를 몇 초 간격으로 폴링해 `ready`·`failed`를 본다.
 
         - 프로젝트당 진행 중인 요청은 하나(409 `PM_PLAN_IN_PROGRESS`)
@@ -2213,7 +2204,7 @@ paths:
       tags: [내장 PM]
       summary: 계획 상태·초안 (대표 전용)
       description: |
-        `pending`이면 작성 중이다. `ready`면 `draft`를 검토한다 — **시험지 코드 전문을 보여줄 것**(적용하면 잠기고 팀원 노트북에서 실행된다).
+        `pending`이면 작성 중이다. `ready`면 `draft`를 검토한다 — 명세의 계약과 태스크별 담당 역할·선행 관계.
         `failed`면 `error.reason`으로 이유를 보여준다.
       security: [{ userToken: [] }]
       parameters:
@@ -2276,7 +2267,7 @@ paths:
       tags: [내장 PM]
       summary: 초안 적용 (대표 전용)
       description: |
-        저장된 초안을 **그대로** 명세·태스크로 만든다(명세·태스크 생성과 같은 검증·잠금, `source: pm`, 시험지 전부 잠금).
+        저장된 초안을 **그대로** 명세·태스크로 만든다(명세·태스크 생성과 같은 검증·잠금, `source: pm`). 시험지는 만들지 않는다.
         태스크는 READY라 배정된 에이전트가 바로 수령할 수 있다. **G1(프로젝트 시작)이 아니다** — 프로젝트 상태는 그대로다.
 
         - 두 번 적용하거나 같은 수정 체인의 다른 초안을 적용하면 409 `PLAN_NOT_APPLICABLE`

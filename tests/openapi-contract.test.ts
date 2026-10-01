@@ -261,7 +261,7 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
       mode: 'SEQUENTIAL',
       rationale: '작다',
       estimate: { workingDays: 3, notes: '' },
-      specs: [{ featureKey: key, title: '출석', content: 'WHEN 출석하면 THEN 기록한다', tests: [{ criterion: '기록된다', testCode: 'expect(1).toBe(1)' }] }],
+      specs: [{ featureKey: key, title: '출석', content: 'WHEN 출석하면 THEN 기록한다' }],
       tasks: [{ ref: 'att', title: `T-20 출석 API${suffix}`, repo: 'acme/study-api', teamRole: 'BACKEND', kind: 'IMPLEMENT', spec: key, dependsOn: [] }],
     });
     const drafts = [draft('F-20', ''), draft('F-21', ' v2')];

@@ -32,20 +32,11 @@ export const PLAN_DRAFT_JSON_SCHEMA: Record<string, unknown> = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['featureKey', 'title', 'content', 'tests'],
+        required: ['featureKey', 'title', 'content'],
         properties: {
           featureKey: { type: 'string' },
           title: { type: 'string' },
           content: { type: 'string' },
-          tests: {
-            type: 'array',
-            items: {
-              type: 'object',
-              additionalProperties: false,
-              required: ['criterion', 'testCode'],
-              properties: { criterion: { type: 'string' }, testCode: { type: 'string' } },
-            },
-          },
         },
       },
     },
@@ -80,9 +71,6 @@ export const planDraftSchema = z.object({
         featureKey: z.string().trim().min(1).max(32),
         title: z.string().trim().min(1).max(200),
         content: z.string().trim().min(1).max(20_000),
-        tests: z
-          .array(z.object({ criterion: z.string().trim().min(1).max(500), testCode: z.string().min(1).max(50_000) }))
-          .max(AUTHORING_LIMITS.testsPerSpec),
       }),
     )
     .max(AUTHORING_LIMITS.specs),
@@ -104,8 +92,9 @@ export const planDraftSchema = z.object({
 
 export type PlanDraft = z.infer<typeof planDraftSchema>;
 
-// 초안 → 명세·태스크 생성 입력. 시험지는 전부 잠근다 — 대표가 초안 화면에서 시험지 코드 전문을 보고 적용하는 것이 곧 검토다.
-// 적용은 저장된 초안을 **그대로** 넣는다(다시 생성하거나 서버가 고치지 않는다). 검토한 코드와 잠기는 코드가 같아야 한다.
+// 초안 → 명세·태스크 생성 입력. 적용은 저장된 초안을 **그대로** 넣는다(다시 생성하거나 서버가 고치지 않는다).
+// PM은 시험지(spec_tests)를 쓰지 않는다 — 시험을 돌릴 하네스(서버 기동·시험 데이터·인증)가 정해지기 전에는 추측으로 채운 코드가 되고,
+// 그 코드가 팀원 노트북에서 실행된다. 시험지가 없으면 V2는 SKIPPED로 남는다(통과로 세지 않는다).
 export function draftToAuthoring(
   draft: PlanDraft,
   ctx: { projectId: string; actorUserId: string; planId: string },
@@ -119,7 +108,7 @@ export function draftToAuthoring(
       featureKey: s.featureKey,
       title: s.title,
       content: s.content,
-      tests: s.tests.map((t) => ({ criterion: t.criterion, testCode: t.testCode, locked: true })),
+      tests: [],
     })),
     tasks: draft.tasks.map((t) => ({
       ref: t.ref,
