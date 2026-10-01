@@ -650,6 +650,132 @@ Table events {
 
 // ═══════════ 인증 ═══════════
 
+Table agent_device_requests {
+  id               uuid        [pk]
+  device_code_hash text        [not null, unique, note: 'sha256(deviceCode). 평문은 저장하지 않는다']
+  user_code        text        [not null, note: '정규화한 8자(자음 20자 알파벳). 살아 있는 요청끼리만 유일']
+  agent_name       text        [not null]
+  harness          text        [not null]
+  skills           text[]      [not null, default: '{}']
+  max_concurrent   int         [not null]
+  client_ip        text        [note: '승인 화면에 보여 준다(피싱 대비)']
+  status           text        [not null, default: 'PENDING', note: 'PENDING | APPROVED | DENIED | CONSUMED. EXPIRED는 저장하지 않고 expires_at으로 계산']
+  decided_by       uuid        [note: '승인·거부한 사람 = 에이전트의 주인']
+  decided_at       timestamptz
+  poll_interval    int         [not null, default: 5, note: 'slow_down마다 +5초']
+  last_polled_at   timestamptz
+  expires_at       timestamptz [not null, note: '10분']
+  created_at       timestamptz [not null, default: `now()`]
+
+  Note: '''
+  ★ 013 CLI 브라우저 승인(OAuth Device Authorization Grant, RFC 8628). NOMOS가 인증 서버다.
+  agent_device_requests_status_chk   status IN ('PENDING','APPROVED','DENIED','CONSUMED')
+  agent_device_requests_user_code_chk user_code ~ '^[BCDFGHJKLMNPQRSTVWXZ]{8}
+  id          uuid        [pk, default: `gen_random_uuid()`]
+  agent_id    uuid        [not null]
+  token_hash  text        [not null, note: '평문 저장 금지']
+  kind        text        [not null, default: 'refresh', note: 'refresh']
+  expires_at  timestamptz [not null]
+  revoked_at  timestamptz
+  created_at  timestamptz [not null, default: `now()`]
+
+  indexes {
+    (agent_id, kind)
+    token_hash [unique]
+  }
+  Note: 'access token은 JWT라 저장 안 함 — 서명만 검증 (§5.1)'
+}
+
+Table oauth_sessions {
+  id            uuid        [pk, default: `gen_random_uuid()`]
+  user_id       uuid
+  github_token_enc text     [note: '★ 007: 암호화해서 저장. 컬럼 이름이 평문 저장을 막는 첫 방어선. 키는 KMS, 로컬은 환경변수 폴백']
+  scope         text
+  expires_at    timestamptz
+  created_at    timestamptz [not null, default: `now()`]
+}
+
+// ═══════════ 관계 ═══════════
+
+Ref: users.org_id > organizations.id [delete: cascade]
+Ref: invites.org_id > organizations.id [delete: cascade]
+Ref: invites.created_by > users.id
+Ref: invites.used_by > users.id
+Ref: agents.user_id > users.id [delete: cascade]
+Ref: agents.org_id > organizations.id [delete: cascade]
+Ref: repos.org_id > organizations.id [delete: cascade]
+Ref: repo_paths.repo_id > repos.id [delete: cascade]
+Ref: repo_paths.action_key > action_catalog.action_key
+
+Ref: projects.org_id > organizations.id [delete: cascade]
+Ref: projects.created_by > users.id
+Ref: projects.halted_by > users.id
+Ref: project_repos.project_id > projects.id [delete: cascade]
+Ref: project_repos.repo_id > repos.id
+Ref: project_members.project_id > projects.id [delete: cascade]
+Ref: project_members.agent_id > agents.id
+Ref: project_policies.project_id > projects.id [delete: cascade]
+Ref: project_policies.action_key > action_catalog.action_key
+
+Ref: plans.project_id > projects.id [delete: cascade]
+Ref: plans.parent_plan_id > plans.id
+Ref: plans.root_plan_id > plans.id
+Ref: plans.requested_by > users.id
+
+Ref: specs.project_id > projects.id [delete: cascade]
+Ref: specs.superseded_by > specs.id
+Ref: spec_tests.spec_id > specs.id [delete: cascade]
+Ref: contracts.project_id > projects.id [delete: cascade]
+Ref: contracts.spec_id > specs.id
+Ref: contracts.proposed_by > agents.id
+Ref: contracts.superseded_by > contracts.id
+Ref: contract_proposals.contract_id > contracts.id [delete: cascade]
+Ref: contract_proposals.agent_id > agents.id
+
+Ref: tasks.project_id > projects.id [delete: cascade]
+Ref: tasks.plan_id > plans.id
+Ref: tasks.spec_id > specs.id
+Ref: tasks.contract_id > contracts.id
+Ref: tasks.repo_id > repos.id
+Ref: tasks.assignee_agent_id > agents.id
+Ref: tasks.blocked_by_task_id > tasks.id
+Ref: task_deps.task_id > tasks.id [delete: cascade]
+Ref: task_deps.depends_on > tasks.id
+Ref: notes.project_id > projects.id [delete: cascade]
+Ref: notes.task_id > tasks.id
+Ref: notes.spec_id > specs.id
+Ref: notes.repo_id > repos.id
+Ref: notes.author_agent_id > agents.id
+Ref: notes.supersedes > notes.id
+
+Ref: feature_branches.project_id > projects.id [delete: cascade]
+Ref: feature_branches.spec_id > specs.id
+Ref: feature_branches.repo_id > repos.id
+
+Ref: artifacts.task_id > tasks.id [delete: cascade]
+Ref: verifications.artifact_id > artifacts.id [delete: cascade]
+
+Ref: disputes.project_id > projects.id [delete: cascade]
+Ref: disputes.raised_by > agents.id
+Ref: disputes.target_task_id > tasks.id
+Ref: disputes.blocking_task_id > tasks.id
+
+Ref: approvals.project_id > projects.id [delete: cascade]
+Ref: approvals.decided_by > users.id
+Ref: approvals.action_key > action_catalog.action_key
+
+Ref: events.org_id > organizations.id
+Ref: events.project_id > projects.id
+Ref: events.actor_agent_id > agents.id
+
+Ref: agent_tokens.agent_id > agents.id [delete: cascade]
+Ref: agent_device_requests.decided_by > users.id
+Ref: oauth_sessions.user_id > users.id [delete: cascade]
+  agent_device_requests_decided_chk  (status = 'PENDING') = (decided_by IS NULL AND decided_at IS NULL)
+  agent_device_requests_live_user_code UNIQUE (user_code) WHERE status IN ('PENDING','APPROVED')
+  '''
+}
+
 Table agent_tokens {
   id          uuid        [pk, default: `gen_random_uuid()`]
   agent_id    uuid        [not null]

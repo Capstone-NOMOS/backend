@@ -39,6 +39,9 @@ export function appOptionsFromEnv(): AppOptions {
 // 앱 조립만 한다. listen은 server.ts가 한다 — 통합 테스트가 임의 포트로 띄울 수 있어야 하기 때문이다.
 export function createApp(options: AppOptions = appOptionsFromEnv()): Express {
   const app = express();
+  // 운영은 Caddy 한 단 뒤에 있다. 이 설정이 없으면 req.ip가 Caddy 주소로 찍힌다(브라우저 승인 화면의 요청 IP가 쓸모없어진다).
+  // 1단만 믿는다 — X-Forwarded-For의 맨 오른쪽(Caddy가 붙인 값)을 쓰므로 클라이언트가 앞에 끼운 값에 속지 않는다.
+  app.set('trust proxy', 1);
 
   // 사전 요청(OPTIONS)이 body 파싱·라우트보다 먼저 끝나야 한다.
   app.use(cors(options.corsRules));

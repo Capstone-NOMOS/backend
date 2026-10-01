@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 프로젝트
 
-NOMOS 서버 — 여러 개발자가 각자 노트북에서 Claude Code 에이전트를 돌릴 때 그 사이의 계약·권한·분쟁을 조율하는 서버. 현재 구현 범위는 조직·레포·경로 소유권·초대, 로컬 계정과 CLI 연결, 프로젝트·태스크·산출물·인계 노트·검증(마이그레이션 012까지), AWS 배포(014)다.
+NOMOS 서버 — 여러 개발자가 각자 노트북에서 Claude Code 에이전트를 돌릴 때 그 사이의 계약·권한·분쟁을 조율하는 서버. 현재 구현 범위는 조직·레포·경로 소유권·초대, 로컬 계정과 CLI 연결(브라우저 승인 포함), 프로젝트·태스크·산출물·인계 노트·검증, 명세·태스크 작성(마이그레이션 013까지), AWS 배포다.
 
 설계 원칙(위반 금지): **P1** 상태는 서버가 소유하고 클라이언트는 전이를 요청만 한다. **P3** 모든 행동은 사람에게 귀속된다(`on_behalf_of` 없는 이벤트는 없다). **P5** 모든 상태 변화는 `events`에 append되고 events가 유일한 진실이다.
 
@@ -24,7 +24,7 @@ npm run seed                        # 수동 테스트용 시드 (기존 데이�
 npm run seed:tasks -- <projectId> <파일.json> --as <대표> [--apply]   # 기존 프로젝트에 명세·태스크만 INSERT (운영용, 기본 dry-run)
 npm run typecheck                   # src + scripts 타입체크
 npm run executor once               # READY 태스크 하나 처리 (start=폴링, clean=worktree 정리)
-npm run executor login <baseUrl>    # 서버에 연결 키로 붙어 ~/.nomos/credentials를 새로 쓴다 (refresh=재발급)
+npm run executor login <baseUrl>    # 브라우저 승인으로 연결해 ~/.nomos/credentials를 새로 쓴다 (--connect-key=연결 키 경로, refresh=재발급)
 docker build -t nomos-server .      # 운영 이미지. 배포 절차는 docs/deploy-aws.md
 npm run verify:settings             # worktree의 settings.json을 서버 판정과 대조
 npm run db:psql                     # .env의 DATABASE_URL로 조회 (접속 대상을 첫 줄에 찍는다)
@@ -203,6 +203,14 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
   경로는 규칙을 한 번만 풀어 `access`로 금지와 소유권을 함께 판정한다 — 소유권을 먼저 보면 `.env`가 `scope:violation`으로 잘못 기록된다.
 - **복호화가 필요한 비밀값만** `utils/secret-box.ts`(AES-256-GCM)로 암호화한다. 연결 키·refresh 토큰처럼 대조만 하는 값은 계속 sha256 해시다.
   키는 KMS가 정본이고 `SECRET_ENCRYPTION_KEY`는 로컬 폴백이다. `KMS_KEY_ID`가 있는데 KMS 경로가 없으면 조용히 내려가지 말고 실패시킨다.
+- **CLI 로그인의 기본은 브라우저 승인(device flow, RFC 8628, `domain/agent/device-service.ts`)이다.** CLI가 `/agents/device/start`로 코드를 받아
+  브라우저를 열고 `poll`하면, 로그인된 사람이 웹(`{FRONTEND_BASE_URL}/connect/device`)에서 승인한다. 연결 키(`/agents/connect`)는 SSH 등 브라우저가 없는 환경용으로 남는다.
+  - 토큰 발급은 두 경로가 **`issueAgentCredentials` 한 벌**을 쓴다(`AGENT_CONNECTED.payload.method`로 가른다). 한쪽만 고치면 토큰이 갈라진다.
+  - deviceCode는 해시로만 저장하고 **토큰은 한 번만 나간다**(APPROVED → CONSUMED 조건부 UPDATE + 행 잠금). 만료 10분, interval보다 빠른 poll은 `slow_down`(+5초, 저장).
+  - 요청 시점에는 승인할 사람이 없어 `AGENT_DEVICE_REQUESTED`는 `system:device-flow` 명의다. 결정·연결은 승인한 사람 명의이고, 그 사람이 에이전트의 주인이다.
+  - 피싱 대비: 승인 화면에 에이전트 이름·**요청 IP**·시각을 보여 주고, CLI는 승인 뒤 **연결된 계정**(`account`)을 출력한다(남이 내 코드를 승인한 경우를 드러낸다).
+    요청 IP를 위해 `app.set('trust proxy', 1)` — Caddy 한 단만 믿는다. 늘리거나 `true`로 바꾸면 클라이언트가 끼운 X-Forwarded-For를 믿게 된다.
+  - userCode는 자음 20자 8자리(약 2.5×10¹⁰), 대소문자·하이픈 무시. 서버에 rate limit이 아직 없다 — 대입 공격은 조합 수와 10분 만료로만 막는다.
 - 교체 지점은 여전히 `auth.ts` 하나다. 라우트는 `req.user`와 `orgIdOf(req)`만 쓴다. `req.user.orgId`는 조직 가입 전 `null`이므로 조직이 필요한 핸들러는 `orgIdOf(req)`(없으면 403 `NOT_IN_ORG`)를 쓴다.
 
 ### 브릿지와 MCP
@@ -350,7 +358,7 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
 
 **GitHub API 실패가 우리 기능을 멈추면 안 된다.** collaborator 조회가 실패해도 members 목록은 반환된다 — try/catch로 감싸고 `isCollaborator` 필드를 **생략**한다. `false`로 채우지 말 것: "확인 안 됨"과 "권한 없음"은 다르다. 토큰이 없을 때 레포 목록 조회는 500이 아니라 빈 배열 + 경고 로그를 반환한다.
 
-## 배포 (014)
+## 배포
 
 EC2 1대(Docker) + RDS PostgreSQL 16 + KMS + SSM. 콘솔 절차는 `docs/deploy-aws.md`(계정 ID·도메인이 들어 있어 저장소에 올리지 않는 로컬 전용 문서), 파일은 `deploy/`.
 

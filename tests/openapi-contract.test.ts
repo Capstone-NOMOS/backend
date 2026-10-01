@@ -160,6 +160,18 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     });
     await call('GET', `/orgs/${orgId}/agents`, rep);
 
+    // 브라우저 승인(device flow) — 승인 하나, 거부 하나
+    const device = await call('POST', '/agents/device/start', null, { agentName: 'web-laptop', harness: 'claude-code' });
+    const deviceCode = device.data.deviceCode as string;
+    const userCode = device.data.userCode as string;
+    await call('POST', '/agents/device/poll', null, { deviceCode });
+    await call('GET', `/agents/device/requests/${userCode}`, rep);
+    await call('POST', `/agents/device/requests/${userCode}/approve`, rep);
+    await pool.query(`UPDATE agent_device_requests SET last_polled_at = NULL`); // poll 간격 검사를 건너뛴다
+    await call('POST', '/agents/device/poll', null, { deviceCode });
+    const denied = await call('POST', '/agents/device/start', null, { agentName: 'other-laptop', harness: 'claude-code' });
+    await call('POST', `/agents/device/requests/${denied.data.userCode as string}/deny`, rep);
+
     // GitHub 연동(가짜 API) — 대표의 GitHub 연결
     await call('POST', '/auth/github/device/start', rep);
     await call('POST', '/auth/github/device/poll', rep, { deviceCode: 'still-waiting' });

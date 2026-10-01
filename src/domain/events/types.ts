@@ -21,7 +21,9 @@ export type EventType =
   | 'REPO_UPDATED'
   | 'TASKS_IMPORTED'
   | 'SPEC_CREATED'
-  | 'TASK_CREATED';
+  | 'TASK_CREATED'
+  | 'AGENT_DEVICE_REQUESTED'
+  | 'AGENT_DEVICE_DECIDED';
 
 // payload에 연결 키·토큰·비밀번호 같은 비밀값을 절대 넣지 않는다. events는 지워지지 않는다.
 
@@ -40,6 +42,8 @@ export type AgentConnectedPayload = {
   name: string;
   harness: string;
   reconnected: boolean;
+  // 어떤 경로로 연결했나. 예전 행에는 없다(연결 키뿐이던 시절).
+  method?: 'connect_key' | 'device';
 };
 
 export type OrgCreatedPayload = {
@@ -228,6 +232,11 @@ export type TaskCreatedPayload = {
   dependsOn: string[];
 };
 
+// CLI 브라우저 승인. 요청 시점에는 승인할 사람이 아직 없다 — on_behalf_of는 system:device-flow.
+// 결정(승인·거부)은 결정한 사람 명의다. 토큰 발급은 AGENT_CONNECTED(method: 'device')로 남는다.
+export type AgentDeviceRequestedPayload = { requestId: string; agentName: string; harness: string; clientIp: string | null };
+export type AgentDeviceDecidedPayload = { requestId: string; decision: 'APPROVED' | 'DENIED'; agentName: string; clientIp: string | null };
+
 export type EventPayloadMap = {
   USER_SIGNED_UP: UserSignedUpPayload;
   CONNECT_KEY_ROTATED: ConnectKeyRotatedPayload;
@@ -252,4 +261,6 @@ export type EventPayloadMap = {
   TASKS_IMPORTED: TasksImportedPayload;
   SPEC_CREATED: SpecCreatedPayload;
   TASK_CREATED: TaskCreatedPayload;
+  AGENT_DEVICE_REQUESTED: AgentDeviceRequestedPayload;
+  AGENT_DEVICE_DECIDED: AgentDeviceDecidedPayload;
 };
