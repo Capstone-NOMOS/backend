@@ -1,6 +1,16 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { applyPlan, getPlan, listProjectPlans, requestPlan, revisePlan } from '../domain/pm/service.js';
+import {
+  applyPlan,
+  getPlan,
+  listProjectPlans,
+  requestPlan,
+  revisePlan,
+  failRelayJob,
+  submitRelayResult,
+  takeRelayJob,
+} from '../domain/pm/service.js';
+import { authenticateAgent } from '../middleware/agent-auth.js';
 import { authenticate, requireRepresentative } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 
@@ -68,5 +78,55 @@ pmRouter.post(
   async (req, res) => {
     const { projectId, planId } = req.params as z.infer<typeof planParams>;
     res.status(200).json({ data: await applyPlan(req.user!.id, projectId, planId) });
+  },
+);
+
+// ── 중계 모드(PM_PROVIDER=relay) — 대표 노트북의 `executor pm-worker`가 부른다. API 모드에서는 409 PM_RELAY_DISABLED.
+
+// GET /api/pm/jobs/next — 그 조직의 다음 모델 호출 작업을 가져간다(대표 본인의 에이전트만). 없으면 job: null.
+pmRouter.get('/pm/jobs/next', authenticateAgent, async (req, res) => {
+  res.status(200).json({ data: { job: await takeRelayJob(req.agent!) } });
+});
+
+const jobParams = z.object({ jobId: z.string().uuid() });
+const relayResultBody = z
+  .object({
+    // 모델의 종료 사유. refusal·max_tokens면 서버가 refused·truncated로 처리한다(교정하지 않는다).
+    stopReason: z.string().max(64).nullable(),
+    servedModel: z.string().max(128).nullable(),
+    // 모델이 낸 JSON 텍스트 그대로. 해석·검증은 서버가 한다.
+    text: z.string().max(2_000_000),
+    usage: z.object({
+      inputTokens: z.number().int().nonnegative(),
+      outputTokens: z.number().int().nonnegative(),
+      cacheWriteTokens: z.number().int().nonnegative(),
+      cacheReadTokens: z.number().int().nonnegative(),
+    }),
+  })
+  .strict();
+
+// POST /api/pm/jobs/:jobId/result — 실행 결과를 돌려준다. 이후 흐름(해석·검증·교정·저장)은 API 모드와 같다.
+pmRouter.post(
+  '/pm/jobs/:jobId/result',
+  authenticateAgent,
+  validate({ params: jobParams, body: relayResultBody }),
+  async (req, res) => {
+    const { jobId } = req.params as z.infer<typeof jobParams>;
+    await submitRelayResult(req.agent!, jobId, req.body as z.infer<typeof relayResultBody>);
+    res.status(200).json({ data: { accepted: true } });
+  },
+);
+
+const relayFailureBody = z.object({ message: z.string().min(1).max(2000) }).strict();
+
+// POST /api/pm/jobs/:jobId/failure — 노트북에서 실행이 실패했다. 시간 제한까지 기다리지 않고 계획을 failed(api_error)로 닫는다.
+pmRouter.post(
+  '/pm/jobs/:jobId/failure',
+  authenticateAgent,
+  validate({ params: jobParams, body: relayFailureBody }),
+  async (req, res) => {
+    const { jobId } = req.params as z.infer<typeof jobParams>;
+    await failRelayJob(req.agent!, jobId, (req.body as z.infer<typeof relayFailureBody>).message);
+    res.status(200).json({ data: { accepted: true } });
   },
 );

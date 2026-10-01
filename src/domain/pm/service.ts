@@ -10,6 +10,8 @@ import { findActor, lockProjectForAuthoring } from '../authoring/repository.js';
 import { appendEvent } from '../events/append.js';
 import { dagHashOf, draftToAuthoring, PLAN_DRAFT_JSON_SCHEMA, planDraftSchema, planStructure, type PlanDraft } from './draft.js';
 import { getPmModel, type PmModel } from './model.js';
+import { completeJob, failJob, takeNextJob, type RelayJob, type RelayResult } from './relay.js';
+import { findUserById } from '../org/repository.js';
 import { costOfAttempts, estimateInputTokens, maxCallCost, type AttemptUsage } from './pricing.js';
 import { buildUserPrompt, PM_SYSTEM_PROMPT } from './prompt.js';
 import {
@@ -287,6 +289,7 @@ async function recordCall(
         purpose: call.purpose,
         requestedModel: env.PM_MODEL,
         servedModel: call.servedModel,
+        provider: env.PM_PROVIDER,
         stopReason: call.stopReason,
         interrupted: call.interrupted,
         attempts: call.attempts,
@@ -332,6 +335,7 @@ async function callModel(
       user,
       jsonSchema: PLAN_DRAFT_JSON_SCHEMA,
       signal: controller.signal,
+      context: { orgId: project.orgId, planId, purpose },
     });
     // 거절도 과금된다 — 무엇이든 기록한다.
     await recordCall(project, planId, {
@@ -517,4 +521,37 @@ export async function recoverInterruptedPlans(): Promise<number> {
   }
   if (pending.length > 0) logger.warn('closed PM plans interrupted by a restart', { count: pending.length });
   return pending.length;
+}
+
+// ── 중계 모드: 대표 노트북의 pm-worker ─────────────────────────────────────
+
+// 작업을 가져가는 에이전트는 그 조직 **대표 본인의** 에이전트여야 한다. 작업에는 프로젝트 맥락(지시·레포·태스크)이 들어 있고,
+// 그 결과가 곧 계획 초안이 된다 — 팀원의 노트북이 대표 대신 PM을 돌리게 하지 않는다.
+// 에이전트 행은 인증 미들웨어가 방금 DB에서 읽은 것(AuthAgent)을 받는다.
+type RelayAgent = { id: string; onBehalfOf: string; orgId: string | null };
+
+async function assertRepresentativeAgent(agent: RelayAgent): Promise<{ orgId: string }> {
+  if (env.PM_PROVIDER !== 'relay') {
+    throw new AppError('PM_RELAY_DISABLED', 'this server calls the model API directly (PM_PROVIDER=api); no pm-worker is needed');
+  }
+  const owner = await findUserById(pool, agent.onBehalfOf);
+  if (!agent.orgId || !owner || owner.orgId !== agent.orgId || owner.orgRole !== 'REPRESENTATIVE') {
+    throw new AppError('NOT_REPRESENTATIVE', "only the organization representative's agent can run the PM");
+  }
+  return { orgId: agent.orgId };
+}
+
+export async function takeRelayJob(agent: RelayAgent): Promise<RelayJob | null> {
+  const { orgId } = await assertRepresentativeAgent(agent);
+  return takeNextJob(orgId, agent.id);
+}
+
+export async function submitRelayResult(agent: RelayAgent, jobId: string, result: RelayResult): Promise<void> {
+  await assertRepresentativeAgent(agent);
+  completeJob(jobId, agent.id, result);
+}
+
+export async function failRelayJob(agent: RelayAgent, jobId: string, message: string): Promise<void> {
+  await assertRepresentativeAgent(agent);
+  failJob(jobId, agent.id, message);
 }

@@ -58,6 +58,9 @@ const envSchema = z
     // 내장 PM(NOMOS 키로 실행). 없으면 PM API만 503 PM_UNAVAILABLE이고 나머지는 그대로 돈다 —
     // 필수로 두면 SSM에 키를 넣기 전까지 운영 서버가 뜨지 않는다.
     ANTHROPIC_API_KEY: z.string().optional(),
+    // api: 서버가 Anthropic API를 직접 부른다(운영). relay: 대표 노트북의 `executor pm-worker`가 자기 Claude Code로 실행한다
+    // (결제 전까지의 임시 모드 — 개인 구독은 본인용이라 여러 사용자에게 PM을 제공하는 운영에서는 api를 쓴다).
+    PM_PROVIDER: z.enum(['api', 'relay']).default('api'),
     // 모델·노력 수준·출력 한도는 설정값이다. 새 모델이 이상하면 이전 모델로 바꿔 비교한다.
     PM_MODEL: z.string().min(1).default('claude-sonnet-5-5'),
     PM_EFFORT: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('high'),

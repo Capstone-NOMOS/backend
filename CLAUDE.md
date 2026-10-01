@@ -366,6 +366,12 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
 - **PM_REVIEW의 AUTO 강등을 아직 연결하지 말 것.** PM이 리뷰(②)를 하지 않는 지금 연결하면 "PM 무응답"이 상시라 PM_REVIEW가 전부 자동 통과된다.
 - `dag_hash`는 **구조만**(명세 키, 태스크의 레포·역할·종류·명세, 선행 쌍) 해시한다 — 근거·제목·ref 이름을 넣으면 M6a가 항상 0%다. 구조는 `plans.structure`에도 둔다.
 - 키가 없으면 PM API만 503 `PM_UNAVAILABLE`(`ANTHROPIC_API_KEY`는 선택). 테스트는 `setPmModel`로 가짜 모델을 끼운다 — CI는 실제 API를 부르지 않는다.
+- **중계 모드(`PM_PROVIDER=relay`)는 결제 전 임시 방식이다.** 모델 호출 한 자리만 대표 노트북의 `executor pm-worker`(headless Claude Code, 구독)로
+  바뀌고 나머지 흐름은 같다(`domain/pm/relay.ts`, 대기열은 메모리). 작업은 **그 조직 대표 본인의 에이전트만** 가져간다(`GET /pm/jobs/next`) —
+  작업에 프로젝트 맥락이 들어 있고 결과가 곧 초안이다. 아무도 안 가져가면 `PM_TIMEOUT_MS`로 `failed(timeout)`. 개인 구독을 여러 사용자의 PM으로
+  쓰지 말 것 — 운영은 API 모드(기본)다. 워커는 지침을 파일·프롬프트를 stdin으로 넘긴다(Windows 명령줄 32k자 제한).
+- **시험지는 동작 수준이다**(지침): HTTP 요청·응답 또는 화면 동작만, 진입점은 헌법·명세에 적힌 것만. 내부 모듈 경로를 import하면
+  구현보다 먼저 잠긴 시험지가 구조를 강제한다(실제 초안이 `../src/attendance/service`를 import했다).
 - 모델·노력·한도는 설정값(`PM_MODEL` 기본 `claude-sonnet-5-5`, `PM_EFFORT` 기본 `high`, `PM_MAX_TOKENS`). 생각 토큰도 출력으로 과금되니 실제 비용을 보고 조정한다.
 
 ### 프로젝트와 멤버

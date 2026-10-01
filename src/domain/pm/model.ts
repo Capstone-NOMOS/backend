@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { env } from '../../config/env.js';
 import type { AttemptUsage } from './pricing.js';
+import { relayModel } from './relay.js';
 
 // PM이 모델을 부르는 자리. 인터페이스 뒤에 두어 테스트가 가짜 모델을 끼운다(CI는 실제 API를 부르지 않는다 — 비용 0).
 
@@ -14,6 +15,8 @@ export type PmModelRequest = {
   user: string;
   jsonSchema: Record<string, unknown>;
   signal: AbortSignal;
+  // 어느 계획의 호출인가. 중계 모드는 이걸로 작업을 그 조직의 pm-worker에게만 넘긴다.
+  context?: { orgId: string; planId: string; purpose: 'draft' | 'repair' };
 };
 
 export type PmModelResponse = {
@@ -92,9 +95,11 @@ export function setPmModel(next: PmModel | null): PmModel | null {
   return previous;
 }
 
-// 키가 없으면 null — PM API만 503 PM_UNAVAILABLE이고 나머지 기능은 그대로 돈다.
+// PM_PROVIDER=relay면 대표 노트북의 pm-worker가 실행한다(결제 전 임시). api면 서버가 Anthropic API를 직접 부른다.
+// api인데 키가 없으면 null — PM API만 503 PM_UNAVAILABLE이고 나머지 기능은 그대로 돈다.
 export function getPmModel(): PmModel | null {
   if (override) return override;
+  if (env.PM_PROVIDER === 'relay') return relayModel;
   if (!env.ANTHROPIC_API_KEY) return null;
   cached ??= anthropicModel(env.ANTHROPIC_API_KEY);
   return cached;

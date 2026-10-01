@@ -248,6 +248,8 @@ export type PmCallPayload = {
   purpose: 'draft' | 'repair';
   requestedModel: string;
   servedModel: string | null;
+  // api: 서버가 Anthropic API를 직접 불렀다(과금). relay: 대표 노트북의 Claude Code(구독)가 실행했다 — 비용은 참고값이다.
+  provider?: 'api' | 'relay';
   stopReason: string | null;
   interrupted: boolean;
   // 시도마다(대체 모델이 돌면 둘 이상) 모델과 토큰. 비용은 항목마다 그 모델 가격으로 계산해 더한다.

@@ -12,6 +12,7 @@
 //   executor once              READY 태스크 하나만 처리하고 종료 (개발·데모용)
 //   executor start             10초 폴링
 //   executor clean             worktree 정리
+//   nomos pm-worker            (대표 전용, 서버가 PM_PROVIDER=relay일 때) PM의 모델 호출을 이 노트북의 Claude Code로 대신 실행
 //
 // 서버를 옮길 때 baseUrl만 바꾸면 안 된다. 토큰은 발급한 서버의 서명 키와 그 DB의 agents 행에 묶여 있어
 // 다른 서버에서는 전부 401이다. 원격에 가입해 받은 연결 키로 login을 다시 해야 한다.
@@ -26,11 +27,12 @@ import {
   updateAccessToken,
   writeCredentials,
 } from '../bridge/credentials.js';
-import { NomosClient } from '../bridge/nomos-client.js';
+import { NomosApiError, NomosClient } from '../bridge/nomos-client.js';
 import { connect, DEFAULT_SERVER, serverCalls } from './connect.js';
 import { deviceLogin } from './device-login.js';
 import { cliVersion, mcpServerPath } from './paths.js';
 import { checkTools } from './preflight.js';
+import { handleNextPmJob } from './pm-worker.js';
 import { buildTaskPrompt } from './prompt.js';
 import { runClaude } from './runner.js';
 import { pollingTaskSource, type TaskSource, type TaskSummary } from './task-source.js';
@@ -347,6 +349,23 @@ async function refresh(): Promise<void> {
   }
 }
 
+const PM_POLL_INTERVAL_MS = 3_000;
+
+async function pmWorker(): Promise<void> {
+  const client = createClient();
+  log('pm-worker 시작 — 대표가 PM에 계획을 요청하면 여기서 claude가 돈다 (Ctrl+C로 종료)');
+  for (;;) {
+    try {
+      if (await handleNextPmJob(client, log)) continue;
+    } catch (err) {
+      // 설정이 틀린 경우는 기다려도 풀리지 않는다 — 바로 멈춘다.
+      if (err instanceof NomosApiError && (err.code === 'PM_RELAY_DISABLED' || err.code === 'NOT_REPRESENTATIVE')) throw err;
+      log(`폴링 실패: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, PM_POLL_INTERVAL_MS));
+  }
+}
+
 async function main(): Promise<void> {
   const command = process.argv[2];
   if (command === 'connect') return connectCommand(process.argv.slice(3));
@@ -359,6 +378,7 @@ async function main(): Promise<void> {
   if (command === 'refresh') return refresh();
   if (command === 'once') return once();
   if (command === 'start') return start();
+  if (command === 'pm-worker') return pmWorker();
   if (command === 'clean') {
     const { pruned, removed } = cleanWorkspaces();
     log(`worktree prune: ${pruned.join(', ') || '없음'} / 삭제: ${removed ?? '없음'}`);
@@ -371,6 +391,7 @@ async function main(): Promise<void> {
       '  doctor                                       설치 상태 점검',
       '  login [주소] [--name 이름] [--connect-key]   로그인만',
       '  refresh | once | start | clean | --version',
+      '  pm-worker                                    (대표 전용, 서버가 PM_PROVIDER=relay일 때) PM 모델 호출을 이 노트북의 Claude Code로',
       '',
     ].join('\n'),
   );

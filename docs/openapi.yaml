@@ -491,6 +491,36 @@ components:
               kind: { type: string, enum: [IMPLEMENT, INTEGRATION, REWORK] }
               spec: { type: string, nullable: true, description: '명세 featureKey' }
               dependsOn: { type: array, items: { type: string }, description: '먼저 끝나야 하는 태스크의 ref' }
+    PmRelayJob:
+      type: object
+      description: '중계 모드에서 pm-worker가 실행할 모델 호출 한 건. 서버가 만든 지침·프롬프트·출력 스키마를 그대로 실행한다'
+      required: [id, orgId, planId, purpose, request, takenBy, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        orgId: { type: string, format: uuid }
+        planId: { type: string, format: uuid }
+        purpose: { type: string, enum: [draft, repair], description: 'repair면 첫 초안이 검증에 걸려 위반 목록을 붙여 다시 쓰는 호출' }
+        request:
+          type: object
+          required: [model, effort, maxTokens, system, user, jsonSchema]
+          properties:
+            model: { type: string }
+            effort: { type: string }
+            maxTokens: { type: integer }
+            system: { type: string, description: 'PM 지침' }
+            user: { type: string, description: '프로젝트 맥락·지시(교정이면 위반 목록)' }
+            jsonSchema: { type: object, additionalProperties: true, description: '초안 출력 스키마' }
+        takenBy: { type: string, format: uuid, nullable: true, description: '가져간 에이전트' }
+        createdAt: { type: string, format: date-time }
+    PmRelayAccepted:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [accepted]
+          properties:
+            accepted: { type: boolean, enum: [true] }
     PmPlan:
       type: object
       required: [id, projectId, status, instruction, feedback, parentPlanId, mode, draft, error, costUsd, createdAt, appliedAt]
@@ -2275,6 +2305,116 @@ paths:
             application/json:
               example:
                 error: { code: PLAN_INVALID, message: 명세·태스크 검증 실패 1건, details: [{ where: 'tasks[api]', message: '태스크 "T-1"이 프로젝트에 이미 있다 (다시 보낸 건 아닌가?)' }] }
+
+  /pm/jobs/next:
+    get:
+      tags: [내장 PM]
+      summary: (중계 모드) 다음 PM 작업 가져가기 — 대표의 pm-worker 전용
+      description: |
+        **서버가 `PM_PROVIDER=relay`일 때만 쓴다.** 결제 전까지 PM의 모델 호출을 대표 노트북의 Claude Code로 대신 돌리는 임시 방식이다 —
+        `npm run executor pm-worker`가 몇 초마다 부른다. 사람이 직접 부를 일은 없다.
+        API 모드(`PM_PROVIDER=api`, 기본)에서는 409 `PM_RELAY_DISABLED`.
+
+        조직 **대표 본인의** 에이전트만 가져간다(그 밖은 403 `NOT_REPRESENTATIVE`). 한 번 가져간 작업은 다시 나오지 않고, 없으면 `job: null`.
+        아무도 가져가지 않으면 `PM_TIMEOUT_MS` 뒤 계획이 `failed(timeout)`가 된다.
+      security: [{ agentToken: [] }]
+      responses:
+        '200':
+          description: 작업(없으면 null)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [job]
+                    properties:
+                      job: { $ref: '#/components/schemas/PmRelayJob', nullable: true }
+              example:
+                data: { job: null }
+        '409':
+          description: 서버가 API 모드다
+          content:
+            application/json:
+              example:
+                error: { code: PM_RELAY_DISABLED, message: 'this server calls the model API directly (PM_PROVIDER=api); no pm-worker is needed' }
+  /pm/jobs/{jobId}/result:
+    post:
+      tags: [내장 PM]
+      summary: (중계 모드) PM 작업 결과 제출 — 대표의 pm-worker 전용
+      description: |
+        모델이 낸 텍스트를 **그대로** 돌려준다. 해석·검증·교정·비용 기록은 API 모드와 똑같이 서버가 한다 —
+        결과는 `GET /projects/{projectId}/pm/plans/{planId}`의 `draft`로 보인다.
+        가져간 에이전트가 아니거나 이미 끝난(시간 제한·재시작) 작업이면 404 `PM_JOB_NOT_FOUND`.
+      security: [{ agentToken: [] }]
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [stopReason, servedModel, text, usage]
+              properties:
+                stopReason: { type: string, nullable: true, description: 'refusal·max_tokens면 서버가 refused·truncated로 닫는다' }
+                servedModel: { type: string, nullable: true }
+                text: { type: string, description: '모델 출력(JSON 텍스트) 그대로' }
+                usage:
+                  type: object
+                  required: [inputTokens, outputTokens, cacheWriteTokens, cacheReadTokens]
+                  properties:
+                    inputTokens: { type: integer }
+                    outputTokens: { type: integer }
+                    cacheWriteTokens: { type: integer }
+                    cacheReadTokens: { type: integer }
+      responses:
+        '200':
+          description: 받음
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PmRelayAccepted' }
+              example: { data: { accepted: true } }
+        '404':
+          description: 없는 작업
+          content:
+            application/json:
+              example:
+                error: { code: PM_JOB_NOT_FOUND, message: 'relay job not found (finished, timed out, or the server restarted)' }
+  /pm/jobs/{jobId}/failure:
+    post:
+      tags: [내장 PM]
+      summary: (중계 모드) PM 작업 실패 보고 — 대표의 pm-worker 전용
+      description: |
+        노트북에서 claude 실행이 실패했다(로그인 안 됨·실행 오류 등). 시간 제한까지 기다리지 않고 계획을 `failed(api_error)`로 닫는다.
+        `message`는 `error.detail.message`에 남는다.
+      security: [{ agentToken: [] }]
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message: { type: string, maxLength: 2000 }
+      responses:
+        '200':
+          description: 받음
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PmRelayAccepted' }
+              example: { data: { accepted: true } }
+        '404':
+          description: 없는 작업
+          content:
+            application/json:
+              example:
+                error: { code: PM_JOB_NOT_FOUND, message: 'relay job not found (finished, timed out, or the server restarted)' }
 
   /projects/{projectId}/specs:
     get:

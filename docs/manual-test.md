@@ -53,6 +53,31 @@ npm run dev       # 포트 3000
 > 필수이고(`DOCS_BASIC_AUTH`), 원격에서는 미사용 초대 토큰을 example에 채우지 않는다 — 채우면 문서를 보는
 > 사람 누구나 조직에 들어올 수 있다. 배포 절차는 `docs/deploy-aws.md`.
 
+### 내장 PM — 서버를 거쳐 PM의 실제 응답 보기 (중계 모드)
+
+결제(`ANTHROPIC_API_KEY`) 전까지는 **중계 모드**로 돌린다. 서버가 모델을 직접 부르지 않고, 대표 노트북의
+`executor pm-worker`가 작업을 가져가 **자기 Claude Code(구독)**로 실행한 뒤 결과를 돌려준다. 나머지 흐름(응답 해석·검증·교정·저장)은
+API 모드와 같다. 결제가 붙으면 `.env`를 `PM_PROVIDER=api` + `ANTHROPIC_API_KEY`로 바꾸면 끝이고, pm-worker는 필요 없다.
+
+```bash
+# 1) .env에 PM_PROVIDER=relay 를 두고 서버를 띄운다
+npm run seed && npm run dev
+
+# 2) 다른 터미널 — 대표(rep)의 에이전트로 연결한다. 연결 키는 시드 출력의 rep 행.
+#    (~/.nomos/credentials를 rep 것으로 덮어쓴다. be-laptop으로 돌아가려면 seed를 다시 돌린다)
+NOMOS_CONNECT_KEY=<rep 연결 키> npm run executor -- login http://localhost:3000 --connect-key --name rep-laptop   # -- 필수: 없으면 npm이 --플래그를 가져간다
+npm run executor pm-worker      # 켜 둔다. 이 노트북의 claude가 로그인돼 있어야 한다
+```
+
+3) Swagger(userToken = rep)에서 `POST /projects/{projectId}/pm/plans`에 `{ "instruction": "..." }` → 202와 계획 id.
+   pm-worker 터미널에 `PM 작업 … claude 실행 중`이 뜬다(보통 수십 초~1분).
+4) `GET /projects/{projectId}/pm/plans/{planId}`를 몇 초 간격으로 → `status: ready`면 **`draft`가 PM이 낸 JSON 그대로**다.
+   `failed`면 `error.reason`을 본다(`timeout`이면 pm-worker가 안 켜져 있었다, `api_error`면 노트북의 claude 실행 실패 — 메시지가 `error.detail`에).
+5) 마음에 들면 `POST .../apply`로 명세·태스크가 생긴다. 고칠 게 있으면 `POST .../revise`에 `{ "feedback": "..." }`.
+
+비용은 구독에서 나가지만, `PM_CALL` 이벤트에는 같은 토큰을 API 가격으로 환산한 값이 기록된다(`payload.provider: relay`) —
+예산(`pmBudgetUsd`) 검사도 그 값으로 한다.
+
 ---
 
 ## 1. 준비

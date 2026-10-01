@@ -49,6 +49,8 @@ export type ErrorCode =
   | 'PM_PLAN_IN_PROGRESS'
   | 'PLAN_NOT_FOUND'
   | 'PLAN_NOT_APPLICABLE'
+  | 'PM_JOB_NOT_FOUND'
+  | 'PM_RELAY_DISABLED'
   | 'PROJECT_NOT_FOUND'
   | 'INVALID_AUTONOMY_PRESET'
   | 'REPO_IN_ACTIVE_PROJECT'
@@ -125,6 +127,10 @@ const STATUS_BY_CODE: Record<ErrorCode, number> = {
   PLAN_NOT_FOUND: 404,
   // 적용할 수 없는 상태(ready가 아님)이거나, 같은 수정 체인에서 이미 적용된 계획이 있다.
   PLAN_NOT_APPLICABLE: 409,
+  // 중계 모드의 작업. 끝났거나 시간 제한에 걸렸거나 서버가 재시작돼 사라졌다.
+  PM_JOB_NOT_FOUND: 404,
+  // 서버가 중계 모드가 아니다(PM_PROVIDER=api) — pm-worker가 할 일이 없다.
+  PM_RELAY_DISABLED: 409,
   // 422 — zod가 아니라 서비스가 판정한다. 어휘 위반은 형식 오류와 구분해서 알려준다.
   INVALID_AUTONOMY_PRESET: 422,
   // 409 — 같은 레포를 두 활성 프로젝트가 쓰면 경로 소유권이 겹친다.

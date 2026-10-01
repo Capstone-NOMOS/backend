@@ -5,6 +5,7 @@ import { createApp } from '../src/app.js';
 import { pool } from '../src/config/db.js';
 import { clearPolicyCache } from '../src/domain/policy/policy-cache.js';
 import { setGithubDeviceApi } from '../src/domain/oauth/service.js';
+import { env } from '../src/config/env.js';
 import { setPmModel } from '../src/domain/pm/model.js';
 import { drainPmJobs } from '../src/domain/pm/service.js';
 import type { GithubDeviceApi } from '../src/domain/oauth/github-device.js';
@@ -282,6 +283,32 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
       await call('POST', `/projects/${projectId}/pm/plans/${revised.data.id as string}/apply`, rep);
     } finally {
       setPmModel(null);
+    }
+
+    // 중계 모드 — 대표 노트북의 pm-worker가 가져가고(결과·실패) 돌려준다.
+    const mutableEnv = env as { PM_PROVIDER: 'api' | 'relay' };
+    mutableEnv.PM_PROVIDER = 'relay';
+    try {
+      const worker = repConn.data.accessToken as string;
+      const nextJob = async () => {
+        for (let i = 0; i < 100; i += 1) {
+          const { job } = (await call('GET', '/pm/jobs/next', worker)).data as { job: { id: string } | null };
+          if (job) return job.id;
+          await new Promise((r) => setTimeout(r, 20));
+        }
+        throw new Error('no relay job');
+      };
+      await call('POST', `/projects/${projectId}/pm/plans`, rep, { instruction: '출석 통계' });
+      await call('POST', `/pm/jobs/${await nextJob()}/result`, worker, {
+        stopReason: 'end_turn', servedModel: 'claude-sonnet-5-5', text: JSON.stringify(draft('F-22', ' v3')),
+        usage: { inputTokens: 100, outputTokens: 100, cacheWriteTokens: 0, cacheReadTokens: 0 },
+      });
+      await drainPmJobs();
+      await call('POST', `/projects/${projectId}/pm/plans`, rep, { instruction: '출석 알림' });
+      await call('POST', `/pm/jobs/${await nextJob()}/failure`, worker, { message: 'Not logged in' });
+      await drainPmJobs();
+    } finally {
+      mutableEnv.PM_PROVIDER = 'api';
     }
   });
 

@@ -154,6 +154,20 @@ export class NomosClient {
     await this.request('PATCH', `/api/tasks/${taskId}/branch`, { branchName });
   }
 
+  // 중계 모드 PM 작업(대표 노트북의 pm-worker만).
+  async nextPmJob(): Promise<Record<string, unknown> | null> {
+    const data = (await this.request('GET', '/api/pm/jobs/next')) as { job: Record<string, unknown> | null };
+    return data.job;
+  }
+
+  async submitPmJobResult(jobId: string, result: unknown): Promise<void> {
+    await this.request('POST', `/api/pm/jobs/${jobId}/result`, result);
+  }
+
+  async failPmJob(jobId: string, message: string): Promise<void> {
+    await this.request('POST', `/api/pm/jobs/${jobId}/failure`, { message });
+  }
+
   private async request(method: 'GET' | 'POST' | 'PATCH', path: string, body?: unknown): Promise<unknown> {
     const first = await this.send(method, path, body);
     if (!needsRefresh(first)) return unwrap(first);
