@@ -1,0 +1,13 @@
+{
+  // npm 패키지 @capstone-nomos/cli 빌드. 노트북에서 도는 코드(src/executor·src/bridge)만 packages/cli/dist로 낸다.
+  // 이 두 폴더가 서버 코드(config·domain·utils)를 import하면 그 파일까지 패키지에 실려 나간다 —
+  // tests/cli-package.test.ts가 import 범위를 막는다.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "packages/cli/dist",
+    "rootDir": "src",
+    "sourceMap": false
+  },
+  "include": ["src/executor", "src/bridge"],
+  "exclude": ["node_modules", "dist"]
+}

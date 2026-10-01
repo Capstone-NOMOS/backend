@@ -1,0 +1,61 @@
+# CLI 패키지(@capstone-nomos/cli)를 npm에 올린다. cli-v<버전> 태그를 push하면 돈다(예: cli-v0.1.1).
+# 서버 배포(deploy.yml)와 따로 간다 — CLI와 서버 이미지는 버전을 따로 올린다.
+#
+# 순서: 테스트(ci.yml) → 태그와 packages/cli/package.json 버전 대조 → 패키지 점검(pack → 설치 → 다른 폴더에서 실행·MCP 서버 기동) → publish
+#
+# - npm 자격 증명은 **Trusted Publishing(OIDC)** 이다. NPM_TOKEN을 Secrets에 두지 않는다(AWS를 OIDC로 받는 것과 같은 이유).
+#   npm 웹의 패키지 설정 → Trusted Publisher에 이 레포·이 워크플로 파일(publish-cli.yml)을 등록해 둔다.
+#   Trusted Publisher는 패키지가 있어야 등록할 수 있으므로 **첫 버전만** 로컬에서 손으로 올린다(docs/manual-test.md).
+# - 공개 레포라 출처 증명(provenance)이 함께 붙는다 — npm 페이지에 "이 커밋·이 워크플로에서 빌드됨"이 표시된다.
+#
+# 올리는 법: packages/cli/package.json의 version을 올려 커밋 → git tag cli-v<버전> → git push origin cli-v<버전>
+name: publish-cli
+
+on:
+  push:
+    tags: ['cli-v*']
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: publish-cli
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write # Trusted Publishing + provenance
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      # Trusted Publishing은 npm 11.5.1 이상이 필요하다(Node 22 기본 npm은 10.x).
+      - run: npm install -g npm@^11.5.1
+
+      - run: npm ci
+
+      - name: 태그와 패키지 버전 대조
+        run: |
+          version="$(node -p "require('./packages/cli/package.json').version")"
+          if [ "cli-v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "태그 ${GITHUB_REF_NAME}와 packages/cli/package.json 버전 ${version}이 다르다" >&2
+            exit 1
+          fi
+
+      # build:cli를 포함한다. 설치된 패키지를 backend 밖 폴더에서 실행하고 MCP 서버까지 띄워 본다.
+      - run: npm run check:cli-package
+
+      - run: npm publish --access public --provenance
+        working-directory: packages/cli
