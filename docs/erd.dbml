@@ -285,12 +285,25 @@ Table plans {
   id           uuid        [pk, default: `gen_random_uuid()`]
   project_id   uuid        [not null]
   run_id       uuid        [note: '실험 회차 — events.run_id와 동일 값']
-  dag_snapshot jsonb       [not null, note: '태스크·의존 관계 전체']
-  dag_hash     text        [not null, note: 'M6a 비교용. sha256(canonicalJson)']
+  dag_snapshot jsonb       [note: '★ 014: PM 초안 전체(명세·태스크·선행). pending·failed면 NULL']
+  dag_hash     text        [note: 'M6a 비교용. sha256(canonicalJson(structure)) — 근거·제목·ref 이름은 빼고 구조만']
   source       text        [not null, default: 'planner', note: 'planner | replay']
-  mode         text        [note: 'PM이 제안한 진행 모드']
-  approved_at  timestamptz [note: 'G1 승인 = 잠김']
+  mode         text        [note: 'PM이 제안한 진행 모드(기록용)']
+  approved_at  timestamptz [note: 'G1 승인 = 잠김. 적용(applied_at)과 다르다 — G1이 생길 때까지 비워 둔다']
   created_at   timestamptz [not null, default: `now()`]
+  status                text        [not null, default: 'pending', note: '★ 014: pending | ready | failed | applied | rejected']
+  instruction           text        [note: '★ 014: 대표의 지시']
+  feedback              text        [note: '★ 014: 수정 요청이면 대표의 피드백']
+  parent_plan_id        uuid        [note: '★ 014: 수정 요청이면 이전 초안']
+  root_plan_id          uuid        [note: '★ 014: 수정 체인의 첫 계획. 체인당 적용 1회(부분 유니크)']
+  requested_by          uuid        [note: '★ 014: 요청한 대표']
+  error_reason          text        [note: '★ 014: failed일 때만 — refused | truncated | timeout | invalid | restart | budget | api_error']
+  error_detail          jsonb
+  inflight_max_cost_usd "numeric(10,6)" [note: '★ 014: 진행 중 PM 호출의 최대 비용. 끊기면 이 값으로 정산']
+  structure             jsonb       [note: '★ 014: M6a용 구조(정렬된 명세 키·태스크 튜플·선행 쌍)']
+  applied_at            timestamptz [note: '★ 014: 적용 시각(applied일 때만)']
+  rejected_at           timestamptz [note: '★ 014: 반려 시각(rejected일 때만)']
+  reject_reason         text        [note: '★ 014: 반려 사유(선택, 1000자 이하)']
 
   indexes {
     (project_id, created_at)
@@ -301,6 +314,17 @@ Table plans {
     M6a 계획 결정성 = 같은 입력 3회 → dag_hash 유사도 (LLM이라 변동)
     M6b 실행 결정성 = source='replay'로 같은 DAG 주입 3회 → 전이 시퀀스 일치율
   M6b가 P4 "계획은 유동, 실행은 결정적"의 유일한 증명 경로
+
+  ★ 014 제약(DBML로 표현 불가)
+    plans_status_chk        status IN ('pending','ready','failed','applied','rejected')
+    plans_error_chk         (status = 'failed') = (error_reason IS NOT NULL)
+    plans_error_reason_chk  error_reason IN ('refused','truncated','timeout','invalid','restart','budget','api_error')
+    plans_draft_chk         status NOT IN ('ready','applied','rejected') OR (dag_snapshot IS NOT NULL AND dag_hash IS NOT NULL)
+    plans_applied_chk       (status = 'applied') = (applied_at IS NOT NULL)
+    plans_rejected_chk      (status = 'rejected') = (rejected_at IS NOT NULL)
+    plans_reject_reason_chk reject_reason IS NULL OR (status = 'rejected' AND char_length(reject_reason) <= 1000)
+    uq_plans_pending        UNIQUE (project_id) WHERE status = 'pending'        -- 프로젝트당 진행 중 요청 1개
+    uq_plans_applied_root   UNIQUE (root_plan_id) WHERE status = 'applied'      -- 수정 체인당 적용 1회
   '''
 }
 
@@ -824,6 +848,9 @@ Ref: project_policies.project_id > projects.id [delete: cascade]
 Ref: project_policies.action_key > action_catalog.action_key
 
 Ref: plans.project_id > projects.id [delete: cascade]
+Ref: plans.parent_plan_id > plans.id
+Ref: plans.root_plan_id > plans.id
+Ref: plans.requested_by > users.id
 
 Ref: specs.project_id > projects.id [delete: cascade]
 Ref: specs.superseded_by > specs.id

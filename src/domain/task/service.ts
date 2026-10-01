@@ -1,5 +1,6 @@
 import { withTransaction } from '../../config/db.js';
 import { AppError, type ErrorCode } from '../../errors.js';
+import { tasksChanged } from '../dispatch/tasks-changed.js';
 import { appendEvent } from '../events/append.js';
 import type { DenialStage, PathDenialReason } from '../events/types.js';
 import { settle, type Outcome } from '../outcome.js';
@@ -20,6 +21,8 @@ import {
   countUnfinishedDeps,
   findTaskById,
   insertArtifact,
+  isProjectStarted,
+  listClaimableTasks,
   findSpecForTask,
   listArtifactsForTask,
   listLockedSpecTests,
@@ -47,7 +50,7 @@ const SUBMIT_ACTION_KEY = 'artifact:submit';
 const CLAIM_LABEL = 'task:claim';
 
 export async function claimTask(ctx: AgentContext, taskId: string): Promise<Task> {
-  return settle(
+  const claimed = settle(
     await withTransaction<Outcome<Task>>(async (tx) => {
       const deny = async (
         stage: DenialStage,
@@ -76,6 +79,11 @@ export async function claimTask(ctx: AgentContext, taskId: string): Promise<Task
       // 다른 프로젝트의 태스크는 "없음"으로 답한다 — 존재 여부를 알려주지 않는다.
       if (!task || task.projectId !== ctx.projectId) {
         return { denied: { code: 'TASK_NOT_FOUND', message: `task ${taskId} not found` } };
+      }
+
+      // 시작(G1) 전에는 실행하지 않는다. 정책 거부가 아니라 아직 때가 아닌 것이라 TOOL_DENIED로 남기지 않는다(M5′ 분모 아님).
+      if (!(await isProjectStarted(tx, ctx.projectId))) {
+        return { denied: { code: 'PROJECT_NOT_STARTED', message: 'project has not started yet; the representative starts it' } };
       }
 
       // team_role이 NULL이면 역할 제한이 없는 태스크다 (통합 태스크).
@@ -112,6 +120,9 @@ export async function claimTask(ctx: AgentContext, taskId: string): Promise<Task
       return { value: claimed };
     }),
   );
+  // 이 태스크가 빠졌다 — 역할 제한 없는 태스크는 다른 에이전트의 목록에서도 빠져야 한다.
+  tasksChanged(ctx.projectId);
+  return claimed;
 }
 
 export type SubmitArtifactInput = {
@@ -255,7 +266,20 @@ export async function submitArtifact(
   // 안에서 돌리면 네트워크가 느린 동안 커넥션과 행 잠금을 붙들고 있게 된다.
   // 제출 자체는 이미 커밋됐으므로 검증이 실패해도 산출물 기록은 남는다.
   const verification = await runServerVerifications(ctx, artifact.id);
+  // 결론에 따라 선행이 풀리거나(DONE) 다시 READY가 됐을 수 있다.
+  tasksChanged(ctx.projectId);
   return { artifact, verification };
+}
+
+// 이 에이전트가 지금 가져갈 수 있는 태스크(푸시와 같은 스냅샷). 웹소켓이 끊겼을 때 폴링하는 자리다.
+export async function listClaimableTasksForAgent(ctx: AgentContext): Promise<Task[]> {
+  return withTransaction(async (tx) => {
+    const membership = await findAgentMembership(tx, ctx.agentId);
+    if (!membership || membership.projectId !== ctx.projectId) {
+      throw new AppError('NOT_PROJECT_MEMBER', 'agent is not a member of this project');
+    }
+    return listClaimableTasks(tx, ctx.projectId, membership.teamRole);
+  });
 }
 
 // ── 조회 ──────────────────────────────────────────────────────────────────

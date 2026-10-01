@@ -2,6 +2,7 @@ import { Router, type Request } from 'express';
 import { z } from 'zod';
 import {
   assignMember,
+  startProject,
   createProject,
   getProject,
   listProjects,
@@ -96,6 +97,19 @@ projectsRouter.delete(
     const { projectId, agentId } = req.params as z.infer<typeof memberParamsSchema>;
     const members = await unassignMember(actorOf(req), projectId, agentId);
     res.status(200).json({ data: { members } });
+  },
+);
+
+// POST /api/projects/:projectId/start — 프로젝트 시작(G1, 대표 전용). 이때부터 에이전트가 태스크를 받는다.
+// 태스크가 없거나 담당이 빈 역할이 있으면 422 PROJECT_START_INVALID(details에 전부). 시작 뒤에는 멤버를 바꿀 수 없다.
+projectsRouter.post(
+  '/projects/:projectId/start',
+  validate({ params: projectIdParamsSchema }),
+  authenticate,
+  requireRepresentative,
+  async (req, res) => {
+    const { projectId } = req.params as z.infer<typeof projectIdParamsSchema>;
+    res.status(200).json({ data: await startProject(actorOf(req), projectId) });
   },
 );
 

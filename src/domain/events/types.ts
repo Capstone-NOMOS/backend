@@ -17,13 +17,20 @@ export type EventType =
   | 'NOTE_PUBLISHED'
   | 'PROJECT_CREATED'
   | 'MEMBER_ASSIGNED'
+  | 'PROJECT_STARTED'
   | 'MEMBER_UNASSIGNED'
   | 'REPO_UPDATED'
   | 'TASKS_IMPORTED'
   | 'SPEC_CREATED'
   | 'TASK_CREATED'
   | 'AGENT_DEVICE_REQUESTED'
-  | 'AGENT_DEVICE_DECIDED';
+  | 'AGENT_DEVICE_DECIDED'
+  | 'PM_PLAN_REQUESTED'
+  | 'PM_CALL'
+  | 'PM_PLAN_DRAFTED'
+  | 'PM_PLAN_FAILED'
+  | 'PLAN_APPLIED'
+  | 'PLAN_REJECTED';
 
 // payload에 연결 키·토큰·비밀번호 같은 비밀값을 절대 넣지 않는다. events는 지워지지 않는다.
 
@@ -170,6 +177,14 @@ export type ProjectCreatedPayload = {
   constitutionHash: string;
 };
 
+// G1 — 이 시점의 멤버·태스크 수·승인한 계획을 남긴다. 이후 지표("이 구성으로 시작해서 어땠나")의 기준점이다.
+export type ProjectStartedPayload = {
+  members: { agentId: string; teamRole: string }[];
+  taskCount: number;
+  approvedSpecCount: number;
+  approvedPlanIds: string[];
+};
+
 export type MemberAssignedPayload = {
   agentId: string;
   teamRole: string;
@@ -232,6 +247,36 @@ export type TaskCreatedPayload = {
   dependsOn: string[];
 };
 
+// ── 내장 PM(domain/pm) ──
+// 요청·적용은 대표 명의, 초안 생성·호출은 system:pm 명의다(P3).
+export type PmPlanRequestedPayload = { planId: string; parentPlanId: string | null; kind: 'draft' | 'revise' };
+
+// PM의 모델 호출 한 번. 비용은 events.token_cost(USD)에 싣는다 — 프로젝트 PM 예산은 이 합계로 검사한다.
+// interrupted면 실제 사용량을 모른다(재시작·시간 제한) — 호출 전에 잡아 둔 최대치로 정산한 것이다.
+export type PmCallPayload = {
+  planId: string;
+  purpose: 'draft' | 'repair';
+  requestedModel: string;
+  servedModel: string | null;
+  // api: 서버가 Anthropic API를 직접 불렀다(과금). relay: 대표 노트북의 Claude Code(구독)가 실행했다 — 비용은 참고값이다.
+  provider?: 'api' | 'relay';
+  stopReason: string | null;
+  interrupted: boolean;
+  // 시도마다(대체 모델이 돌면 둘 이상) 모델과 토큰. 비용은 항목마다 그 모델 가격으로 계산해 더한다.
+  attempts: { model: string; inputTokens: number; outputTokens: number; cacheWriteTokens: number; cacheReadTokens: number }[];
+};
+
+export type PmPlanDraftedPayload = { planId: string; dagHash: string; specCount: number; taskCount: number; repaired: boolean };
+export type PmPlanFailedPayload = { planId: string; reason: string };
+// 대표가 초안을 버렸다. 사유는 선택이다. 지표: PM 초안이 얼마나 반려되나(수정 요청과 구분된다).
+export type PlanRejectedPayload = {
+  planId: string;
+  rootPlanId: string;
+  reason: string | null;
+};
+
+export type PlanAppliedPayload = { planId: string; specIds: string[]; taskIds: string[] };
+
 // CLI 브라우저 승인. 요청 시점에는 승인할 사람이 아직 없다 — on_behalf_of는 system:device-flow.
 // 결정(승인·거부)은 결정한 사람 명의다. 토큰 발급은 AGENT_CONNECTED(method: 'device')로 남는다.
 export type AgentDeviceRequestedPayload = { requestId: string; agentName: string; harness: string; clientIp: string | null };
@@ -256,11 +301,19 @@ export type EventPayloadMap = {
   NOTE_PUBLISHED: NotePublishedPayload;
   PROJECT_CREATED: ProjectCreatedPayload;
   MEMBER_ASSIGNED: MemberAssignedPayload;
+  PROJECT_STARTED: ProjectStartedPayload;
   MEMBER_UNASSIGNED: MemberUnassignedPayload;
   REPO_UPDATED: RepoUpdatedPayload;
   TASKS_IMPORTED: TasksImportedPayload;
   SPEC_CREATED: SpecCreatedPayload;
   TASK_CREATED: TaskCreatedPayload;
+  PM_PLAN_REQUESTED: PmPlanRequestedPayload;
+  PM_CALL: PmCallPayload;
+  PM_PLAN_DRAFTED: PmPlanDraftedPayload;
+  PM_PLAN_FAILED: PmPlanFailedPayload;
+  PLAN_APPLIED: PlanAppliedPayload;
+  PLAN_REJECTED: PlanRejectedPayload;
+
   AGENT_DEVICE_REQUESTED: AgentDeviceRequestedPayload;
   AGENT_DEVICE_DECIDED: AgentDeviceDecidedPayload;
 };

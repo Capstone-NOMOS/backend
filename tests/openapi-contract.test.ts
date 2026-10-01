@@ -5,6 +5,9 @@ import { createApp } from '../src/app.js';
 import { pool } from '../src/config/db.js';
 import { clearPolicyCache } from '../src/domain/policy/policy-cache.js';
 import { setGithubDeviceApi } from '../src/domain/oauth/service.js';
+import { env } from '../src/config/env.js';
+import { setPmModel } from '../src/domain/pm/model.js';
+import { drainPmJobs } from '../src/domain/pm/service.js';
 import type { GithubDeviceApi } from '../src/domain/oauth/github-device.js';
 import {
   gitMirrorInspector,
@@ -223,6 +226,9 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     await call('GET', `/projects/${projectId}/tasks`, rep);
     await call('GET', `/tasks/${taskId}/briefing`, agent);
     await call('PATCH', `/tasks/${taskId}/branch`, agent, { branchName: `task/${taskId}` });
+    // 프로젝트 시작(G1) — 이때부터 에이전트가 태스크를 받는다(푸시와 같은 목록을 HTTP로도 읽는다).
+    await call('POST', `/projects/${projectId}/start`, rep);
+    await call('GET', '/agents/me/tasks', agent);
     await call('POST', `/tasks/${taskId}/claim`, agent);
 
     // 제출 — 커밋 diff는 가짜 검사기로. 신고와 같게 두면 V3는 PASS다.
@@ -252,6 +258,63 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
 
     await call('GET', `/projects/${projectId}/notes`, agent);
     await call('GET', `/projects/${projectId}/notes?since_seq=0`, rep);
+
+    // 내장 PM(가짜 모델) — 요청 → 초안 → 수정 요청 → 적용
+    const draft = (key: string, suffix: string) => ({
+      mode: 'SEQUENTIAL',
+      rationale: '작다',
+      estimate: { workingDays: 3, notes: '' },
+      specs: [{ featureKey: key, title: '출석', content: 'WHEN 출석하면 THEN 기록한다' }],
+      tasks: [{ ref: 'att', title: `T-20 출석 API${suffix}`, repo: 'acme/study-api', teamRole: 'BACKEND', kind: 'IMPLEMENT', spec: key, dependsOn: [] }],
+    });
+    const drafts = [draft('F-20', ''), draft('F-21', ' v2')];
+    setPmModel({
+      kind: 'fake',
+      async generate() {
+        const d = drafts.shift()!;
+        return { stopReason: 'end_turn', servedModel: 'claude-sonnet-5-5', text: JSON.stringify(d), attempts: [{ model: 'claude-sonnet-5-5', inputTokens: 100, outputTokens: 100, cacheWriteTokens: 0, cacheReadTokens: 0 }] };
+      },
+    });
+    try {
+      const requested = await call('POST', `/projects/${projectId}/pm/plans`, rep, { instruction: '출석 기능' });
+      await drainPmJobs();
+      const planId = requested.data.id as string;
+      await call('GET', `/projects/${projectId}/pm/plans/${planId}`, rep);
+      const revised = await call('POST', `/projects/${projectId}/pm/plans/${planId}/revise`, rep, { feedback: '제목에 v2' });
+      await drainPmJobs();
+      await call('GET', `/projects/${projectId}/pm/plans`, rep);
+      await call('POST', `/projects/${projectId}/pm/plans/${revised.data.id as string}/apply`, rep);
+    } finally {
+      setPmModel(null);
+    }
+
+    // 중계 모드 — 대표 노트북의 pm-worker가 가져가고(결과·실패) 돌려준다.
+    const mutableEnv = env as { PM_PROVIDER: 'api' | 'relay' };
+    mutableEnv.PM_PROVIDER = 'relay';
+    try {
+      const worker = repConn.data.accessToken as string;
+      const nextJob = async () => {
+        for (let i = 0; i < 100; i += 1) {
+          const { job } = (await call('GET', '/pm/jobs/next', worker)).data as { job: { id: string } | null };
+          if (job) return job.id;
+          await new Promise((r) => setTimeout(r, 20));
+        }
+        throw new Error('no relay job');
+      };
+      const relayed = await call('POST', `/projects/${projectId}/pm/plans`, rep, { instruction: '출석 통계' });
+      await call('POST', `/pm/jobs/${await nextJob()}/result`, worker, {
+        stopReason: 'end_turn', servedModel: 'claude-sonnet-5-5', text: JSON.stringify(draft('F-22', ' v3')),
+        usage: { inputTokens: 100, outputTokens: 100, cacheWriteTokens: 0, cacheReadTokens: 0 },
+      });
+      await drainPmJobs();
+      // 반려 — 다시 받지 않고 닫는다.
+      await call('POST', `/projects/${projectId}/pm/plans/${relayed.data.id as string}/reject`, rep, { reason: '이번 범위가 아니다' });
+      await call('POST', `/projects/${projectId}/pm/plans`, rep, { instruction: '출석 알림' });
+      await call('POST', `/pm/jobs/${await nextJob()}/failure`, worker, { message: 'Not logged in' });
+      await drainPmJobs();
+    } finally {
+      mutableEnv.PM_PROVIDER = 'api';
+    }
   });
 
   it('문서의 모든 성공 응답을 위 흐름에서 한 번 이상 받았다', () => {

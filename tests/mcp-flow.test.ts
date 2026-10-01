@@ -77,7 +77,7 @@ async function setup(
   if (rootOwner !== null) await assignRootOwner(orgId, userId, repoId, rootOwner);
 
   // 아래 네 테이블은 아직 서비스 함수가 없다 (Phase 2 스키마). 그래서 직접 INSERT한다.
-  const projectId = await createTestProject({ orgId, userId });
+  const projectId = await createTestProject({ orgId, userId, started: true });
   await pool.query(`INSERT INTO project_repos (project_id, repo_id) VALUES ($1, $2)`, [projectId, repoId]);
   await pool.query(`INSERT INTO project_members (project_id, agent_id, team_role) VALUES ($1, $2, $3)`, [
     projectId,

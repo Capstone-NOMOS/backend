@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 프로젝트
 
-NOMOS 서버 — 여러 개발자가 각자 노트북에서 Claude Code 에이전트를 돌릴 때 그 사이의 계약·권한·분쟁을 조율하는 서버. 현재 구현 범위는 조직·레포·경로 소유권·초대, 로컬 계정과 CLI 연결(브라우저 승인 포함), 프로젝트·태스크·산출물·인계 노트·검증, 명세·태스크 작성(마이그레이션 013까지), AWS 배포다.
+NOMOS 서버 — 여러 개발자가 각자 노트북에서 Claude Code 에이전트를 돌릴 때 그 사이의 계약·권한·분쟁을 조율하는 서버. 현재 구현 범위는 조직·레포·경로 소유권·초대, 로컬 계정과 CLI 연결(브라우저 승인 포함), 프로젝트·태스크·산출물·인계 노트·검증, 명세·태스크 작성, 내장 PM의 계획 수립(마이그레이션 014까지), AWS 배포다.
 
 설계 원칙(위반 금지): **P1** 상태는 서버가 소유하고 클라이언트는 전이를 요청만 한다. **P3** 모든 행동은 사람에게 귀속된다(`on_behalf_of` 없는 이벤트는 없다). **P5** 모든 상태 변화는 `events`에 append되고 events가 유일한 진실이다.
 
@@ -259,7 +259,9 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
 - **자동 재시도를 넣지 말 것.** `tasks.retry_count`는 서버가 관리하는 값이고, Executor가 돌리면 M4가 오염된다.
 - 프롬프트에는 태스크 id·명세·인계 노트·수정 가능 경로를 **서버 브리핑에서 받아** 넣는다.
   주지 않으면 모델이 제목으로 도구를 부르거나 없는 도구를 제안한다(실측).
-- 태스크 수령은 `TaskSource` 인터페이스 뒤에 있다. 지금은 폴링, 나중에 이벤트 스트림으로 갈아끼운다.
+- 태스크 수령은 `TaskSource` 인터페이스 뒤에 있다. `start`는 **서버 푸시**(`executor/stream-source.ts`, 웹소켓 `/api/agents/stream`)로 받고,
+  끊겨 있는 동안은 같은 목록을 HTTP(`GET /api/agents/me/tasks`)로 읽는다. 받은 스냅샷을 그대로 쓰고 다시 거르지 않는다(거르는 건 서버 몫).
+  4401이면 재발급 후 1회만 다시 연결하고(무한 재시도 금지), 4403(배정 해제)이면 푸시를 멈춘다. Node 22 전역 `WebSocket`을 쓴다 — CLI 패키지에 의존성을 늘리지 말 것.
 
 ### 검증 (V1A~V4)
 
@@ -340,6 +342,47 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
 - 명세 목록(`GET .../specs`)의 범위는 태스크 목록과 같다. 에이전트에게는 잠긴 시험지만 보인다(브리핑과 같은 규칙).
 - 수정·삭제·명세 개정(`superseded_by`)은 아직 없다.
 
+### 내장 PM (`domain/pm`) — 계획 수립만
+
+대표의 지시 → PM 초안(비동기, `pending → ready | failed`) → 대표 검토 → 적용(`applied`). PM은 NOMOS 키(`ANTHROPIC_API_KEY`)로 서버에서 돈다.
+PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
+
+- **판정은 코드가 한다(P2).** 초안은 명세·태스크 작성과 같은 검증(`domain/authoring`)을 **dry-run**으로 거친다. 위반이면 위반 목록을 붙여
+  **한 번만** 다시 쓰게 하고, 그래도 틀리면 `failed(invalid)`. 교정 횟수를 늘리지 말 것 — 비용과 비결정성만 는다.
+- **응답은 `stop_reason`부터 본다** → JSON → 형식(zod) → 도메인 검증. `refusal`은 `refused`, `max_tokens`는 `truncated` — PM이 틀린 게 아니라
+  교정하지 않는다. 실패 사유는 `error_reason`(refused·truncated·timeout·invalid·restart·budget·api_error)이고 상태에 섞지 않는다.
+- **수정 요청과 교정은 새 단발 호출이다**(이전 초안 + 피드백/위반). 대화를 이어 붙이지 않으므로 거절된 턴이 섞이지 않는다.
+- **비용**: 호출마다 `PM_CALL` 이벤트(`on_behalf_of: system:pm`, `events.token_cost` USD). `usage.iterations`의 **시도마다** 그 모델 가격으로 더한다
+  캐시 쓰기(입력 × 1.25)와 읽기는 따로 센다. 가격표는 `pm/pricing.ts` 한 곳.
+- **대체 모델(`fallbacks`)은 쓰지 않는다.** 켜면 안전 거절 때 서버가 고른 다른 모델이 한 번 더 돌 수 있어, 호출 상한을 가장 비싼 모델 기준으로
+  두 번 잡아야 했다($3.9). 계획 작성이 거절될 일은 드물다 — 거절되면 `failed(refused)`, 대표가 다시 요청한다. 다시 켜면 `maxCallCost`도 같이 고칠 것.
+- **예산**: 매 호출 전(교정 포함) "누적 + 이번 최대치 > `pm_budget_usd`"면 부르지 않는다. 최대치는 `max_tokens`(기본 32,000) × 출력가 + 입력분 —
+  Sonnet 5.5 기준 약 $0.4, 계획 하나(교정 포함 2회) 약 $0.8. 초과 시 설계상 승인 카드가 떠야 하지만 **승인 경로 미구현**이라 409로 거절하고 메시지에 그렇게 적는다.
+- **끊긴 호출**: 호출 직전 최대치를 `plans.inflight_max_cost_usd`에 적고, 시간 제한(`PM_TIMEOUT_MS`)·재시작으로 끊기면 그 값으로 `PM_CALL(interrupted)`을 남긴다.
+  재시작 정리(`recoverInterruptedPlans`)는 **`startServer`에서만** 부른다 — migrate 단계에서는 옛 서버가 아직 작업 중일 수 있다.
+  상태 전이는 전부 `WHERE status = 'pending'` 조건부라 정리된 계획을 늦게 끝난 작업이 덮어쓰지 못한다.
+- **적용은 저장된 초안을 그대로** 명세·태스크 작성 경로에 넣는다(`source: 'pm'`, `tasks.plan_id`). 같은 잠금 안에서 ready·체인 미적용을 다시 확인하고
+  (`uq_plans_applied_root`가 마지막 방어선), 검증에 걸리면 롤백되어 계획은 ready로 남는다.
+- **반려(`reject`)는 ready만 닫는다**(`rejected`, 사유 선택). 다시 받지 않는 것이고, 고쳐서 다시 받는 것은 수정 요청(`revise`)이다. 반려한 초안은 적용·수정 요청 409.
+  반려와 적용은 둘 다 `WHERE status = 'ready'` 조건부라 동시에 눌려도 한쪽만 이긴다. 이벤트 `PLAN_REJECTED`(대표 명의) — "PM 초안 반려율" 지표.
+- **태스크별 담당(`assignments`)은 PM이 아니라 서버가 조회 시점에 계산한다.** 역할당 에이전트는 하나라(`uq_project_members_role`) teamRole이면 담당이 결정적으로 정해진다.
+  LLM에게 고르게 하지 말 것(P2). 저장하지도 말 것 — 프로젝트 시작 전에는 멤버가 바뀔 수 있다. `agent: null`이면 그 역할이 비어 있어 적용해도 아무도 가져가지 않는다.
+  태스크 푸시(웹소켓)를 붙일 때도 같은 계산(역할 → `project_members`)으로 보낼 에이전트를 정한다.
+- **적용은 G1이 아니다.** `applied_at`만 채우고 `plans.approved_at`은 비워 둔다(G1 승인 = 잠김). 프로젝트 상태도 바꾸지 않는다.
+  시작 전에 적용한 계획은 시작할 때 `approved_at`이 찍힌다. 시작 뒤에 적용하면 새 태스크가 바로 담당 에이전트에게 푸시된다.
+- **PM_REVIEW의 AUTO 강등을 아직 연결하지 말 것.** PM이 리뷰(②)를 하지 않는 지금 연결하면 "PM 무응답"이 상시라 PM_REVIEW가 전부 자동 통과된다.
+- `dag_hash`는 **구조만**(명세 키, 태스크의 레포·역할·종류·명세, 선행 쌍) 해시한다 — 근거·제목·ref 이름을 넣으면 M6a가 항상 0%다. 구조는 `plans.structure`에도 둔다.
+- 키가 없으면 PM API만 503 `PM_UNAVAILABLE`(`ANTHROPIC_API_KEY`는 선택). 테스트는 `setPmModel`로 가짜 모델을 끼운다 — CI는 실제 API를 부르지 않는다.
+- **중계 모드(`PM_PROVIDER=relay`)는 결제 전 임시 방식이다.** 모델 호출 한 자리만 대표 노트북의 `executor pm-worker`(headless Claude Code, 구독)로
+  바뀌고 나머지 흐름은 같다(`domain/pm/relay.ts`, 대기열은 메모리). 작업은 **그 조직 대표 본인의 에이전트만** 가져간다(`GET /pm/jobs/next`) —
+  작업에 프로젝트 맥락이 들어 있고 결과가 곧 초안이다. 아무도 안 가져가면 `PM_TIMEOUT_MS`로 `failed(timeout)`. 개인 구독을 여러 사용자의 PM으로
+  쓰지 말 것 — 운영은 API 모드(기본)다. 워커는 지침을 파일·프롬프트를 stdin으로 넘긴다(Windows 명령줄 32k자 제한).
+- **PM은 시험지(spec_tests)를 쓰지 않는다.** 명세 content에 계약(API: 메서드·경로·상태코드·응답 필드 / 화면: 경로·동작·문구)과 EARS 수용 기준을 쓰고,
+  태스크로 어느 레포·역할에 보낼지를 정하는 데 집중한다. 실제로 써 보니 시험지는 시험 데이터·인증·서버 기동을 아무도 마련하지 않는 상태에서
+  추측(`LEADER_TOKEN`, `localStorage['token']`)으로 채워졌고, 출력 토큰의 대부분을 차지했다. 그 코드가 팀원 노트북에서 실행되기도 한다.
+  시험지가 없으면 V2는 SKIPPED로 남는다(통과로 세지 않는다). 다시 넣으려면 레포별 시험 하네스(기동·시드·인증)를 헌법에 먼저 정할 것.
+- 모델·노력·한도는 설정값(`PM_MODEL` 기본 `claude-sonnet-5-5`, `PM_EFFORT` 기본 `high`, `PM_MAX_TOKENS`). 생각 토큰도 출력으로 과금되니 실제 비용을 보고 조정한다.
+
 ### 프로젝트와 멤버
 
 - 프로젝트 생성은 **한 트랜잭션**에서 프로젝트 행·레포 연결·`project_policies` 17행 복사·헌법 스냅샷·`policy_hash`를
@@ -350,7 +393,23 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
 - **같은 레포를 두 활성 프로젝트(`planning`·`active`)가 쓸 수 없다.** DB 제약으로 표현할 수 없어 서비스가 막는다(409).
 - **에이전트는 진행 중(completed·aborted가 아닌) 프로젝트를 하나만 맡는다**(409 `AGENT_IN_ANOTHER_PROJECT`). 토큰의 `project_id`가 하나라서
   두 곳에 배정되면 먼저 배정된 쪽은 조용히 못 쓰게 된다. "진행 중"의 정의는 `findAgentMembership`과 같아야 한다.
-- **G1(`projects.started_at`) 이후에는 멤버를 바꿀 수 없다**(403). G1으로 가는 경로(승인 API)는 아직 없어 지금은 항상 `planning`이다. 역할 교체는 해제 후 재배정이다 —
+- **프로젝트 시작(G1) = `POST /projects/:id/start`**(대표 전용, `startProject`). 이 순간부터 실행이 시작된다.
+  - 시작 조건(위반은 전부 모아 422 `PROJECT_START_INVALID`): 태스크 1개 이상, 끝나지 않은 태스크가 요구하는 **역할마다 배정된 에이전트**.
+    시작 뒤에는 멤버를 바꿀 수 없으므로 역할 공백을 여기서 막는다. 적용(계획 → 태스크)과 시작은 따로다 — 적용은 여러 번, 시작은 한 번.
+  - 시작하면 `planning → active`·`started_at`, 그 시점의 명세·적용된 계획에 `approved_at`(잠김), `PROJECT_STARTED`(멤버·태스크 수 — 지표의 기준점).
+  - **시작 전에는 태스크를 가져갈 수 없다**(claim 409 `PROJECT_NOT_STARTED`). 정책 거부가 아니라 아직 때가 아닌 것이라 `TOOL_DENIED`로 남기지 않는다(M5′ 분모 아님).
+  - 시작과 멤버 변경은 프로젝트 행 잠금으로 직렬화한다(시작 `FOR NO KEY UPDATE`, 배정·해제 `FOR SHARE`) — 시작과 동시에 들어온 배정이 고정을 빠져나가지 않게.
+    `FOR UPDATE`로 바꾸지 말 것(외래 키 검사와 충돌해 그 프로젝트를 참조하는 INSERT가 전부 줄을 선다).
+  - 테스트 픽스처 `createTestProject`는 기본이 시작 전이다. 수령·제출을 다루는 테스트는 `started: true`. `npm run seed`는 시작한 상태로 만든다(`-- --planning`이면 시작 전).
+- **태스크 배정은 서버가 푸시한다**(`realtime/agent-stream.ts`). 보내는 것은 변화분이 아니라 그 에이전트가 **지금 가져갈 수 있는 태스크 스냅샷**
+  (`listClaimableTasks`: 시작한 프로젝트·READY·담당 없음·자기 역할 또는 역할 제한 없음·선행 전부 DONE) — 놓치거나 겹쳐도 다음 스냅샷이 맞다.
+  - 담당은 역할로 정해진다(역할당 에이전트 하나). 수령(claim)은 여전히 HTTP이고 경합·선행·정책 검사는 claim이 한다 — 푸시는 알림이다.
+  - 언제 보내나: 상태를 바꾼 서비스가 **커밋 뒤에** `tasksChanged(projectId)`(`domain/dispatch/tasks-changed.ts`)를 부른다 — 시작·계획 적용·태스크 생성·수령·제출·브릿지 검증 보고.
+    트랜잭션 안에서 부르지 말 것(보이지 않는 상태로 계산하거나 롤백된 변경을 알린다). 도메인은 웹소켓을 모른다 — 허브만 부르고 realtime이 구독한다.
+    태스크 상태를 바꾸는 경로를 새로 만들면 여기에 한 줄을 넣는다. 빠뜨려도 에이전트의 안전망 폴링이 메우지만 그만큼 늦다.
+  - 인증은 연결 뒤 첫 메시지(`{ type: 'auth', token }`)다 — URL에 실으면 프록시 로그에 남는다. 검증은 HTTP와 같은 `resolveAgentToken` 한 벌.
+  - 메모리 안의 연결 목록이라 서버 1대 전제다. 여러 대로 늘리면 허브를 Postgres LISTEN/NOTIFY 같은 것으로 바꾼다.
+- **G1(`projects.started_at`) 이후에는 멤버를 바꿀 수 없다**(403). 역할 교체는 해제 후 재배정이다 —
   UPDATE 경로를 두면 한 역할에 둘이 잠깐 겹친다.
 - **멤버 배정 뒤 그 에이전트는 토큰을 재발급해야 한다.** 배정 전 토큰에는 `project_id`가 없다.
   배정 응답의 `notice`와 openapi 설명에 그 안내가 들어 있다.
@@ -467,7 +526,7 @@ const { repoId } = req.params as z.infer<typeof repoIdParamsSchema>
 
 ### 라우터 마운트
 
-라우터 11개(`auth`, `agents`, `orgs`, `repos`, `repo-paths`, `invites`, `oauth`, `tasks`, `notes`, `projects`, `specs`)가 전부 `app.use("/api", ...)`로 마운트되고(`/health`·`/docs`는 `/api` 밖), 각 파일이 `/orgs/:orgId/...` 같은 전체 경로를 직접 선언한다. 그래서 URL 접두사가 아니라 **도메인 기준**으로 파일이 나뉜다 — 예를 들어 `POST /api/orgs/:orgId/repos`는 URL은 orgs 밑이지만 `routes/repos.ts`에 있고, `POST /api/orgs/:orgId/invites`는 `routes/invites.ts`에 있다.
+라우터 12개(`auth`, `agents`, `orgs`, `repos`, `repo-paths`, `invites`, `oauth`, `tasks`, `notes`, `projects`, `specs`, `pm`)가 전부 `app.use("/api", ...)`로 마운트되고(`/health`·`/docs`는 `/api` 밖), 각 파일이 `/orgs/:orgId/...` 같은 전체 경로를 직접 선언한다. 그래서 URL 접두사가 아니라 **도메인 기준**으로 파일이 나뉜다 — 예를 들어 `POST /api/orgs/:orgId/repos`는 URL은 orgs 밑이지만 `routes/repos.ts`에 있고, `POST /api/orgs/:orgId/invites`는 `routes/invites.ts`에 있다.
 
 
 ## 스키마 변경 규칙

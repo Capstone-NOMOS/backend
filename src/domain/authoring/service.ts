@@ -1,6 +1,7 @@
 import type { PoolClient } from 'pg';
 import { pool, withTransaction } from '../../config/db.js';
 import { AppError } from '../../errors.js';
+import { tasksChanged } from '../dispatch/tasks-changed.js';
 import { assertProjectVisibleToUser, type UserContext } from '../project/visibility.js';
 import type { TeamRole } from '../roles.js';
 import { findTaskById, type Task } from '../task/repository.js';
@@ -56,6 +57,8 @@ export async function createTask(actorUserId: string, projectId: string, task: C
       ],
     }),
   );
+  // 시작한 프로젝트에 새 태스크가 생기면 담당 에이전트에게 보낸다(시작 전이면 스냅샷이 비어 있어 아무것도 안 간다).
+  tasksChanged(projectId);
   return (await findTaskById(pool, result.taskIds[0]!.id))!;
 }
 
