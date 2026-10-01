@@ -1,7 +1,9 @@
 // Executor — 팀원 노트북에서 도는 프로그램.
 // 서버 주소는 ~/.nomos/credentials의 baseUrl에서 온다.
 //
-//   executor login <baseUrl>   서버에 연결 키로 붙어 자격 증명을 새로 쓴다 (원격 서버로 옮길 때)
+//   executor login <baseUrl> [--name 이름] [--connect-key]
+//                              브라우저 승인으로 연결해 자격 증명을 새로 쓴다(기본). 브라우저가 없는 환경(SSH)은
+//                              --connect-key 또는 NOMOS_CONNECT_KEY로 가입 때 받은 연결 키를 쓴다.
 //   executor refresh           토큰 재발급 (프로젝트에 배정된 뒤 한 번)
 //   executor once              READY 태스크 하나만 처리하고 종료 (개발·데모용)
 //   executor start             10초 폴링
@@ -21,6 +23,7 @@ import {
   writeCredentials,
 } from '../bridge/credentials.js';
 import { NomosClient } from '../bridge/nomos-client.js';
+import { deviceLogin } from './device-login.js';
 import { buildTaskPrompt } from './prompt.js';
 import { runClaude } from './runner.js';
 import { pollingTaskSource, type TaskSource, type TaskSummary } from './task-source.js';
@@ -207,19 +210,44 @@ async function postJson(url: string, body: unknown): Promise<Record<string, unkn
   return json.data;
 }
 
-async function login(rawBaseUrl: string | undefined): Promise<void> {
-  const baseUrl = normalizeBaseUrl(rawBaseUrl);
+function parseLoginArgs(argv: string[]): { baseUrl: string | undefined; name: string | undefined; connectKey: boolean } {
+  let baseUrl: string | undefined;
+  let name: string | undefined;
+  let connectKey = false;
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]!;
+    if (arg === '--name') name = argv[(i += 1)];
+    else if (arg === '--connect-key') connectKey = true;
+    else baseUrl ??= arg;
+  }
+  return { baseUrl, name, connectKey };
+}
+
+async function login(argv: string[]): Promise<void> {
+  const args = parseLoginArgs(argv);
+  const baseUrl = normalizeBaseUrl(args.baseUrl);
   const previous = readCredentials();
   if (previous && previous.baseUrl !== baseUrl) {
     log(`기존 자격 증명(${previous.baseUrl})을 ${baseUrl}용으로 교체한다`);
+  }
+  const agentName = args.name?.trim() || os.hostname();
+
+  // 기본은 브라우저 승인. 연결 키를 명시했거나(--connect-key) 환경변수로 줬으면 기존 경로.
+  if (!args.connectKey && process.env.NOMOS_CONNECT_KEY === undefined) {
+    const { credentials, account } = await deviceLogin({ baseUrl, agentName });
+    writeCredentials(credentials);
+    // 연결된 계정을 반드시 보여 준다 — 내가 아닌 계정이면 누군가 내 코드를 승인한 것이다.
+    const org = account.orgName ? ` · 조직 ${account.orgName}` : ' · 조직 없음';
+    log(`연결됨: ${account.nickname ?? account.loginId ?? '?'} (${account.loginId ?? '?'})${org} — 에이전트 ${agentName}`);
+    log(`${credentialsPath()}에 저장했다. 내 계정이 아니면 바로 웹에서 이 에이전트를 확인하라.`);
+    log('대표에게 이 에이전트를 프로젝트에 배정해 달라고 한 뒤 `npm run executor refresh`를 한 번 실행하라');
+    return;
   }
 
   // 연결 키는 NOMOS_CONNECT_KEY로도 받는다 — 인자로 받으면 셸 기록에 남는다.
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
     const connectKey = (process.env.NOMOS_CONNECT_KEY ?? (await rl.question('연결 키 (원격 서버에 가입할 때 받은 값): '))).trim();
-    const defaultName = os.hostname();
-    const agentName = (await rl.question(`에이전트 이름 [${defaultName}]: `)).trim() || defaultName;
     rl.close();
 
     const data = await postJson(`${baseUrl}/api/agents/connect`, {
@@ -258,7 +286,7 @@ async function refresh(): Promise<void> {
 
 async function main(): Promise<void> {
   const command = process.argv[2];
-  if (command === 'login') return login(process.argv[3]);
+  if (command === 'login') return login(process.argv.slice(3));
   if (command === 'refresh') return refresh();
   if (command === 'once') return once();
   if (command === 'start') return start();
@@ -267,7 +295,7 @@ async function main(): Promise<void> {
     log(`worktree prune: ${pruned.join(', ') || '없음'} / 삭제: ${removed ?? '없음'}`);
     return;
   }
-  process.stderr.write('사용법: executor <login <baseUrl>|refresh|once|start|clean>\n');
+  process.stderr.write('사용법: executor <login <baseUrl> [--name 이름] [--connect-key]|refresh|once|start|clean>\n');
   process.exitCode = 1;
 }
 

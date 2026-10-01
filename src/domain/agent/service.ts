@@ -2,6 +2,7 @@ import { pool, withTransaction } from '../../config/db.js';
 import { env } from '../../config/env.js';
 import { AppError } from '../../errors.js';
 import type { Queryable } from '../../config/db.js';
+import type { PoolClient } from 'pg';
 import { generateSecret, hashSecret, signJwt } from '../../utils/tokens.js';
 import { findAgentMembership, findProjectAuthRow } from '../policy/repository.js';
 import { appendEvent } from '../events/append.js';
@@ -47,39 +48,53 @@ export type ConnectAgentInput = {
 
 export type ConnectAgentResult = { accessToken: string; refreshToken: string; agentId: string };
 
-// 조직·프로젝트가 없어도 연결된다. org_id는 사용자의 현재 조직(없으면 null)을 따른다.
+export type AgentSpec = Omit<ConnectAgentInput, 'connectKey'>;
+
+// 사람이 확인된 뒤의 공통 부분 — 연결 키 경로와 브라우저 승인(device) 경로가 같이 쓴다.
+// 에이전트 upsert → refresh token → AGENT_CONNECTED → access token. 한쪽에만 고치면 두 경로의 토큰이 갈라진다.
+// org_id는 사용자의 현재 조직(없으면 null). 조직에 들어가면 assignAgentsToOrg가 옮긴다.
+export async function issueAgentCredentials(
+  tx: PoolClient,
+  user: { id: string; orgId: string | null },
+  spec: AgentSpec,
+  method: 'connect_key' | 'device',
+): Promise<ConnectAgentResult> {
+  const { agent, created } = await upsertAgent(tx, {
+    userId: user.id,
+    orgId: user.orgId,
+    name: spec.agentName,
+    harness: spec.harness,
+    skills: spec.skills,
+    maxConcurrent: spec.maxConcurrent,
+  });
+
+  const refreshToken = generateSecret();
+  await insertRefreshToken(tx, {
+    agentId: agent.id,
+    tokenHash: hashSecret(refreshToken),
+    expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
+  });
+
+  await appendEvent(tx, {
+    orgId: user.orgId,
+    type: 'AGENT_CONNECTED',
+    actorAgentId: agent.id,
+    onBehalfOf: user.id,
+    payload: { agentId: agent.id, userId: user.id, name: agent.name, harness: agent.harness, reconnected: !created, method },
+  });
+
+  return { accessToken: await signAgentAccessToken(tx, agent), refreshToken, agentId: agent.id };
+}
+
+// 연결 키 경로. 브라우저가 없는 환경(SSH·서버)용으로 남긴다. 조직·프로젝트가 없어도 연결된다.
 export async function connectAgent(input: ConnectAgentInput): Promise<ConnectAgentResult> {
   return withTransaction(async (tx) => {
     const user = await findUserByConnectKeyHash(tx, hashSecret(input.connectKey));
     if (!user) {
       throw new AppError('INVALID_CONNECT_REQUEST', 'invalid connect request');
     }
-
-    const { agent, created } = await upsertAgent(tx, {
-      userId: user.id,
-      orgId: user.orgId,
-      name: input.agentName,
-      harness: input.harness,
-      skills: input.skills,
-      maxConcurrent: input.maxConcurrent,
-    });
-
-    const refreshToken = generateSecret();
-    await insertRefreshToken(tx, {
-      agentId: agent.id,
-      tokenHash: hashSecret(refreshToken),
-      expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
-    });
-
-    await appendEvent(tx, {
-      orgId: user.orgId,
-      type: 'AGENT_CONNECTED',
-      actorAgentId: agent.id,
-      onBehalfOf: user.id,
-      payload: { agentId: agent.id, userId: user.id, name: agent.name, harness: agent.harness, reconnected: !created },
-    });
-
-    return { accessToken: await signAgentAccessToken(tx, agent), refreshToken, agentId: agent.id };
+    const { connectKey: _connectKey, ...spec } = input;
+    return issueAgentCredentials(tx, user, spec, 'connect_key');
   });
 }
 

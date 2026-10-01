@@ -271,6 +271,35 @@ curl -s -X POST $BASE/agents/token/refresh -H 'Content-Type: application/json' \
 **틀린 연결 키는 401이 아니라 400 + 일반 메시지다.** 무엇이 틀렸는지 알려주지 않는다.
 같은 `agentName`으로 다시 연결하면 새 행을 만들지 않고 갱신한다(CLI 재설치 대응).
 
+#### 브라우저 승인(device flow) — CLI 기본 로그인
+
+| 메서드 | 경로 | 토큰 | 성공 | 주요 실패 |
+|---|---|---|---|---|
+| POST | `/api/agents/device/start` | 없음 | 201 | 400 `VALIDATION_ERROR` |
+| POST | `/api/agents/device/poll` | 없음(deviceCode) | 200(pending·slow_down·expired·denied·approved) | 400 `INVALID_DEVICE_CODE` |
+| GET | `/api/agents/device/requests/{userCode}` | 사람 | 200 | 404 |
+| POST | `/api/agents/device/requests/{userCode}/approve` · `/deny` | 사람 | 200 | 404 · 409 이미 결정 · 410 만료 |
+
+```bash
+# CLI 쪽 — 실제로는 executor login이 한다
+curl -s -X POST $BASE/agents/device/start -H 'Content-Type: application/json'   --data '{"agentName":"be-laptop","harness":"claude-code"}'          # → deviceCode, userCode(예: WDJB-MJHT)
+export DEVICE=<deviceCode>; export UCODE=<userCode>
+curl -s -X POST $BASE/agents/device/poll -H 'Content-Type: application/json' --data "{\"deviceCode\":\"$DEVICE\"}"   # pending
+
+# 웹 쪽 — 로그인한 사람
+curl -s $BASE/agents/device/requests/$UCODE -H "Authorization: Bearer $REP"               # 코드·이름·IP 확인
+curl -s -X POST $BASE/agents/device/requests/$UCODE/approve -H "Authorization: Bearer $REP"
+
+sleep 5   # interval보다 빨리 부르면 slow_down
+curl -s -X POST $BASE/agents/device/poll -H 'Content-Type: application/json' --data "{\"deviceCode\":\"$DEVICE\"}"   # approved + 토큰(한 번만)
+```
+
+- 같은 deviceCode로 다시 poll하면 `expired` — 토큰은 한 번만 나간다.
+- 10분이 지나면 승인은 410, poll은 `expired`.
+- userCode는 대소문자·하이픈을 무시한다(`wdjbmjht`도 된다).
+- CLI로 한 번에: `npm run executor login http://localhost:3000` → 브라우저가 열린다(프론트의 `/connect/device`가 아직 없으면 위 curl로 승인).
+  연결 키 경로는 `npm run executor login http://localhost:3000 --connect-key`.
+
 ### 조직
 
 | 메서드 | 경로 | 토큰 | 성공 | 주요 실패 |
@@ -480,7 +509,10 @@ curl -s -X POST $BASE/agents/connect -H 'Content-Type: application/json' \
 ```
 
 조직도 프로젝트도 없이 연결된다(`status=pending`). 토큰의 `project_id`·`policy_hash`는 `null`이다.
-→ `AGENT_CONNECTED` (`org_id` NULL)
+→ `AGENT_CONNECTED` (`org_id` NULL, `method: connect_key`)
+
+브라우저 승인으로 해도 같다(위 "브라우저 승인" 절). 그때는 `AGENT_DEVICE_REQUESTED`(system:device-flow) →
+`AGENT_DEVICE_DECIDED`(승인한 사람) → `AGENT_CONNECTED`(`method: device`) 순으로 남는다.
 
 ### B-3. 조직 생성
 
