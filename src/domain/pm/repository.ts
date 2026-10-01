@@ -3,7 +3,7 @@ import type { Queryable } from '../../config/db.js';
 import type { PlanDraft } from './draft.js';
 import type { PlanContext } from './prompt.js';
 
-export type PlanStatus = 'pending' | 'ready' | 'failed' | 'applied';
+export type PlanStatus = 'pending' | 'ready' | 'failed' | 'applied' | 'rejected';
 export type PlanErrorReason = 'refused' | 'truncated' | 'timeout' | 'invalid' | 'restart' | 'budget' | 'api_error';
 
 export type PlanRow = {
@@ -23,6 +23,8 @@ export type PlanRow = {
   inflightMaxCostUsd: string | null;
   createdAt: string;
   appliedAt: string | null;
+  rejectedAt: string | null;
+  rejectReason: string | null;
 };
 
 function toPlan(row: QueryResultRow): PlanRow {
@@ -43,6 +45,8 @@ function toPlan(row: QueryResultRow): PlanRow {
     inflightMaxCostUsd: row.inflight_max_cost_usd,
     createdAt: row.created_at,
     appliedAt: row.applied_at,
+    rejectedAt: row.rejected_at,
+    rejectReason: row.reject_reason,
   };
 }
 
@@ -131,6 +135,35 @@ export async function markPlanFailed(
     [planId, reason, JSON.stringify(detail ?? null)],
   );
   return rowCount === 1;
+}
+
+// 반려는 ready에서만. 조건부 UPDATE라 동시에 적용이 먼저 끝났으면 false다(적용은 같은 행을 FOR UPDATE로 잡고 본다).
+export async function markPlanRejected(db: Queryable, planId: string, reason: string | null): Promise<boolean> {
+  const { rowCount } = await db.query(
+    `UPDATE plans SET status = 'rejected', rejected_at = now(), reject_reason = $2 WHERE id = $1 AND status = 'ready'`,
+    [planId, reason],
+  );
+  return rowCount === 1;
+}
+
+// 역할 → 그 프로젝트에 배정된 에이전트. 역할당 에이전트는 하나다(uq_project_members_role).
+export type RoleAssignee = { agentId: string; agentName: string; userId: string; nickname: string | null };
+
+export async function listRoleAssignees(db: Queryable, projectId: string): Promise<Map<string, RoleAssignee>> {
+  const { rows } = await db.query(
+    `SELECT m.team_role, a.id AS agent_id, a.name AS agent_name, u.id AS user_id, u.nickname
+       FROM project_members m
+       JOIN agents a ON a.id = m.agent_id
+       JOIN users u ON u.id = a.user_id
+      WHERE m.project_id = $1`,
+    [projectId],
+  );
+  return new Map(
+    rows.map((r) => [
+      r.team_role as string,
+      { agentId: r.agent_id as string, agentName: r.agent_name as string, userId: r.user_id as string, nickname: (r.nickname as string | null) ?? null },
+    ]),
+  );
 }
 
 export async function markPlanApplied(db: Queryable, planId: string): Promise<boolean> {

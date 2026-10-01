@@ -514,14 +514,14 @@ components:
             accepted: { type: boolean, enum: [true] }
     PmPlan:
       type: object
-      required: [id, projectId, status, instruction, feedback, parentPlanId, mode, draft, error, costUsd, createdAt, appliedAt]
+      required: [id, projectId, status, instruction, feedback, parentPlanId, mode, draft, error, costUsd, createdAt, appliedAt, rejectedAt, rejectReason, assignments]
       properties:
         id: { type: string, format: uuid }
         projectId: { type: string, format: uuid }
         status:
           type: string
-          enum: [pending, ready, failed, applied]
-          description: 'pending이면 PM이 작성 중 — 몇 초 뒤 다시 조회한다'
+          enum: [pending, ready, failed, applied, rejected]
+          description: 'pending이면 PM이 작성 중 — 몇 초 뒤 다시 조회한다. ready에서 적용하면 applied, 반려하면 rejected'
         instruction: { type: string, nullable: true }
         feedback: { type: string, nullable: true, description: '수정 요청이면 대표의 피드백' }
         parentPlanId: { type: string, format: uuid, nullable: true, description: '수정 요청이면 이전 초안' }
@@ -540,6 +540,30 @@ components:
         costUsd: { type: number, description: '이 계획에 든 PM 호출 비용 합계(USD)' }
         createdAt: { type: string, format: date-time }
         appliedAt: { type: string, format: date-time, nullable: true }
+        rejectedAt: { type: string, format: date-time, nullable: true }
+        rejectReason: { type: string, nullable: true, description: '반려 사유(선택)' }
+        assignments:
+          type: array
+          description: |
+            초안의 태스크마다 **누가 받게 되는가**(draft.tasks와 같은 순서, ref로 대응). PM이 정하지 않고 서버가 조회 시점에 계산한다 —
+            프로젝트에서 역할당 에이전트는 하나라 teamRole이면 담당이 정해진다. 초안이 없으면(pending·failed) 빈 배열.
+            **agent가 null이면 그 역할에 배정된 에이전트가 없다** — 적용하면 그 태스크는 아무도 가져가지 않으니 적용 전에 경고할 것.
+            프로젝트 시작 전에는 멤버가 바뀔 수 있으므로 다시 조회하면 달라질 수 있다.
+          items:
+            type: object
+            required: [ref, teamRole, agent]
+            properties:
+              ref: { type: string, description: 'draft.tasks[].ref' }
+              teamRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true }
+              agent:
+                type: object
+                nullable: true
+                required: [id, name, userId, nickname]
+                properties:
+                  id: { type: string, format: uuid }
+                  name: { type: string, description: '에이전트 이름(보통 컴퓨터 이름)' }
+                  userId: { type: string, format: uuid, description: '에이전트 주인' }
+                  nickname: { type: string, nullable: true, description: '주인의 닉네임' }
     Spec:
       type: object
       required: [id, featureKey, title, content, version, createdAt, tests]
@@ -2182,7 +2206,7 @@ paths:
             application/json:
               schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/PmPlan' } } }
               example:
-                data: { id: 1b2c3d4e-5f60-4a1b-8c2d-3e4f5a6b7c8d, projectId: '{{PROJECT_ID}}', status: pending, instruction: '3주 안에 …', feedback: null, parentPlanId: null, mode: null, draft: null, error: null, costUsd: 0, createdAt: '2026-09-30T02:00:00.000Z', appliedAt: null }
+                data: { id: 1b2c3d4e-5f60-4a1b-8c2d-3e4f5a6b7c8d, projectId: '{{PROJECT_ID}}', status: pending, instruction: '3주 안에 …', feedback: null, parentPlanId: null, mode: null, draft: null, error: null, costUsd: 0, createdAt: '2026-09-30T02:00:00.000Z', appliedAt: null, rejectedAt: null, rejectReason: null, assignments: [] }
         '409':
           description: 진행 중인 요청 있음 · 예산 초과 · 끝난 프로젝트
           content:
@@ -2217,7 +2241,7 @@ paths:
             application/json:
               schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/PmPlan' } } }
               example:
-                data: { id: 1b2c3d4e-5f60-4a1b-8c2d-3e4f5a6b7c8d, projectId: '{{PROJECT_ID}}', status: ready, instruction: '3주 안에 …', feedback: null, parentPlanId: null, mode: SEQUENTIAL, draft: { mode: SEQUENTIAL, rationale: 요구사항이 작고 명확하다, estimate: { workingDays: 10, notes: '' }, specs: [], tasks: [] }, error: null, costUsd: 0.4213, createdAt: '2026-09-30T02:00:00.000Z', appliedAt: null }
+                data: { id: 1b2c3d4e-5f60-4a1b-8c2d-3e4f5a6b7c8d, projectId: '{{PROJECT_ID}}', status: ready, instruction: '3주 안에 …', feedback: null, parentPlanId: null, mode: SEQUENTIAL, draft: { mode: SEQUENTIAL, rationale: 요구사항이 작고 명확하다, estimate: { workingDays: 10, notes: '' }, specs: [], tasks: [] }, error: null, costUsd: 0.4213, createdAt: '2026-09-30T02:00:00.000Z', appliedAt: null, rejectedAt: null, rejectReason: null, assignments: [] }
         '404':
           description: 없는 계획
           content:
@@ -2254,7 +2278,7 @@ paths:
             application/json:
               schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/PmPlan' } } }
               example:
-                data: { id: 2c3d4e5f-6071-4b2c-9d3e-4f5a6b7c8d9e, projectId: '{{PROJECT_ID}}', status: pending, instruction: '3주 안에 …', feedback: 출석체크는 다음 단계로, parentPlanId: 1b2c3d4e-5f60-4a1b-8c2d-3e4f5a6b7c8d, mode: null, draft: null, error: null, costUsd: 0, createdAt: '2026-09-30T02:05:00.000Z', appliedAt: null }
+                data: { id: 2c3d4e5f-6071-4b2c-9d3e-4f5a6b7c8d9e, projectId: '{{PROJECT_ID}}', status: pending, instruction: '3주 안에 …', feedback: 출석체크는 다음 단계로, parentPlanId: 1b2c3d4e-5f60-4a1b-8c2d-3e4f5a6b7c8d, mode: null, draft: null, error: null, costUsd: 0, createdAt: '2026-09-30T02:05:00.000Z', appliedAt: null, rejectedAt: null, rejectReason: null, assignments: [] }
         '409':
           description: ready가 아닌 초안
           content:
@@ -2283,7 +2307,7 @@ paths:
             application/json:
               schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/PmPlan' } } }
               example:
-                data: { id: 1b2c3d4e-5f60-4a1b-8c2d-3e4f5a6b7c8d, projectId: '{{PROJECT_ID}}', status: applied, instruction: '3주 안에 …', feedback: null, parentPlanId: null, mode: SEQUENTIAL, draft: null, error: null, costUsd: 0.4213, createdAt: '2026-09-30T02:00:00.000Z', appliedAt: '2026-09-30T02:10:00.000Z' }
+                data: { id: 1b2c3d4e-5f60-4a1b-8c2d-3e4f5a6b7c8d, projectId: '{{PROJECT_ID}}', status: applied, instruction: '3주 안에 …', feedback: null, parentPlanId: null, mode: SEQUENTIAL, draft: null, error: null, costUsd: 0.4213, createdAt: '2026-09-30T02:00:00.000Z', appliedAt: '2026-09-30T02:10:00.000Z', rejectedAt: null, rejectReason: null, assignments: [] }
         '409':
           description: 적용할 수 없는 상태
           content:
@@ -2406,6 +2430,42 @@ paths:
             application/json:
               example:
                 error: { code: PM_JOB_NOT_FOUND, message: 'relay job not found (finished, timed out, or the server restarted)' }
+
+  /projects/{projectId}/pm/plans/{planId}/reject:
+    post:
+      tags: [내장 PM]
+      summary: 초안 반려 (대표 전용)
+      description: |
+        `ready` 초안을 버린다(`rejected`). **다시 받지 않고 닫는 것**이다 — 고쳐서 다시 받으려면 `revise`(수정 요청)를 쓴다.
+        반려한 초안은 적용·수정 요청할 수 없다(409). 본문은 없어도 된다(사유는 선택, 1000자 이하).
+        `ready`가 아니면(작성 중·실패·이미 적용·이미 반려) 409 `PLAN_NOT_APPLICABLE`.
+      security: [{ userToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - { name: planId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string, maxLength: 1000 }
+            example: { reason: 출석은 이번 범위가 아니다 }
+      responses:
+        '200':
+          description: 반려됨(status=rejected)
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/PmPlan' } } }
+              example:
+                data: { id: 1b2c3d4e-5f60-4a1b-8c2d-3e4f5a6b7c8d, projectId: '{{PROJECT_ID}}', status: rejected, instruction: '3주 안에 …', feedback: null, parentPlanId: null, mode: SEQUENTIAL, draft: null, error: null, costUsd: 0.1150, createdAt: '2026-09-30T02:00:00.000Z', appliedAt: null, rejectedAt: '2026-09-30T02:10:00.000Z', rejectReason: 출석은 이번 범위가 아니다, assignments: [] }
+        '409':
+          description: ready가 아니다
+          content:
+            application/json:
+              example:
+                error: { code: PLAN_NOT_APPLICABLE, message: 'only a ready plan can be rejected (this one is applied)' }
 
   /projects/{projectId}/specs:
     get:

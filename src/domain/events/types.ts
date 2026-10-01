@@ -28,7 +28,8 @@ export type EventType =
   | 'PM_CALL'
   | 'PM_PLAN_DRAFTED'
   | 'PM_PLAN_FAILED'
-  | 'PLAN_APPLIED';
+  | 'PLAN_APPLIED'
+  | 'PLAN_REJECTED';
 
 // payload에 연결 키·토큰·비밀번호 같은 비밀값을 절대 넣지 않는다. events는 지워지지 않는다.
 
@@ -258,6 +259,13 @@ export type PmCallPayload = {
 
 export type PmPlanDraftedPayload = { planId: string; dagHash: string; specCount: number; taskCount: number; repaired: boolean };
 export type PmPlanFailedPayload = { planId: string; reason: string };
+// 대표가 초안을 버렸다. 사유는 선택이다. 지표: PM 초안이 얼마나 반려되나(수정 요청과 구분된다).
+export type PlanRejectedPayload = {
+  planId: string;
+  rootPlanId: string;
+  reason: string | null;
+};
+
 export type PlanAppliedPayload = { planId: string; specIds: string[]; taskIds: string[] };
 
 // CLI 브라우저 승인. 요청 시점에는 승인할 사람이 아직 없다 — on_behalf_of는 system:device-flow.
@@ -294,6 +302,7 @@ export type EventPayloadMap = {
   PM_PLAN_DRAFTED: PmPlanDraftedPayload;
   PM_PLAN_FAILED: PmPlanFailedPayload;
   PLAN_APPLIED: PlanAppliedPayload;
+  PLAN_REJECTED: PlanRejectedPayload;
 
   AGENT_DEVICE_REQUESTED: AgentDeviceRequestedPayload;
   AGENT_DEVICE_DECIDED: AgentDeviceDecidedPayload;

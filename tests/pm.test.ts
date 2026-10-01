@@ -12,7 +12,8 @@ import type { PlanDraft } from '../src/domain/pm/draft.js';
 import { setPmModel, type PmModel, type PmModelRequest, type PmModelResponse } from '../src/domain/pm/model.js';
 import { costOfAttempts } from '../src/domain/pm/pricing.js';
 import { drainPmJobs, recoverInterruptedPlans } from '../src/domain/pm/service.js';
-import { createProject } from '../src/domain/project/service.js';
+import { assignMember, createProject } from '../src/domain/project/service.js';
+import { connectAgent } from '../src/domain/agent/service.js';
 import { connectRepos } from '../src/domain/repo/service.js';
 import { assignRootOwner } from './fixtures.js';
 import { resetSchema, testPool, truncateAll } from './test-db.js';
@@ -56,9 +57,9 @@ async function call(method: string, url: string, token: string, body?: unknown):
 }
 
 async function account(loginId: string) {
-  const { userId } = await signup({ loginId, password: 'correct-horse-battery', nickname: loginId });
+  const { userId, connectKey } = await signup({ loginId, password: 'correct-horse-battery', nickname: loginId });
   const { accessToken } = await login({ loginId, password: 'correct-horse-battery' });
-  return { userId, token: accessToken };
+  return { userId, token: accessToken, connectKey };
 }
 
 async function world(pmBudgetUsd = 40) {
@@ -395,5 +396,100 @@ describe('적용 규칙', () => {
     const after = (await call('GET', `/projects/${w.projectId}/pm/plans/${plan.id}`, w.rep.token)).body.data as unknown as { status: string };
     expect(after.status).toBe('ready');
     expect((await pool.query(`SELECT count(*)::int AS n FROM tasks`)).rows[0].n).toBe(0);
+  });
+});
+
+describe('반려', () => {
+  type View = { status: string; rejectedAt: string | null; rejectReason: string | null };
+
+  it('ready 초안을 반려하면 rejected가 되고, 이후 적용·수정 요청·재반려는 409다', async () => {
+    const w = await world();
+    fakeModel(() => respond(DRAFT));
+    const plan = await requestAndWait(w);
+
+    const res = await call('POST', `/projects/${w.projectId}/pm/plans/${plan.id}/reject`, w.rep.token, { reason: '이번 범위가 아니다' });
+    expect(res.status).toBe(200);
+    const view = res.body.data as unknown as View;
+    expect(view).toMatchObject({ status: 'rejected', rejectReason: '이번 범위가 아니다' });
+    expect(view.rejectedAt).not.toBeNull();
+
+    for (const action of ['apply', 'revise', 'reject']) {
+      const again = await call('POST', `/projects/${w.projectId}/pm/plans/${plan.id}/${action}`, w.rep.token, action === 'revise' ? { feedback: 'x' } : undefined);
+      expect(again.status, action).toBe(409);
+      expect(again.body.error!.code, action).toBe('PLAN_NOT_APPLICABLE');
+    }
+    // 반려는 아무것도 만들지 않는다.
+    expect((await pool.query(`SELECT count(*)::int AS n FROM tasks`)).rows[0].n).toBe(0);
+
+    const rejected = await events('PLAN_REJECTED');
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]!.on_behalf_of).toBe(w.rep.userId);
+    expect(rejected[0]!.payload).toEqual({ planId: plan.id, rootPlanId: plan.id, reason: '이번 범위가 아니다' });
+  });
+
+  it('사유 없이(본문 없이) 반려할 수 있다', async () => {
+    const w = await world();
+    fakeModel(() => respond(DRAFT));
+    const plan = await requestAndWait(w);
+    const res = await call('POST', `/projects/${w.projectId}/pm/plans/${plan.id}/reject`, w.rep.token);
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({ status: 'rejected', rejectReason: null });
+  });
+
+  it('적용된·실패한 계획은 반려할 수 없고, 대표만 반려한다', async () => {
+    const w = await world();
+    fakeModel(() => respond(DRAFT), () => respond(DRAFT, { stopReason: 'refusal' }));
+    const ready = await requestAndWait(w);
+    expect((await call('POST', `/projects/${w.projectId}/pm/plans/${ready.id}/reject`, w.be.token)).status).toBe(403);
+    await call('POST', `/projects/${w.projectId}/pm/plans/${ready.id}/apply`, w.rep.token);
+    expect((await call('POST', `/projects/${w.projectId}/pm/plans/${ready.id}/reject`, w.rep.token)).status).toBe(409);
+
+    const failed = await requestAndWait(w, '다른 기능');
+    expect(failed.status).toBe('failed');
+    expect((await call('POST', `/projects/${w.projectId}/pm/plans/${failed.id}/reject`, w.rep.token)).status).toBe(409);
+  });
+
+  it('사유가 1000자를 넘으면 400', async () => {
+    const w = await world();
+    fakeModel(() => respond(DRAFT));
+    const plan = await requestAndWait(w);
+    const res = await call('POST', `/projects/${w.projectId}/pm/plans/${plan.id}/reject`, w.rep.token, { reason: 'x'.repeat(1001) });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('태스크별 담당 에이전트', () => {
+  type Assignment = { ref: string; teamRole: string | null; agent: { id: string; name: string; userId: string; nickname: string | null } | null };
+
+  it('역할에 배정된 에이전트를 조회 시점에 계산한다 — 없으면 null, 배정하면 바로 보인다', async () => {
+    const w = await world();
+    fakeModel(() => respond(DRAFT));
+    const plan = await requestAndWait(w);
+    const assignments = (p: unknown) => (p as { assignments: Assignment[] }).assignments;
+
+    // 아직 아무도 배정되지 않았다 — 적용하면 아무도 가져가지 않는다.
+    expect(assignments(plan)).toEqual([
+      { ref: 'api', teamRole: 'BACKEND', agent: null },
+      { ref: 'web', teamRole: 'FRONTEND', agent: null },
+    ]);
+
+    const agent = await connectAgent({ connectKey: w.be.connectKey, agentName: 'be-mbp', harness: 'claude-code', skills: [], maxConcurrent: 1 });
+    await assignMember({ userId: w.rep.userId, orgId: w.orgId, orgRole: 'REPRESENTATIVE' }, w.projectId, agent.agentId, 'BACKEND');
+
+    const again = (await call('GET', `/projects/${w.projectId}/pm/plans/${plan.id}`, w.rep.token)).body.data;
+    expect(assignments(again)).toEqual([
+      { ref: 'api', teamRole: 'BACKEND', agent: { id: agent.agentId, name: 'be-mbp', userId: w.be.userId, nickname: 'be-dev' } },
+      { ref: 'web', teamRole: 'FRONTEND', agent: null },
+    ]);
+    // 목록도 같은 계산을 한다.
+    const list = (await call('GET', `/projects/${w.projectId}/pm/plans`, w.rep.token)).body.data as unknown as { plans: unknown[] };
+    expect(assignments(list.plans[0])[0]!.agent?.name).toBe('be-mbp');
+  });
+
+  it('초안이 없으면(작성 중·실패) 빈 배열', async () => {
+    const w = await world();
+    fakeModel(() => respond(DRAFT, { stopReason: 'refusal' }));
+    const plan = await requestAndWait(w);
+    expect((plan as unknown as { assignments: Assignment[] }).assignments).toEqual([]);
   });
 });

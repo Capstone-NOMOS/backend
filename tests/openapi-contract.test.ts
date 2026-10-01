@@ -298,12 +298,14 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
         }
         throw new Error('no relay job');
       };
-      await call('POST', `/projects/${projectId}/pm/plans`, rep, { instruction: '출석 통계' });
+      const relayed = await call('POST', `/projects/${projectId}/pm/plans`, rep, { instruction: '출석 통계' });
       await call('POST', `/pm/jobs/${await nextJob()}/result`, worker, {
         stopReason: 'end_turn', servedModel: 'claude-sonnet-5-5', text: JSON.stringify(draft('F-22', ' v3')),
         usage: { inputTokens: 100, outputTokens: 100, cacheWriteTokens: 0, cacheReadTokens: 0 },
       });
       await drainPmJobs();
+      // 반려 — 다시 받지 않고 닫는다.
+      await call('POST', `/projects/${projectId}/pm/plans/${relayed.data.id as string}/reject`, rep, { reason: '이번 범위가 아니다' });
       await call('POST', `/projects/${projectId}/pm/plans`, rep, { instruction: '출석 알림' });
       await call('POST', `/pm/jobs/${await nextJob()}/failure`, worker, { message: 'Not logged in' });
       await drainPmJobs();

@@ -1,5 +1,5 @@
 -- Up Migration
--- 내장 PM의 계획 초안. 006의 plans를 넓힌다 — 대표의 지시 → PM 초안(pending → ready|failed) → 대표가 적용(applied).
+-- 내장 PM의 계획 초안. 006의 plans를 넓힌다 — 대표의 지시 → PM 초안(pending → ready|failed) → 대표가 적용(applied) 또는 반려(rejected).
 -- PM 호출은 수십 초~수 분이라 비동기로 돈다. 상태는 서버가 소유하고(P1) 클라이언트는 폴링한다.
 
 -- 초안이 나오기 전(pending)과 실패(failed)에는 초안이 없다.
@@ -24,13 +24,18 @@ ALTER TABLE plans
   ADD COLUMN structure     jsonb,
   -- 적용 시각. approved_at은 "G1 승인 = 잠김"이라 G1이 생길 때까지 비워 둔다 — 적용은 G1이 아니다.
   ADD COLUMN applied_at    timestamptz,
-  ADD CONSTRAINT plans_status_chk CHECK (status IN ('pending', 'ready', 'failed', 'applied')),
+  -- 반려. 버린 초안이 ready로 남아 "검토 대기"와 섞이거나 실수로 적용되지 않게 상태로 닫는다. 사유는 선택이다.
+  ADD COLUMN rejected_at   timestamptz,
+  ADD COLUMN reject_reason text,
+  ADD CONSTRAINT plans_status_chk CHECK (status IN ('pending', 'ready', 'failed', 'applied', 'rejected')),
   ADD CONSTRAINT plans_error_chk CHECK ((status = 'failed') = (error_reason IS NOT NULL)),
   ADD CONSTRAINT plans_error_reason_chk CHECK (error_reason IS NULL OR error_reason IN
     ('refused', 'truncated', 'timeout', 'invalid', 'restart', 'budget', 'api_error')),
   -- 초안이 있어야 검토·적용할 수 있다.
-  ADD CONSTRAINT plans_draft_chk CHECK (status NOT IN ('ready', 'applied') OR (dag_snapshot IS NOT NULL AND dag_hash IS NOT NULL)),
-  ADD CONSTRAINT plans_applied_chk CHECK ((status = 'applied') = (applied_at IS NOT NULL));
+  ADD CONSTRAINT plans_draft_chk CHECK (status NOT IN ('ready', 'applied', 'rejected') OR (dag_snapshot IS NOT NULL AND dag_hash IS NOT NULL)),
+  ADD CONSTRAINT plans_applied_chk CHECK ((status = 'applied') = (applied_at IS NOT NULL)),
+  ADD CONSTRAINT plans_rejected_chk CHECK ((status = 'rejected') = (rejected_at IS NOT NULL)),
+  ADD CONSTRAINT plans_reject_reason_chk CHECK (reject_reason IS NULL OR (status = 'rejected' AND char_length(reject_reason) <= 1000));
 
 -- 프로젝트당 진행 중인 요청은 하나. 서비스가 프로젝트 행을 잠그고 확인하지만, 마지막 방어선은 DB다.
 CREATE UNIQUE INDEX uq_plans_pending ON plans(project_id) WHERE status = 'pending';
@@ -41,11 +46,15 @@ CREATE UNIQUE INDEX uq_plans_applied_root ON plans(root_plan_id) WHERE status = 
 DROP INDEX IF EXISTS uq_plans_applied_root;
 DROP INDEX IF EXISTS uq_plans_pending;
 ALTER TABLE plans
+  DROP CONSTRAINT IF EXISTS plans_reject_reason_chk,
+  DROP CONSTRAINT IF EXISTS plans_rejected_chk,
   DROP CONSTRAINT IF EXISTS plans_applied_chk,
   DROP CONSTRAINT IF EXISTS plans_draft_chk,
   DROP CONSTRAINT IF EXISTS plans_error_reason_chk,
   DROP CONSTRAINT IF EXISTS plans_error_chk,
   DROP CONSTRAINT IF EXISTS plans_status_chk,
+  DROP COLUMN IF EXISTS reject_reason,
+  DROP COLUMN IF EXISTS rejected_at,
   DROP COLUMN IF EXISTS applied_at,
   DROP COLUMN IF EXISTS structure,
   DROP COLUMN IF EXISTS inflight_max_cost_usd,

@@ -22,16 +22,19 @@ import {
   insertPendingPlan,
   listAllPendingPlans,
   listPlans,
+  listRoleAssignees,
   loadPlanContext,
   markPlanApplied,
   markPlanFailed,
   markPlanReady,
+  markPlanRejected,
   planCostsUsd,
   pmSpentUsd,
   setInflightMaxCost,
   type PlanErrorReason,
   type PlanRow,
   type ProjectForPm,
+  type RoleAssignee,
 } from './repository.js';
 
 // 내장 PM — 계획 수립. 대표의 지시 → PM 초안(비동기) → 대표 검토 → 적용.
@@ -60,9 +63,33 @@ export type PlanView = {
   costUsd: number;
   createdAt: string;
   appliedAt: string | null;
+  rejectedAt: string | null;
+  rejectReason: string | null;
+  // 초안의 태스크마다 누가 받게 되는가. PM이 정하지 않고 **서버가 조회 시점에 계산**한다 —
+  // 프로젝트에서 역할당 에이전트는 하나라(uq_project_members_role) teamRole이면 담당이 결정적으로 정해진다.
+  // 저장하지 않는 이유: 프로젝트 시작(G1) 전에는 멤버가 바뀔 수 있다. 역할에 아무도 없으면 agent가 null — 적용하면 그 태스크는 아무도 가져가지 않는다.
+  assignments: TaskAssignment[];
 };
 
-function toView(plan: PlanRow, costUsd: number): PlanView {
+export type TaskAssignment = {
+  ref: string;
+  teamRole: string | null;
+  agent: { id: string; name: string; userId: string; nickname: string | null } | null;
+};
+
+function assignmentsOf(draft: PlanDraft | null, assignees: Map<string, RoleAssignee>): TaskAssignment[] {
+  if (!draft) return [];
+  return draft.tasks.map((t) => {
+    const who = t.teamRole === null ? undefined : assignees.get(t.teamRole);
+    return {
+      ref: t.ref,
+      teamRole: t.teamRole,
+      agent: who ? { id: who.agentId, name: who.agentName, userId: who.userId, nickname: who.nickname } : null,
+    };
+  });
+}
+
+function toView(plan: PlanRow, costUsd: number, assignees: Map<string, RoleAssignee>): PlanView {
   return {
     id: plan.id,
     projectId: plan.projectId,
@@ -76,6 +103,9 @@ function toView(plan: PlanRow, costUsd: number): PlanView {
     costUsd,
     createdAt: plan.createdAt,
     appliedAt: plan.appliedAt,
+    rejectedAt: plan.rejectedAt,
+    rejectReason: plan.rejectReason,
+    assignments: assignmentsOf(plan.draft, assignees),
   };
 }
 
@@ -152,7 +182,7 @@ async function openRequest(
     return created;
   });
   schedule(plan.id);
-  return toView(plan, 0);
+  return toView(plan, 0, new Map()); // pending — 초안이 없어 담당도 없다
 }
 
 export async function requestPlan(actorUserId: string, projectId: string, instruction: string): Promise<PlanView> {
@@ -184,19 +214,51 @@ export async function getPlan(actorUserId: string, projectId: string, planId: st
   const plan = await findPlan(pool, planId);
   if (!plan || plan.projectId !== projectId) throw new AppError('PLAN_NOT_FOUND', `plan ${planId} not found`);
   const costs = await planCostsUsd(pool, [plan.id]);
-  return toView(plan, costs.get(plan.id) ?? 0);
+  return toView(plan, costs.get(plan.id) ?? 0, await listRoleAssignees(pool, projectId));
 }
 
 export async function listProjectPlans(actorUserId: string, projectId: string): Promise<PlanView[]> {
   await assertCanView(actorUserId, projectId);
   const plans = await listPlans(pool, projectId);
   const costs = await planCostsUsd(pool, plans.map((p) => p.id));
-  return plans.map((p) => toView(p, costs.get(p.id) ?? 0));
+  const assignees = await listRoleAssignees(pool, projectId);
+  return plans.map((p) => toView(p, costs.get(p.id) ?? 0, assignees));
+}
+
+// ── 반려 ────────────────────────────────────────────────────────────────
+
+// ready 초안을 버린다. 다시 요청 없이 닫는 것이다 — 고쳐서 다시 받으려면 수정 요청(revise)을 쓴다.
+// 반려한 초안은 적용·수정 요청할 수 없다. 조건부 UPDATE라 적용과 동시에 눌려도 한쪽만 이긴다.
+export async function rejectPlan(
+  actorUserId: string,
+  projectId: string,
+  planId: string,
+  reason: string | null,
+): Promise<PlanView> {
+  await withTransaction(async (tx) => {
+    const project = await findProjectForPm(tx, projectId);
+    if (!project) throw new AppError('PROJECT_NOT_FOUND', `project ${projectId} not found`);
+    await assertRepresentativeOf(tx, actorUserId, project);
+    const plan = await findPlan(tx, planId, { forUpdate: true });
+    if (!plan || plan.projectId !== projectId) throw new AppError('PLAN_NOT_FOUND', `plan ${planId} not found`);
+    if (!(await markPlanRejected(tx, planId, reason))) {
+      throw new AppError('PLAN_NOT_APPLICABLE', `only a ready plan can be rejected (this one is ${plan.status})`);
+    }
+    await appendEvent(tx, {
+      orgId: project.orgId,
+      projectId,
+      type: 'PLAN_REJECTED',
+      onBehalfOf: actorUserId,
+      policyHash: project.policyHash,
+      payload: { planId, rootPlanId: plan.rootPlanId, reason },
+    });
+  });
+  return getPlan(actorUserId, projectId, planId);
 }
 
 // ── 적용 ────────────────────────────────────────────────────────────────
 
-// 저장된 초안을 **그대로** 명세·태스크 생성 경로에 넣는다(source='pm', 시험지 전부 잠금, tasks.plan_id).
+// 저장된 초안을 **그대로** 명세·태스크 생성 경로에 넣는다(source='pm', tasks.plan_id).
 // 같은 트랜잭션·같은 프로젝트 잠금 안에서 "ready인가, 같은 체인에서 이미 적용됐나"를 다시 본다 — 두 번 누르기·옛 초안 적용 방지.
 // 초안 이후 상황이 바뀌어 검증에 걸리면(422) 전부 롤백되고 계획은 ready로 남는다 — 수정 요청으로 이어가면 된다.
 // approved_at은 건드리지 않는다(G1 승인 = 잠김). 적용은 G1이 아니다.

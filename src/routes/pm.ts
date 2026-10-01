@@ -7,6 +7,7 @@ import {
   requestPlan,
   revisePlan,
   failRelayJob,
+  rejectPlan,
   submitRelayResult,
   takeRelayJob,
 } from '../domain/pm/service.js';
@@ -78,6 +79,26 @@ pmRouter.post(
   async (req, res) => {
     const { projectId, planId } = req.params as z.infer<typeof planParams>;
     res.status(200).json({ data: await applyPlan(req.user!.id, projectId, planId) });
+  },
+);
+
+// 본문은 없어도 된다(사유는 선택). 본문 없이 보내면 req.body가 undefined라 빈 객체로 받는다.
+const rejectBody = z
+  .object({ reason: z.string().trim().min(1).max(1000).optional() })
+  .strict()
+  .optional()
+  .transform((b) => b ?? {});
+
+// POST /api/projects/:projectId/pm/plans/:planId/reject — ready 초안을 버린다. 다시 받으려면 revise(수정 요청)를 쓴다.
+pmRouter.post(
+  '/projects/:projectId/pm/plans/:planId/reject',
+  validate({ params: planParams, body: rejectBody }),
+  authenticate,
+  requireRepresentative,
+  async (req, res) => {
+    const { projectId, planId } = req.params as z.infer<typeof planParams>;
+    const { reason } = req.body as z.infer<typeof rejectBody>;
+    res.status(200).json({ data: await rejectPlan(req.user!.id, projectId, planId, reason ?? null) });
   },
 );
 
