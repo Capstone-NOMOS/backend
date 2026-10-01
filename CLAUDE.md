@@ -146,7 +146,8 @@ await withTransaction(async (tx) => {
 
 레포를 연결하면 `seed-paths.ts`의 규칙 15개가 `repo_paths`에 자동 삽입된다(`source='seed'`, `owner_role`은 전부 null). 대표가 `**` 행의 소유자를 지정하는 것이 온보딩의 실질적 산출물이다.
 
-**레포 연결(`POST /api/orgs/:orgId/repos`)과 그 드롭다운(`GET .../github/repos`)은 대표 전용이 아니다** — 조직 멤버 누구나 한다. `repos` 행은 그 자체로 권한을 만들지 않기 때문이다: 판정이 읽는 경로 규칙은 `project_repos`에 조인된 레포만이므로(`listProjectRepoPaths`) 연결만 된 레포는 어떤 에이전트도 건드릴 수 없다. **실제 관문인 소유권 지정(`updatePathOwnership`)·규칙 추가(`addRepoPath`)·프로젝트 투입(`createProject`의 `repoIds`)은 대표 전용으로 남겨야 한다** — 그걸 함께 열면 "연결을 열었다"가 "권한을 열었다"가 된다(`tests/repo-paths.test.ts`의 '레포 연결 권한' 블록이 이 경계를 고정한다).
+**레포 연결(`POST /api/orgs/:orgId/repos`)과 그 드롭다운(`GET .../github/repos`)은 대표 전용이 아니다**
+(단, 연결 요청에 `ownerRole`을 실어 `**` 행의 소유 역할까지 한 번에 지정하는 것은 소유권 지정이라 대표 전용이다 — 대표가 아닌데 하나라도 있으면 아무것도 연결하지 않고 403. PATCH와 같은 `REPO_PATH_UPDATED`를 남긴다) — 조직 멤버 누구나 한다. `repos` 행은 그 자체로 권한을 만들지 않기 때문이다: 판정이 읽는 경로 규칙은 `project_repos`에 조인된 레포만이므로(`listProjectRepoPaths`) 연결만 된 레포는 어떤 에이전트도 건드릴 수 없다. **실제 관문인 소유권 지정(`updatePathOwnership`)·규칙 추가(`addRepoPath`)·프로젝트 투입(`createProject`의 `repoIds`)은 대표 전용으로 남겨야 한다** — 그걸 함께 열면 "연결을 열었다"가 "권한을 열었다"가 된다(`tests/repo-paths.test.ts`의 '레포 연결 권한' 블록이 이 경계를 고정한다).
 
 **소유 역할은 상속되고, 상속할 게 없으면 기본 거부다**(B-2, `docs/construction.md` §3.0). 한 경로에 대해
 **접근(`access`)·행동 키(`action_key`)는 이기는 행**(가장 높은 priority)에서, **소유 역할은 `owner_role`이 NULL이 아닌 가장 높은 행**에서
@@ -372,6 +373,9 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
   시작 전에 적용한 계획은 시작할 때 `approved_at`이 찍힌다. 시작 뒤에 적용하면 새 태스크가 바로 담당 에이전트에게 푸시된다.
 - **PM_REVIEW의 AUTO 강등을 아직 연결하지 말 것.** PM이 리뷰(②)를 하지 않는 지금 연결하면 "PM 무응답"이 상시라 PM_REVIEW가 전부 자동 통과된다.
 - `dag_hash`는 **구조만**(명세 키, 태스크의 레포·역할·종류·명세, 선행 쌍) 해시한다 — 근거·제목·ref 이름을 넣으면 M6a가 항상 0%다. 구조는 `plans.structure`에도 둔다.
+- **준비 상태(`GET /projects/:id/pm/status`)**: 화면이 "계획 받기"를 켜기 전에 본다 — `NO_API_KEY`(API 모드인데 키 없음),
+  `WORKER_OFFLINE`(중계 모드인데 pm-worker가 30초 넘게 작업을 확인하지 않음 — 워커는 3초마다 묻는다), 예산·사용액, 작성 중인 계획.
+  요청 자체를 막지는 않는다(판단은 화면이, 실패는 기존 timeout 경로가). 워커 접속 시각은 메모리라 재시작하면 워커가 다시 물을 때까지 offline이다.
 - 키가 없으면 PM API만 503 `PM_UNAVAILABLE`(`ANTHROPIC_API_KEY`는 선택). 테스트는 `setPmModel`로 가짜 모델을 끼운다 — CI는 실제 API를 부르지 않는다.
 - **중계 모드(`PM_PROVIDER=relay`)는 결제 전 임시 방식이다.** 모델 호출 한 자리만 대표 노트북의 `executor pm-worker`(headless Claude Code, 구독)로
   바뀌고 나머지 흐름은 같다(`domain/pm/relay.ts`, 대기열은 메모리). 작업은 **그 조직 대표 본인의 에이전트만** 가져간다(`GET /pm/jobs/next`) —
@@ -408,6 +412,8 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
     트랜잭션 안에서 부르지 말 것(보이지 않는 상태로 계산하거나 롤백된 변경을 알린다). 도메인은 웹소켓을 모른다 — 허브만 부르고 realtime이 구독한다.
     태스크 상태를 바꾸는 경로를 새로 만들면 여기에 한 줄을 넣는다. 빠뜨려도 에이전트의 안전망 폴링이 메우지만 그만큼 늦다.
   - 인증은 연결 뒤 첫 메시지(`{ type: 'auth', token }`)다 — URL에 실으면 프록시 로그에 남는다. 검증은 HTTP와 같은 `resolveAgentToken` 한 벌.
+  - **한 연결의 스냅샷은 차례로 계산·전송한다**(`pushSnapshot`의 running/dirty). 겹쳐 돌리면 먼저 계산한 옛 스냅샷이 나중에 도착해
+    클라이언트가 낡은 목록을 들고 있는다 — 연결 직후의 첫 스냅샷과 시작 직후의 푸시가 겹쳐 실제로 그랬다.
   - 메모리 안의 연결 목록이라 서버 1대 전제다. 여러 대로 늘리면 허브를 Postgres LISTEN/NOTIFY 같은 것으로 바꾼다.
 - **G1(`projects.started_at`) 이후에는 멤버를 바꿀 수 없다**(403). 역할 교체는 해제 후 재배정이다 —
   UPDATE 경로를 두면 한 역할에 둘이 잠깐 겹친다.

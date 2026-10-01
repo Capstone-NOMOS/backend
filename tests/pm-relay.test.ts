@@ -242,3 +242,34 @@ describe('claude 출력 → 결과', () => {
     expect(toJobResult({ result: '' }, 'm')).toEqual({ error: 'claude returned no output' });
   });
 });
+
+describe('PM 준비 상태 (GET /projects/:id/pm/status)', () => {
+  type Status = { provider: string; ready: boolean; reason: string | null; workerLastSeenAt: string | null; budgetUsd: number; spentUsd: number; pendingPlanId: string | null };
+  const status = async (w: { projectId: string; rep: { token: string } }) =>
+    (await call('GET', `/projects/${w.projectId}/pm/status`, w.rep.token)).body.data as unknown as Status;
+
+  it('중계 모드: 워커가 확인하기 전에는 WORKER_OFFLINE, 확인하면 ready — 작성 중인 계획도 알려준다', async () => {
+    const w = await world();
+    expect(await status(w)).toMatchObject({ provider: 'relay', ready: false, reason: 'WORKER_OFFLINE', workerLastSeenAt: null, budgetUsd: 40, spentUsd: 0, pendingPlanId: null });
+
+    const worker = await agentClient(w.rep.connectKey, 'rep-laptop');
+    await worker.nextPmJob(); // 워커가 한 번 확인했다
+    const online = await status(w);
+    expect(online).toMatchObject({ ready: true, reason: null });
+    expect(online.workerLastSeenAt).not.toBeNull();
+
+    const req = await call('POST', `/projects/${w.projectId}/pm/plans`, w.rep.token, { instruction: 'x' });
+    expect((await status(w)).pendingPlanId).toBe((req.body.data as unknown as { id: string }).id);
+  });
+
+  it('API 모드인데 키가 없으면 NO_API_KEY', async () => {
+    mutableEnv.PM_PROVIDER = 'api';
+    const w = await world();
+    expect(await status(w)).toMatchObject({ provider: 'api', ready: false, reason: 'NO_API_KEY' });
+  });
+
+  it('대표만 본다', async () => {
+    const w = await world();
+    expect((await call('GET', `/projects/${w.projectId}/pm/status`, w.be.token)).status).toBe(403);
+  });
+});

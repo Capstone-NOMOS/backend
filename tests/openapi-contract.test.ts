@@ -276,6 +276,7 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
       },
     });
     try {
+      await call('GET', `/projects/${projectId}/pm/status`, rep);
       const requested = await call('POST', `/projects/${projectId}/pm/plans`, rep, { instruction: '출석 기능' });
       await drainPmJobs();
       const planId = requested.data.id as string;
