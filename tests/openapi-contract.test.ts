@@ -5,6 +5,8 @@ import { createApp } from '../src/app.js';
 import { pool } from '../src/config/db.js';
 import { clearPolicyCache } from '../src/domain/policy/policy-cache.js';
 import { setGithubDeviceApi } from '../src/domain/oauth/service.js';
+import { setPmModel } from '../src/domain/pm/model.js';
+import { drainPmJobs } from '../src/domain/pm/service.js';
 import type { GithubDeviceApi } from '../src/domain/oauth/github-device.js';
 import {
   gitMirrorInspector,
@@ -252,6 +254,35 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
 
     await call('GET', `/projects/${projectId}/notes`, agent);
     await call('GET', `/projects/${projectId}/notes?since_seq=0`, rep);
+
+    // 내장 PM(가짜 모델) — 요청 → 초안 → 수정 요청 → 적용
+    const draft = (key: string, suffix: string) => ({
+      mode: 'SEQUENTIAL',
+      rationale: '작다',
+      estimate: { workingDays: 3, notes: '' },
+      specs: [{ featureKey: key, title: '출석', content: 'WHEN 출석하면 THEN 기록한다', tests: [{ criterion: '기록된다', testCode: 'expect(1).toBe(1)' }] }],
+      tasks: [{ ref: 'att', title: `T-20 출석 API${suffix}`, repo: 'acme/study-api', teamRole: 'BACKEND', kind: 'IMPLEMENT', spec: key, dependsOn: [] }],
+    });
+    const drafts = [draft('F-20', ''), draft('F-21', ' v2')];
+    setPmModel({
+      kind: 'fake',
+      async generate() {
+        const d = drafts.shift()!;
+        return { stopReason: 'end_turn', servedModel: 'claude-sonnet-5-5', text: JSON.stringify(d), attempts: [{ model: 'claude-sonnet-5-5', inputTokens: 100, outputTokens: 100, cacheWriteTokens: 0, cacheReadTokens: 0 }] };
+      },
+    });
+    try {
+      const requested = await call('POST', `/projects/${projectId}/pm/plans`, rep, { instruction: '출석 기능' });
+      await drainPmJobs();
+      const planId = requested.data.id as string;
+      await call('GET', `/projects/${projectId}/pm/plans/${planId}`, rep);
+      const revised = await call('POST', `/projects/${projectId}/pm/plans/${planId}/revise`, rep, { feedback: '제목에 v2' });
+      await drainPmJobs();
+      await call('GET', `/projects/${projectId}/pm/plans`, rep);
+      await call('POST', `/projects/${projectId}/pm/plans/${revised.data.id as string}/apply`, rep);
+    } finally {
+      setPmModel(null);
+    }
   });
 
   it('문서의 모든 성공 응답을 위 흐름에서 한 번 이상 받았다', () => {

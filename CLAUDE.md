@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 프로젝트
 
-NOMOS 서버 — 여러 개발자가 각자 노트북에서 Claude Code 에이전트를 돌릴 때 그 사이의 계약·권한·분쟁을 조율하는 서버. 현재 구현 범위는 조직·레포·경로 소유권·초대, 로컬 계정과 CLI 연결(브라우저 승인 포함), 프로젝트·태스크·산출물·인계 노트·검증, 명세·태스크 작성(마이그레이션 013까지), AWS 배포다.
+NOMOS 서버 — 여러 개발자가 각자 노트북에서 Claude Code 에이전트를 돌릴 때 그 사이의 계약·권한·분쟁을 조율하는 서버. 현재 구현 범위는 조직·레포·경로 소유권·초대, 로컬 계정과 CLI 연결(브라우저 승인 포함), 프로젝트·태스크·산출물·인계 노트·검증, 명세·태스크 작성, 내장 PM의 계획 수립(마이그레이션 014까지), AWS 배포다.
 
 설계 원칙(위반 금지): **P1** 상태는 서버가 소유하고 클라이언트는 전이를 요청만 한다. **P3** 모든 행동은 사람에게 귀속된다(`on_behalf_of` 없는 이벤트는 없다). **P5** 모든 상태 변화는 `events`에 append되고 events가 유일한 진실이다.
 
@@ -340,6 +340,34 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
 - 명세 목록(`GET .../specs`)의 범위는 태스크 목록과 같다. 에이전트에게는 잠긴 시험지만 보인다(브리핑과 같은 규칙).
 - 수정·삭제·명세 개정(`superseded_by`)은 아직 없다.
 
+### 내장 PM (`domain/pm`) — 계획 수립만
+
+대표의 지시 → PM 초안(비동기, `pending → ready | failed`) → 대표 검토 → 적용(`applied`). PM은 NOMOS 키(`ANTHROPIC_API_KEY`)로 서버에서 돈다.
+PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
+
+- **판정은 코드가 한다(P2).** 초안은 명세·태스크 작성과 같은 검증(`domain/authoring`)을 **dry-run**으로 거친다. 위반이면 위반 목록을 붙여
+  **한 번만** 다시 쓰게 하고, 그래도 틀리면 `failed(invalid)`. 교정 횟수를 늘리지 말 것 — 비용과 비결정성만 는다.
+- **응답은 `stop_reason`부터 본다** → JSON → 형식(zod) → 도메인 검증. `refusal`은 `refused`, `max_tokens`는 `truncated` — PM이 틀린 게 아니라
+  교정하지 않는다. 실패 사유는 `error_reason`(refused·truncated·timeout·invalid·restart·budget·api_error)이고 상태에 섞지 않는다.
+- **수정 요청과 교정은 새 단발 호출이다**(이전 초안 + 피드백/위반). 대화를 이어 붙이지 않으므로 거절된 턴이 섞이지 않는다.
+- **비용**: 호출마다 `PM_CALL` 이벤트(`on_behalf_of: system:pm`, `events.token_cost` USD). `usage.iterations`의 **시도마다** 그 모델 가격으로 더한다
+  캐시 쓰기(입력 × 1.25)와 읽기는 따로 센다. 가격표는 `pm/pricing.ts` 한 곳.
+- **대체 모델(`fallbacks`)은 쓰지 않는다.** 켜면 안전 거절 때 서버가 고른 다른 모델이 한 번 더 돌 수 있어, 호출 상한을 가장 비싼 모델 기준으로
+  두 번 잡아야 했다($3.9). 계획 작성이 거절될 일은 드물다 — 거절되면 `failed(refused)`, 대표가 다시 요청한다. 다시 켜면 `maxCallCost`도 같이 고칠 것.
+- **예산**: 매 호출 전(교정 포함) "누적 + 이번 최대치 > `pm_budget_usd`"면 부르지 않는다. 최대치는 `max_tokens`(기본 32,000) × 출력가 + 입력분 —
+  Sonnet 5.5 기준 약 $0.4, 계획 하나(교정 포함 2회) 약 $0.8. 초과 시 설계상 승인 카드가 떠야 하지만 **승인 경로 미구현**이라 409로 거절하고 메시지에 그렇게 적는다.
+- **끊긴 호출**: 호출 직전 최대치를 `plans.inflight_max_cost_usd`에 적고, 시간 제한(`PM_TIMEOUT_MS`)·재시작으로 끊기면 그 값으로 `PM_CALL(interrupted)`을 남긴다.
+  재시작 정리(`recoverInterruptedPlans`)는 **`startServer`에서만** 부른다 — migrate 단계에서는 옛 서버가 아직 작업 중일 수 있다.
+  상태 전이는 전부 `WHERE status = 'pending'` 조건부라 정리된 계획을 늦게 끝난 작업이 덮어쓰지 못한다.
+- **적용은 저장된 초안을 그대로** 명세·태스크 작성 경로에 넣는다(`source: 'pm'`, `tasks.plan_id`). **시험지는 전부 `locked: true`** — 초안 화면에서
+  대표가 시험지 코드 전문을 보고 적용하는 것이 곧 검토다(시험지는 팀원 노트북에서 실행된다). 같은 잠금 안에서 ready·체인 미적용을 다시 확인하고
+  (`uq_plans_applied_root`가 마지막 방어선), 검증에 걸리면 롤백되어 계획은 ready로 남는다.
+- **적용은 G1이 아니다.** `applied_at`만 채우고 `plans.approved_at`은 비워 둔다(G1 승인 = 잠김). 프로젝트 상태도 바꾸지 않는다.
+- **PM_REVIEW의 AUTO 강등을 아직 연결하지 말 것.** PM이 리뷰(②)를 하지 않는 지금 연결하면 "PM 무응답"이 상시라 PM_REVIEW가 전부 자동 통과된다.
+- `dag_hash`는 **구조만**(명세 키, 태스크의 레포·역할·종류·명세, 선행 쌍) 해시한다 — 근거·제목·ref 이름을 넣으면 M6a가 항상 0%다. 구조는 `plans.structure`에도 둔다.
+- 키가 없으면 PM API만 503 `PM_UNAVAILABLE`(`ANTHROPIC_API_KEY`는 선택). 테스트는 `setPmModel`로 가짜 모델을 끼운다 — CI는 실제 API를 부르지 않는다.
+- 모델·노력·한도는 설정값(`PM_MODEL` 기본 `claude-sonnet-5-5`, `PM_EFFORT` 기본 `high`, `PM_MAX_TOKENS`). 생각 토큰도 출력으로 과금되니 실제 비용을 보고 조정한다.
+
 ### 프로젝트와 멤버
 
 - 프로젝트 생성은 **한 트랜잭션**에서 프로젝트 행·레포 연결·`project_policies` 17행 복사·헌법 스냅샷·`policy_hash`를
@@ -467,7 +495,7 @@ const { repoId } = req.params as z.infer<typeof repoIdParamsSchema>
 
 ### 라우터 마운트
 
-라우터 11개(`auth`, `agents`, `orgs`, `repos`, `repo-paths`, `invites`, `oauth`, `tasks`, `notes`, `projects`, `specs`)가 전부 `app.use("/api", ...)`로 마운트되고(`/health`·`/docs`는 `/api` 밖), 각 파일이 `/orgs/:orgId/...` 같은 전체 경로를 직접 선언한다. 그래서 URL 접두사가 아니라 **도메인 기준**으로 파일이 나뉜다 — 예를 들어 `POST /api/orgs/:orgId/repos`는 URL은 orgs 밑이지만 `routes/repos.ts`에 있고, `POST /api/orgs/:orgId/invites`는 `routes/invites.ts`에 있다.
+라우터 12개(`auth`, `agents`, `orgs`, `repos`, `repo-paths`, `invites`, `oauth`, `tasks`, `notes`, `projects`, `specs`, `pm`)가 전부 `app.use("/api", ...)`로 마운트되고(`/health`·`/docs`는 `/api` 밖), 각 파일이 `/orgs/:orgId/...` 같은 전체 경로를 직접 선언한다. 그래서 URL 접두사가 아니라 **도메인 기준**으로 파일이 나뉜다 — 예를 들어 `POST /api/orgs/:orgId/repos`는 URL은 orgs 밑이지만 `routes/repos.ts`에 있고, `POST /api/orgs/:orgId/invites`는 `routes/invites.ts`에 있다.
 
 
 ## 스키마 변경 규칙

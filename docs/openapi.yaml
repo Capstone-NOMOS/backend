@@ -447,6 +447,78 @@ components:
         featureKey: { type: string }
         title: { type: string }
         content: { type: string }
+    PlanDraft:
+      type: object
+      description: 'PM이 낸 계획 초안. 적용하면 이 내용이 그대로 명세·태스크가 된다(시험지는 전부 잠긴다)'
+      required: [mode, rationale, estimate, specs, tasks]
+      properties:
+        mode: { type: string, enum: [SEQUENTIAL, CONTRACT_PARALLEL, HYBRID], description: '추천 진행 방식(기록용 — 실행 순서는 dependsOn이 정한다)' }
+        rationale: { type: string }
+        estimate:
+          type: object
+          required: [workingDays, notes]
+          properties:
+            workingDays: { type: number }
+            notes: { type: string }
+        specs:
+          type: array
+          items:
+            type: object
+            required: [featureKey, title, content, tests]
+            properties:
+              featureKey: { type: string }
+              title: { type: string }
+              content: { type: string, description: 'EARS 수용 기준' }
+              tests:
+                type: array
+                description: '시험지 — 팀원 노트북에서 실행되는 코드다. 적용 전에 전문을 검토한다'
+                items:
+                  type: object
+                  required: [criterion, testCode]
+                  properties:
+                    criterion: { type: string }
+                    testCode: { type: string }
+        tasks:
+          type: array
+          items:
+            type: object
+            required: [ref, title, repo, teamRole, kind, spec, dependsOn]
+            properties:
+              ref: { type: string, description: '이 초안 안에서만 쓰는 이름(선행 관계용)' }
+              title: { type: string }
+              repo: { type: string, description: '레포 fullName' }
+              teamRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true }
+              kind: { type: string, enum: [IMPLEMENT, INTEGRATION, REWORK] }
+              spec: { type: string, nullable: true, description: '명세 featureKey' }
+              dependsOn: { type: array, items: { type: string }, description: '먼저 끝나야 하는 태스크의 ref' }
+    PmPlan:
+      type: object
+      required: [id, projectId, status, instruction, feedback, parentPlanId, mode, draft, error, costUsd, createdAt, appliedAt]
+      properties:
+        id: { type: string, format: uuid }
+        projectId: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [pending, ready, failed, applied]
+          description: 'pending이면 PM이 작성 중 — 몇 초 뒤 다시 조회한다'
+        instruction: { type: string, nullable: true }
+        feedback: { type: string, nullable: true, description: '수정 요청이면 대표의 피드백' }
+        parentPlanId: { type: string, format: uuid, nullable: true, description: '수정 요청이면 이전 초안' }
+        mode: { type: string, nullable: true }
+        draft: { $ref: '#/components/schemas/PlanDraft', nullable: true }
+        error:
+          type: object
+          nullable: true
+          required: [reason, detail]
+          properties:
+            reason:
+              type: string
+              enum: [refused, truncated, timeout, invalid, restart, budget, api_error]
+              description: 'refused 안전 거절 · truncated 출력 한도 부족 · timeout 시간 제한 · invalid 교정 후에도 검증 실패 · restart 서버 재시작 · budget 예산 · api_error API 오류'
+            detail: { description: '사유별 상세(invalid면 problems 목록)', nullable: true }
+        costUsd: { type: number, description: '이 계획에 든 PM 호출 비용 합계(USD)' }
+        createdAt: { type: string, format: date-time }
+        appliedAt: { type: string, format: date-time, nullable: true }
     Spec:
       type: object
       required: [id, featureKey, title, content, version, createdAt, tests]
@@ -602,6 +674,7 @@ tags:
   - name: 초대
   - name: GitHub OAuth
   - name: 명세·태스크 작성
+  - name: 내장 PM
   - name: 태스크·노트
   - name: 검증
 
@@ -2041,6 +2114,167 @@ paths:
                   projectId: '{{PROJECT_ID}}'
                   teamRole: BACKEND
                   maxConcurrent: 2
+
+  /projects/{projectId}/pm/plans:
+    get:
+      tags: [내장 PM]
+      summary: PM 계획 요청 이력 (대표 전용)
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/ProjectId' }]
+      responses:
+        '200':
+          description: 최근 요청 순
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [plans], properties: { plans: { type: array, items: { $ref: '#/components/schemas/PmPlan' } } } } } }
+              example:
+                data: { plans: [] }
+    post:
+      tags: [내장 PM]
+      summary: 계획 초안 요청 (대표 전용)
+      description: |
+        대표의 지시로 PM(NOMOS 내장, NOMOS 키로 실행)이 명세·시험지·태스크 DAG 초안을 만든다.
+        **202로 바로 답하고 PM은 뒤에서 돈다**(수십 초~수 분). `GET .../pm/plans/{planId}`를 몇 초 간격으로 폴링해 `ready`·`failed`를 본다.
+
+        - 프로젝트당 진행 중인 요청은 하나(409 `PM_PLAN_IN_PROGRESS`)
+        - 호출 전에 "누적 PM 비용 + 이번 호출의 최대치 > PM 예산"이면 409 `PM_BUDGET_EXCEEDED` —
+          설계상 예산 초과는 대표 승인 카드가 떠야 하지만 **승인 경로 미구현**이라 거절만 한다
+        - 서버에 PM 키가 없으면 503 `PM_UNAVAILABLE`
+        - 초안은 명세·태스크 생성과 같은 코드 검증을 거친다. 틀리면 PM이 **한 번만** 고치고, 그래도 틀리면 `failed(invalid)`
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/ProjectId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [instruction]
+              properties:
+                instruction: { type: string, maxLength: 8000 }
+            example:
+              instruction: 3주 안에 사내 스터디 관리 웹앱. 회원가입, 스터디 개설, 참여신청, 출석체크. 모바일 대응 필수.
+      responses:
+        '202':
+          description: 접수됨(status=pending)
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/PmPlan' } } }
+              example:
+                data: { id: 1b2c3d4e-5f60-4a1b-8c2d-3e4f5a6b7c8d, projectId: '{{PROJECT_ID}}', status: pending, instruction: '3주 안에 …', feedback: null, parentPlanId: null, mode: null, draft: null, error: null, costUsd: 0, createdAt: '2026-09-30T02:00:00.000Z', appliedAt: null }
+        '409':
+          description: 진행 중인 요청 있음 · 예산 초과 · 끝난 프로젝트
+          content:
+            application/json:
+              examples:
+                진행중:
+                  value: { error: { code: PM_PLAN_IN_PROGRESS, message: a PM plan is already being drafted for this project; wait for it to finish } }
+                예산:
+                  value: { error: { code: PM_BUDGET_EXCEEDED, message: 'PM budget would be exceeded: … 승인 경로 미구현 — …' } }
+        '503':
+          description: 서버에 PM 키(ANTHROPIC_API_KEY)가 없다
+          content:
+            application/json:
+              example:
+                error: { code: PM_UNAVAILABLE, message: the built-in PM is not configured on this server (ANTHROPIC_API_KEY) }
+
+  /projects/{projectId}/pm/plans/{planId}:
+    get:
+      tags: [내장 PM]
+      summary: 계획 상태·초안 (대표 전용)
+      description: |
+        `pending`이면 작성 중이다. `ready`면 `draft`를 검토한다 — **시험지 코드 전문을 보여줄 것**(적용하면 잠기고 팀원 노트북에서 실행된다).
+        `failed`면 `error.reason`으로 이유를 보여준다.
+      security: [{ userToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - { name: planId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 계획
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/PmPlan' } } }
+              example:
+                data: { id: 1b2c3d4e-5f60-4a1b-8c2d-3e4f5a6b7c8d, projectId: '{{PROJECT_ID}}', status: ready, instruction: '3주 안에 …', feedback: null, parentPlanId: null, mode: SEQUENTIAL, draft: { mode: SEQUENTIAL, rationale: 요구사항이 작고 명확하다, estimate: { workingDays: 10, notes: '' }, specs: [], tasks: [] }, error: null, costUsd: 0.4213, createdAt: '2026-09-30T02:00:00.000Z', appliedAt: null }
+        '404':
+          description: 없는 계획
+          content:
+            application/json:
+              example:
+                error: { code: PLAN_NOT_FOUND, message: plan not found }
+
+  /projects/{projectId}/pm/plans/{planId}/revise:
+    post:
+      tags: [내장 PM]
+      summary: 수정 요청 (대표 전용)
+      description: |
+        `ready`인 초안에 피드백을 붙여 새 초안을 요청한다(이전 초안 + 피드백으로 새로 쓴다). 새 계획이 pending으로 생기고
+        이전 초안은 그대로 남는다. 한 수정 체인에서는 하나만 적용할 수 있다.
+      security: [{ userToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - { name: planId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [feedback]
+              properties:
+                feedback: { type: string, maxLength: 8000 }
+            example:
+              feedback: 출석체크는 다음 단계로 미루고, 스터디 개설에 정원 설정을 넣어줘
+      responses:
+        '202':
+          description: 새 초안 접수됨(status=pending)
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/PmPlan' } } }
+              example:
+                data: { id: 2c3d4e5f-6071-4b2c-9d3e-4f5a6b7c8d9e, projectId: '{{PROJECT_ID}}', status: pending, instruction: '3주 안에 …', feedback: 출석체크는 다음 단계로, parentPlanId: 1b2c3d4e-5f60-4a1b-8c2d-3e4f5a6b7c8d, mode: null, draft: null, error: null, costUsd: 0, createdAt: '2026-09-30T02:05:00.000Z', appliedAt: null }
+        '409':
+          description: ready가 아닌 초안
+          content:
+            application/json:
+              example:
+                error: { code: PLAN_NOT_APPLICABLE, message: only a ready plan can be revised }
+
+  /projects/{projectId}/pm/plans/{planId}/apply:
+    post:
+      tags: [내장 PM]
+      summary: 초안 적용 (대표 전용)
+      description: |
+        저장된 초안을 **그대로** 명세·태스크로 만든다(명세·태스크 생성과 같은 검증·잠금, `source: pm`, 시험지 전부 잠금).
+        태스크는 READY라 배정된 에이전트가 바로 수령할 수 있다. **G1(프로젝트 시작)이 아니다** — 프로젝트 상태는 그대로다.
+
+        - 두 번 적용하거나 같은 수정 체인의 다른 초안을 적용하면 409 `PLAN_NOT_APPLICABLE`
+        - 초안 뒤에 상황이 바뀌어 검증에 걸리면 422 `PLAN_INVALID` — 아무것도 만들지 않고 계획은 `ready`로 남는다. 수정 요청으로 이어가면 된다
+      security: [{ userToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - { name: planId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 적용됨(status=applied)
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/PmPlan' } } }
+              example:
+                data: { id: 1b2c3d4e-5f60-4a1b-8c2d-3e4f5a6b7c8d, projectId: '{{PROJECT_ID}}', status: applied, instruction: '3주 안에 …', feedback: null, parentPlanId: null, mode: SEQUENTIAL, draft: null, error: null, costUsd: 0.4213, createdAt: '2026-09-30T02:00:00.000Z', appliedAt: '2026-09-30T02:10:00.000Z' }
+        '409':
+          description: 적용할 수 없는 상태
+          content:
+            application/json:
+              example:
+                error: { code: PLAN_NOT_APPLICABLE, message: another plan in this revision chain has already been applied }
+        '422':
+          description: 초안 이후 상황이 바뀌어 검증 실패(계획은 ready로 남는다)
+          content:
+            application/json:
+              example:
+                error: { code: PLAN_INVALID, message: 명세·태스크 검증 실패 1건, details: [{ where: 'tasks[api]', message: '태스크 "T-1"이 프로젝트에 이미 있다 (다시 보낸 건 아닌가?)' }] }
 
   /projects/{projectId}/specs:
     get:

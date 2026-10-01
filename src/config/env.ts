@@ -55,6 +55,16 @@ const envSchema = z
     // Swagger UI. 켜면 운영에서는 Basic Auth가 필수다(DOCS_BASIC_AUTH = "user:password").
     DOCS_ENABLED: flag,
     DOCS_BASIC_AUTH: z.string().optional(),
+    // 내장 PM(NOMOS 키로 실행). 없으면 PM API만 503 PM_UNAVAILABLE이고 나머지는 그대로 돈다 —
+    // 필수로 두면 SSM에 키를 넣기 전까지 운영 서버가 뜨지 않는다.
+    ANTHROPIC_API_KEY: z.string().optional(),
+    // 모델·노력 수준·출력 한도는 설정값이다. 새 모델이 이상하면 이전 모델로 바꿔 비교한다.
+    PM_MODEL: z.string().min(1).default('claude-sonnet-5-5'),
+    PM_EFFORT: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('high'),
+    // 생각 토큰도 이 한도 안에 든다. 호출 한 번의 최대 비용(예산 사전 검사)이 이 값으로 정해진다.
+    PM_MAX_TOKENS: z.coerce.number().int().min(1024).max(128_000).default(32_000),
+    // 스트리밍 호출 전체 시간 제한. 연결이 멈춰도 pending이 영원히 남지 않게.
+    PM_TIMEOUT_MS: z.coerce.number().int().positive().default(600_000),
   })
   .superRefine((v, ctx) => {
     if (v.APP_BASE_URL !== undefined) {

@@ -44,6 +44,11 @@ export type ErrorCode =
   | 'PLAN_INVALID'
   | 'PLAN_CONFLICT'
   | 'PROJECT_NOT_OPEN'
+  | 'PM_UNAVAILABLE'
+  | 'PM_BUDGET_EXCEEDED'
+  | 'PM_PLAN_IN_PROGRESS'
+  | 'PLAN_NOT_FOUND'
+  | 'PLAN_NOT_APPLICABLE'
   | 'PROJECT_NOT_FOUND'
   | 'INVALID_AUTONOMY_PRESET'
   | 'REPO_IN_ACTIVE_PROJECT'
@@ -111,6 +116,15 @@ const STATUS_BY_CODE: Record<ErrorCode, number> = {
   PLAN_CONFLICT: 409,
   // 끝났거나(completed·aborted) 멈춘(halted) 프로젝트에는 명세·태스크를 만들 수 없다.
   PROJECT_NOT_OPEN: 409,
+  // 서버에 PM 키가 없다(ANTHROPIC_API_KEY). PM 외 기능은 그대로 돈다.
+  PM_UNAVAILABLE: 503,
+  // 이 호출이 PM 예산을 넘길 수 있다. 설계상 대표 승인 카드(budget:exceed)가 떠야 하지만 승인 API가 없어 거절만 한다(미구현).
+  PM_BUDGET_EXCEEDED: 409,
+  // 프로젝트당 진행 중인 PM 요청은 하나.
+  PM_PLAN_IN_PROGRESS: 409,
+  PLAN_NOT_FOUND: 404,
+  // 적용할 수 없는 상태(ready가 아님)이거나, 같은 수정 체인에서 이미 적용된 계획이 있다.
+  PLAN_NOT_APPLICABLE: 409,
   // 422 — zod가 아니라 서비스가 판정한다. 어휘 위반은 형식 오류와 구분해서 알려준다.
   INVALID_AUTONOMY_PRESET: 422,
   // 409 — 같은 레포를 두 활성 프로젝트가 쓰면 경로 소유권이 겹친다.
