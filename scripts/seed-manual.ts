@@ -18,7 +18,7 @@ import { signup } from '../src/domain/auth/service.js';
 import { acceptInvite, createInvite } from '../src/domain/invite/service.js';
 import { createOrganization } from '../src/domain/org/service.js';
 import { mirrorRoot } from '../src/domain/verification/commit-inspector.js';
-import { assignMember, createProject } from '../src/domain/project/service.js';
+import { assignMember, createProject, startProject } from '../src/domain/project/service.js';
 import { connectRepos, updatePathOwnership } from '../src/domain/repo/service.js';
 import { readRepoMap } from '../src/executor/workspace.js';
 
@@ -193,6 +193,11 @@ async function main(): Promise<void> {
     [projectId, api.id, specOf('F-03'), web.id, specOf('F-01')],
   );
 
+  // 프로젝트 시작(G1) — 시작해야 에이전트가 태스크를 가져간다(executor 데모가 바로 돈다).
+  // 시작 흐름 자체를 손으로 보려면 --planning: 시작하지 않은 채 두고, POST /api/projects/:id/start를 직접 부른다.
+  const keepPlanning = argv.includes('--planning');
+  if (!keepPlanning) await startProject(actor, projectId);
+
   // ⑨ 프로젝트에 배정된 뒤 재발급해야 토큰에 project_id와 policy_hash가 담긴다.
   // 배정 전에 받은 토큰에는 project_id가 없어 태스크 API가 403이다.
   const feToken = await refreshAgentToken(feAgent.refreshToken);
@@ -249,6 +254,10 @@ async function main(): Promise<void> {
     ],
   );
 
+  out(keepPlanning
+    ? '프로젝트: **planning**(시작 전) — POST /api/projects/:id/start로 시작해야 에이전트가 태스크를 가져간다'
+    : '프로젝트: **active**(시작됨) — 멤버는 고정이다. 시작 흐름을 보려면 npm run seed -- --planning');
+  out();
   out('## READY 태스크');
   table(
     ['task_id', '역할', '제목'],

@@ -1,11 +1,14 @@
 import { withTransaction, type Queryable } from '../../config/db.js';
 import { AppError } from '../../errors.js';
 import { hashObject } from '../../utils/canonical-json.js';
+import { tasksChanged } from '../dispatch/tasks-changed.js';
 import { appendEvent } from '../events/append.js';
 import { violatedConstraint } from '../pg-errors.js';
 import { recomputeProjectPolicyHash } from '../policy/policy-hash.js';
 import type { TeamRole } from '../roles.js';
 import {
+  approveAppliedPlans,
+  approveProjectSpecs,
   copyPoliciesFromCatalog,
   deleteProjectMember,
   findAgentOrg,
@@ -21,6 +24,8 @@ import {
   listProjectMembers,
   listProjectRepos,
   listProjectsByOrg,
+  markProjectStarted,
+  summarizeProjectTasks,
   type AutonomyPreset,
   type Project,
   type ProjectMember,
@@ -55,8 +60,13 @@ function assertPreset(value: string): AutonomyPreset {
 }
 
 // 없음(404)과 남의 조직(403)을 구분한다 — repo/service.ts의 assertRepoInOrg와 같은 규칙.
-async function assertProjectInOrg(db: Queryable, orgId: string, projectId: string): Promise<Project> {
-  const project = await findProjectById(db, projectId);
+async function assertProjectInOrg(
+  db: Queryable,
+  orgId: string,
+  projectId: string,
+  lock?: 'share' | 'update',
+): Promise<Project> {
+  const project = await findProjectById(db, projectId, lock === undefined ? {} : { lock });
   if (!project) throw new AppError('PROJECT_NOT_FOUND', `project ${projectId} not found`);
   if (project.orgId !== orgId) throw new AppError('CROSS_ORG_ACCESS', 'cannot access another organization');
   return project;
@@ -161,7 +171,8 @@ export async function assignMember(
   teamRole: TeamRole,
 ): Promise<ProjectMember[]> {
   return withTransaction(async (tx) => {
-    const project = await assertProjectInOrg(tx, actor.orgId, projectId);
+    // 시작(G1)과 겹치지 않게 잠근다. 시작이 먼저 잡았으면 끝날 때까지 기다린 뒤 started_at을 본다.
+    const project = await assertProjectInOrg(tx, actor.orgId, projectId, 'share');
     assertNotStarted(project);
 
     // 에이전트도 같은 조직이어야 한다. 없는 id도 여기서 걸린다.
@@ -213,7 +224,7 @@ export async function unassignMember(
   agentId: string,
 ): Promise<ProjectMember[]> {
   return withTransaction(async (tx) => {
-    const project = await assertProjectInOrg(tx, actor.orgId, projectId);
+    const project = await assertProjectInOrg(tx, actor.orgId, projectId, 'share');
     assertNotStarted(project);
 
     // 역할 교체는 삭제 후 재배정으로 한다 — UPDATE 경로를 두면 한 역할에 둘이 잠깐 겹칠 수 있다.
@@ -234,6 +245,71 @@ export async function unassignMember(
 
     return listProjectMembers(tx, projectId);
   });
+}
+
+// 프로젝트 시작(G1). 이 순간부터 실행이 시작된다 — 에이전트는 시작 전에는 태스크를 가져갈 수 없고(PROJECT_NOT_STARTED),
+// 시작하면 서버가 역할별 담당 에이전트에게 가져갈 수 있는 태스크를 보낸다(dispatch/tasks-changed → realtime/agent-stream).
+//
+// - 시작할 수 있는가: 태스크가 하나 이상, 끝나지 않은 태스크가 요구하는 역할마다 배정된 에이전트가 있어야 한다.
+//   역할이 비면 그 태스크를 아무도 가져가지 않는다 — 시작 뒤에는 멤버를 바꿀 수 없으므로 여기서 막는다. 위반은 전부 모아 422.
+// - 시작하면: planning → active, started_at. 시작 시점의 명세·적용된 계획에 approved_at(G1 승인 = 잠김). 멤버 고정(assertNotStarted).
+// - 헌법은 프로젝트 생성 때 이미 사본을 떴다. 수정 경로가 생기면 "시작 뒤에는 고칠 수 없다"를 그쪽에 건다.
+export async function startProject(actor: Actor, projectId: string): Promise<ProjectDetail> {
+  const detail = await withTransaction(async (tx) => {
+    const project = await assertProjectInOrg(tx, actor.orgId, projectId, 'update');
+    if (project.startedAt !== null) {
+      throw new AppError('PROJECT_ALREADY_STARTED', `project started at ${project.startedAt}`);
+    }
+    if (project.status !== 'planning') {
+      throw new AppError('PROJECT_NOT_OPEN', `project is ${project.status}; only a planning project can start`);
+    }
+
+    const { total, openRoles } = await summarizeProjectTasks(tx, projectId);
+    const members = await listProjectMembers(tx, projectId);
+    const problems: { where: string; message: string }[] = [];
+    if (total === 0) {
+      problems.push({ where: 'tasks', message: '태스크가 없다 — PM 계획을 적용하거나 태스크를 만든 뒤 시작한다' });
+    }
+    const assigned = new Set(members.map((m) => m.teamRole));
+    for (const role of openRoles.filter((r) => !assigned.has(r))) {
+      problems.push({
+        where: `members.${role}`,
+        message: `${role} 역할의 태스크가 있는데 배정된 에이전트가 없다 — 시작하면 멤버를 바꿀 수 없으니 먼저 배정한다`,
+      });
+    }
+    if (problems.length > 0) {
+      throw new AppError('PROJECT_START_INVALID', `project cannot start: ${problems.length} problem(s)`, problems);
+    }
+
+    if (!(await markProjectStarted(tx, projectId))) {
+      // 잠금을 잡고 봤으므로 여기 오면 안 된다. 오면 조용히 넘기지 않는다.
+      throw new AppError('PROJECT_ALREADY_STARTED', 'project was started concurrently');
+    }
+    const approvedSpecCount = await approveProjectSpecs(tx, projectId);
+    const approvedPlanIds = await approveAppliedPlans(tx, projectId);
+    await appendEvent(tx, {
+      orgId: actor.orgId,
+      projectId,
+      type: 'PROJECT_STARTED',
+      onBehalfOf: actor.userId,
+      policyHash: project.policyHash,
+      payload: {
+        members: members.map((m) => ({ agentId: m.agentId, teamRole: m.teamRole })),
+        taskCount: total,
+        approvedSpecCount,
+        approvedPlanIds,
+      },
+    });
+
+    return {
+      project: (await findProjectById(tx, projectId))!,
+      repos: await listProjectRepos(tx, projectId),
+      members,
+    };
+  });
+  // 커밋 뒤 — 가져갈 수 있는 태스크를 담당 에이전트에게 보낸다.
+  tasksChanged(projectId);
+  return detail;
 }
 
 export async function getProject(actor: Actor, projectId: string): Promise<ProjectDetail> {

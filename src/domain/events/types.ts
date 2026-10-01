@@ -17,6 +17,7 @@ export type EventType =
   | 'NOTE_PUBLISHED'
   | 'PROJECT_CREATED'
   | 'MEMBER_ASSIGNED'
+  | 'PROJECT_STARTED'
   | 'MEMBER_UNASSIGNED'
   | 'REPO_UPDATED'
   | 'TASKS_IMPORTED'
@@ -176,6 +177,14 @@ export type ProjectCreatedPayload = {
   constitutionHash: string;
 };
 
+// G1 — 이 시점의 멤버·태스크 수·승인한 계획을 남긴다. 이후 지표("이 구성으로 시작해서 어땠나")의 기준점이다.
+export type ProjectStartedPayload = {
+  members: { agentId: string; teamRole: string }[];
+  taskCount: number;
+  approvedSpecCount: number;
+  approvedPlanIds: string[];
+};
+
 export type MemberAssignedPayload = {
   agentId: string;
   teamRole: string;
@@ -292,6 +301,7 @@ export type EventPayloadMap = {
   NOTE_PUBLISHED: NotePublishedPayload;
   PROJECT_CREATED: ProjectCreatedPayload;
   MEMBER_ASSIGNED: MemberAssignedPayload;
+  PROJECT_STARTED: ProjectStartedPayload;
   MEMBER_UNASSIGNED: MemberUnassignedPayload;
   REPO_UPDATED: RepoUpdatedPayload;
   TASKS_IMPORTED: TasksImportedPayload;

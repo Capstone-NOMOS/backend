@@ -7,6 +7,7 @@ import { logger } from '../../config/logger.js';
 import { AppError } from '../../errors.js';
 import { authorInTransaction } from '../authoring/apply.js';
 import { findActor, lockProjectForAuthoring } from '../authoring/repository.js';
+import { tasksChanged } from '../dispatch/tasks-changed.js';
 import { appendEvent } from '../events/append.js';
 import { dagHashOf, draftToAuthoring, PLAN_DRAFT_JSON_SCHEMA, planDraftSchema, planStructure, type PlanDraft } from './draft.js';
 import { getPmModel, type PmModel } from './model.js';
@@ -300,6 +301,8 @@ export async function applyPlan(actorUserId: string, projectId: string, planId: 
   } finally {
     client.release();
   }
+  // 시작한 프로젝트에 계획을 추가로 적용하면 새 태스크가 바로 담당 에이전트에게 간다. 시작 전이면 아무것도 안 간다.
+  tasksChanged(projectId);
   return getPlan(actorUserId, projectId, planId);
 }
 

@@ -138,6 +138,12 @@ export class NomosClient {
   }
 
   // 프롬프트와 .claude/settings.json을 만드는 데 필요한 것 한 번에.
+  // 지금 가져갈 수 있는 태스크(서버가 역할·선행·시작 여부로 거른 것). 웹소켓 푸시와 같은 목록이다.
+  async listClaimableTasks(): Promise<Record<string, unknown>[]> {
+    const data = (await this.request('GET', '/api/agents/me/tasks')) as { tasks: Record<string, unknown>[] };
+    return data.tasks;
+  }
+
   async getBriefing(taskId: string): Promise<Record<string, unknown>> {
     return (await this.request('GET', `/api/tasks/${taskId}/briefing`)) as Record<string, unknown>;
   }

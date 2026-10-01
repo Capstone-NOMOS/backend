@@ -257,3 +257,30 @@ export async function setTaskBranch(db: Queryable, taskId: string, branchName: s
     [taskId, branchName],
   );
 }
+
+// 프로젝트 시작(G1) 여부. 시작 전에는 태스크를 가져갈 수 없다.
+export async function isProjectStarted(db: Queryable, projectId: string): Promise<boolean> {
+  const { rows } = await db.query(`SELECT started_at IS NOT NULL AS started FROM projects WHERE id = $1`, [projectId]);
+  return rows[0]?.started === true;
+}
+
+// 이 역할의 에이전트가 **지금** 가져갈 수 있는 태스크 — 서버가 푸시하는 스냅샷이자, 끊겼을 때 폴링하는 목록이다.
+// claimTask가 거부할 것은 처음부터 빼다: 시작 전 프로젝트, READY가 아님, 담당 있음, 다른 역할, 선행 미완료.
+// team_role이 NULL인 태스크(역할 제한 없음)는 claimTask가 누구에게나 허용하므로 모든 역할에 보인다 — 먼저 잡는 쪽이 가져간다.
+export async function listClaimableTasks(db: Queryable, projectId: string, teamRole: string): Promise<Task[]> {
+  const { rows } = await db.query(
+    `SELECT t.* FROM tasks t
+       JOIN projects p ON p.id = t.project_id
+      WHERE t.project_id = $1
+        AND p.started_at IS NOT NULL
+        AND t.state = 'READY'
+        AND t.assignee_agent_id IS NULL
+        AND (t.team_role IS NULL OR t.team_role = $2)
+        AND NOT EXISTS (
+          SELECT 1 FROM task_deps d JOIN tasks dt ON dt.id = d.depends_on
+           WHERE d.task_id = t.id AND dt.state <> 'DONE')
+      ORDER BY t.created_at, t.id`,
+    [projectId, teamRole],
+  );
+  return rows.map(toTask);
+}

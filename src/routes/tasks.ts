@@ -4,6 +4,7 @@ import { TASK_STATES } from '../domain/task/repository.js';
 import {
   claimTask,
   getTaskBriefing,
+  listClaimableTasksForAgent,
   listTasksForAgent,
   listTaskArtifacts,
   listTaskArtifactsForUser,
@@ -26,6 +27,12 @@ import { VERIFICATION_RESULTS, VERIFICATION_STAGES } from '../domain/verificatio
 export const tasksRouter = Router();
 
 const taskIdParamsSchema = z.object({ taskId: z.string().uuid() });
+
+// GET /api/agents/me/tasks — 이 에이전트가 **지금** 가져갈 수 있는 태스크(시작한 프로젝트·READY·담당 없음·자기 역할·선행 완료).
+// 웹소켓(/api/agents/stream)이 푸시하는 것과 같은 스냅샷이다. 연결이 끊겼을 때의 안전망 폴링이 이걸 부른다.
+tasksRouter.get('/agents/me/tasks', authenticateAgent, async (req, res) => {
+  res.json({ data: { tasks: await listClaimableTasksForAgent(agentContextOf(req)) } });
+});
 
 // POST /api/tasks/:taskId/claim — MCP 도구 claim_task의 서버 쪽.
 tasksRouter.post(

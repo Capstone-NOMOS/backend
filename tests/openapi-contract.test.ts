@@ -226,6 +226,9 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     await call('GET', `/projects/${projectId}/tasks`, rep);
     await call('GET', `/tasks/${taskId}/briefing`, agent);
     await call('PATCH', `/tasks/${taskId}/branch`, agent, { branchName: `task/${taskId}` });
+    // 프로젝트 시작(G1) — 이때부터 에이전트가 태스크를 받는다(푸시와 같은 목록을 HTTP로도 읽는다).
+    await call('POST', `/projects/${projectId}/start`, rep);
+    await call('GET', '/agents/me/tasks', agent);
     await call('POST', `/tasks/${taskId}/claim`, agent);
 
     // 제출 — 커밋 diff는 가짜 검사기로. 신고와 같게 두면 V3는 PASS다.

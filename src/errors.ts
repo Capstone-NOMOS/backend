@@ -59,6 +59,9 @@ export type ErrorCode =
   | 'AGENT_IN_ANOTHER_PROJECT'
   | 'AGENT_NOT_IN_ORG'
   | 'PROJECT_STARTED'
+  | 'PROJECT_ALREADY_STARTED'
+  | 'PROJECT_START_INVALID'
+  | 'PROJECT_NOT_STARTED'
   | 'MEMBER_NOT_FOUND'
   | 'REPO_OWNERSHIP_NOT_SET';
 
@@ -141,6 +144,11 @@ const STATUS_BY_CODE: Record<ErrorCode, number> = {
   AGENT_NOT_IN_ORG: 403,
   // 403 — G1(started_at) 이후에는 멤버 구성을 바꿀 수 없다. 실험 통제가 흔들린다.
   PROJECT_STARTED: 403,
+  PROJECT_ALREADY_STARTED: 409,
+  // 422 — 시작할 수 없는 상태(태스크 없음·역할 공백). 무엇이 비었는지 details로 전부 알려준다.
+  PROJECT_START_INVALID: 422,
+  // 409 — 프로젝트 시작(G1) 전에는 태스크를 가져갈 수 없다. 시작해야 실행이 시작된다.
+  PROJECT_NOT_STARTED: 409,
   MEMBER_NOT_FOUND: 404,
   // 422 — 요청 형식은 맞지만 레포가 아직 쓸 수 있는 상태가 아니다. 무엇을 먼저 해야 하는지 함께 알려준다.
   REPO_OWNERSHIP_NOT_SET: 422,

@@ -51,12 +51,23 @@ async function recordDenial(agent: AuthAgent, stage: DenialStage, detail: string
 // "이 토큰이 어느 정책 스냅샷 기준인가"를 매 요청 대조한다.
 export async function authenticateAgent(req: Request, _res: Response, next: NextFunction): Promise<void> {
   try {
-    // 1단계 — 서명·만료. 클레임을 읽으려면 이게 물리적으로 먼저여야 한다.
     const match = req.header('Authorization')?.match(/^Bearer (\S+)$/);
     if (!match?.[1]) {
       throw new AppError('UNAUTHENTICATED', 'bearer token required');
     }
-    const claims = verifyJwt(match[1], env.JWT_SECRET);
+    req.agent = await resolveAgentToken(match[1]);
+    next();
+  } catch (err) {
+    next(err);
+  }
+}
+
+// 토큰 → 에이전트(1단계 서명 → 재조회 → 0a 정지 → 0b 정책 신선도).
+// HTTP(authenticateAgent)와 웹소켓(realtime/agent-stream)이 같은 검증을 탄다 — 한쪽만 느슨해지지 않게.
+export async function resolveAgentToken(token: string): Promise<AuthAgent> {
+  {
+    // 1단계 — 서명·만료. 클레임을 읽으려면 이게 물리적으로 먼저여야 한다.
+    const claims = verifyJwt(token, env.JWT_SECRET);
     if (!claims || claims.kind !== 'agent' || typeof claims.sub !== 'string') {
       throw new AppError('UNAUTHENTICATED', 'invalid or expired token');
     }
@@ -102,10 +113,7 @@ export async function authenticateAgent(req: Request, _res: Response, next: Next
       }
     }
 
-    req.agent = agent;
-    next();
-  } catch (err) {
-    next(err);
+    return agent;
   }
 }
 
@@ -114,6 +122,10 @@ export async function authenticateAgent(req: Request, _res: Response, next: Next
 export function agentContextOf(req: Request): AgentContext {
   const agent = req.agent;
   if (!agent) throw new AppError('UNAUTHENTICATED', 'agent authentication required');
+  return agentContextFrom(agent);
+}
+
+export function agentContextFrom(agent: AuthAgent): AgentContext {
   if (!agent.orgId || !agent.projectId || !agent.policyHash) {
     throw new AppError('NOT_PROJECT_MEMBER', 'agent is not assigned to a project');
   }

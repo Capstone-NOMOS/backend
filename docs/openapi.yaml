@@ -1601,6 +1601,35 @@ paths:
               example:
                 error: { code: GITHUB_ACCOUNT_TAKEN, message: this github account is already linked in your organization }
 
+  /agents/me/tasks:
+    get:
+      tags: [태스크·노트]
+      summary: 지금 가져갈 수 있는 태스크 (에이전트)
+      description: |
+        이 에이전트가 **지금** 가져갈 수 있는 태스크 — 프로젝트가 시작됐고, READY이고, 담당이 없고, 자기 역할(또는 역할 제한 없음)이고,
+        선행 태스크가 전부 DONE인 것. `claim`이 거부할 것은 처음부터 빠져 있다.
+
+        **보통은 웹소켓으로 받는다.** `GET /api/agents/stream`(upgrade)에 연결해 첫 메시지로 `{ "type": "auth", "token": "<에이전트 access token>" }`을 보내면,
+        서버가 `{ "type": "ready" }` 뒤에 이 목록과 같은 스냅샷 `{ "type": "tasks", "projectId", "tasks": [...] }`을 연결 직후와
+        프로젝트 상태가 바뀔 때마다(시작·적용·수령·검증 결론) 보낸다. 닫는 코드: 4401 인증 실패(재발급 후 다시 연결) · 4403 프로젝트 멤버 아님 · 4400 잘못된 메시지 · 4408 인증 시간 초과.
+        이 HTTP 엔드포인트는 연결이 끊겼을 때 같은 목록을 읽는 안전망이다.
+      security: [{ agentToken: [] }]
+      responses:
+        '200':
+          description: 지금 가져갈 수 있는 태스크(생성 순)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [tasks]
+                    properties:
+                      tasks: { type: array, items: { $ref: '#/components/schemas/Task' } }
+              example:
+                data: { tasks: [] }
   /tasks/{taskId}/claim:
     post:
       tags: [태스크·노트]
@@ -2045,6 +2074,48 @@ paths:
               example:
                 error: { code: PROJECT_NOT_FOUND, message: project not found }
 
+  /projects/{projectId}/start:
+    post:
+      tags: [프로젝트]
+      summary: 프로젝트 시작 G1 (대표 전용)
+      description: |
+        **이 순간부터 실행이 시작된다.** 시작 전에는 에이전트가 태스크를 가져갈 수 없고(`claim` → 409 `PROJECT_NOT_STARTED`),
+        시작하면 서버가 역할별 담당 에이전트에게 지금 가져갈 수 있는 태스크를 보낸다(웹소켓 `/api/agents/stream`, `GET /agents/me/tasks` 참고).
+
+        시작할 수 있는가 — 위반은 전부 모아 422 `PROJECT_START_INVALID`(`details: [{ where, message }]`):
+        - 태스크가 하나 이상 있다(PM 계획을 적용하거나 태스크를 만든 뒤).
+        - 끝나지 않은 태스크가 요구하는 **역할마다 배정된 에이전트가 있다.** 시작 뒤에는 멤버를 바꿀 수 없으므로 여기서 막는다.
+
+        시작하면: `planning → active`, `startedAt`. 시작 시점의 명세·적용된 계획에 승인 시각(잠김). 멤버 고정(배정·해제 403).
+        이미 시작했으면 409 `PROJECT_ALREADY_STARTED`.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/ProjectId' }]
+      responses:
+        '200':
+          description: 시작됨
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/ProjectDetail' } } }
+              example:
+                data:
+                  project: { id: '{{PROJECT_ID}}', status: active, startedAt: '2026-10-02T01:00:00.000Z' }
+                  repos: []
+                  members: [{ agentId: 3f0e0d6a-8a2b-4c1f-9e7d-2b3c4d5e6f70, agentName: be-laptop, teamRole: BACKEND, userId: 6c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f }]
+        '409':
+          description: 이미 시작했다
+          content:
+            application/json:
+              example:
+                error: { code: PROJECT_ALREADY_STARTED, message: 'project started at 2026-10-02T01:00:00.000Z' }
+        '422':
+          description: 시작할 수 없다(태스크 없음·역할 공백)
+          content:
+            application/json:
+              example:
+                error:
+                  code: PROJECT_START_INVALID
+                  message: 'project cannot start: 1 problem(s)'
+                  details: [{ where: members.FRONTEND, message: FRONTEND 역할의 태스크가 있는데 배정된 에이전트가 없다 — 시작하면 멤버를 바꿀 수 없으니 먼저 배정한다 }]
   /projects/{projectId}/members:
     post:
       tags: [프로젝트]

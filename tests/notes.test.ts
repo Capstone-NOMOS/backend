@@ -160,7 +160,7 @@ type Session = {
 // 아래 네 테이블은 아직 서비스 함수가 없어 직접 INSERT한다 (Phase 2 스키마).
 async function setup(loginId = 'rep'): Promise<Session> {
   const { userId, orgId } = await createTestOrg(loginId);
-  const projectId = await createTestProject({ orgId, userId });
+  const projectId = await createTestProject({ orgId, userId, started: true });
   const agentId = await createTestAgent(userId);
   const [repo] = await connectRepos({ orgId, actorUserId: userId, repos: [{ fullName: 'acme/web' }] });
   const repoId = repo!.id;

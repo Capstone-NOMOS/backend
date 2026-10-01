@@ -406,6 +406,8 @@ curl -s -X PATCH $BASE/repos/$REPO_API/paths/$PATH_ID -H "Authorization: Bearer 
 | GET | `/api/projects/:projectId` | user(대표 또는 배정된 에이전트의 주인) | 200 | 403 `NOT_PROJECT_MEMBER`, 404 `PROJECT_NOT_FOUND` |
 | POST | `/api/projects/:projectId/members` | user(대표) | 201 | 409 `ROLE_ALREADY_ASSIGNED` · `AGENT_ALREADY_ASSIGNED`, 403 `AGENT_NOT_IN_ORG` · `PROJECT_STARTED` |
 | DELETE | `/api/projects/:projectId/members/:agentId` | user(대표) | 200 | 404 `MEMBER_NOT_FOUND`, 403 `PROJECT_STARTED` |
+| POST | `/api/projects/:projectId/start` | user(대표) | 200 | 422 `PROJECT_START_INVALID`(태스크 없음·역할 공백), 409 `PROJECT_ALREADY_STARTED` |
+| GET | `/api/agents/me/tasks` | agent | 200 | 403 `NOT_PROJECT_MEMBER` |
 
 ```bash
 curl -s -X POST $BASE/orgs/$ORG_ID/projects -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json'   --data "{\"name\":\"p2\",\"autonomyPreset\":\"L2\",\"pmBudgetUsd\":40,\"repoIds\":[\"$REPO_API\"]}"
@@ -415,7 +417,19 @@ curl -s $BASE/projects/$PROJECT_ID -H "Authorization: Bearer $TOKEN"
 curl -s -X POST $BASE/projects/$PROJECT_ID/members -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json'   --data "{\"agentId\":\"$AGENT_ID\",\"teamRole\":\"BACKEND\"}"
 
 curl -s -X DELETE $BASE/projects/$PROJECT_ID/members/$AGENT_ID -H "Authorization: Bearer $TOKEN"
+
+# 프로젝트 시작(G1). npm run seed는 이미 시작한 프로젝트를 만든다 — 시작 흐름을 보려면 npm run seed -- --planning
+curl -s -X POST $BASE/projects/$PROJECT_ID/start -H "Authorization: Bearer $TOKEN"
+
+# 에이전트가 지금 가져갈 수 있는 태스크(웹소켓 푸시와 같은 목록)
+curl -s $BASE/agents/me/tasks -H "Authorization: Bearer $AGENT_TOKEN"
 ```
+
+- **시작 전에는 에이전트가 태스크를 가져갈 수 없다**(claim 409 `PROJECT_NOT_STARTED`). 시작하면 서버가 역할별 담당 에이전트에게 태스크를 푸시한다.
+- 시작 뒤에는 멤버 배정·해제가 403이다. 시작하기 전에 태스크가 쓰는 역할을 전부 배정해야 한다(아니면 422로 어느 역할이 비었는지 알려준다).
+- 웹소켓은 `ws://localhost:3000/api/agents/stream`. 연결 뒤 첫 메시지로 `{"type":"auth","token":"<에이전트 access token>"}`를 보내면
+  `ready` 뒤에 `{"type":"tasks","tasks":[...]}`가 오고, 프로젝트 상태가 바뀔 때마다 다시 온다. 브라우저 콘솔에서:
+  `const ws = new WebSocket('ws://localhost:3000/api/agents/stream'); ws.onopen = () => ws.send(JSON.stringify({type:'auth', token:'…'})); ws.onmessage = (e) => console.log(e.data)`
 
 - 생성은 한 트랜잭션에서 **프로젝트 · 레포 연결 · 정책 사본 17행 · 헌법 스냅샷 · `policy_hash`**를 함께 만든다.
   판정은 이후 `action_catalog`가 아니라 이 사본만 본다.

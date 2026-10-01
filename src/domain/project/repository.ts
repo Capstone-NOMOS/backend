@@ -124,8 +124,15 @@ export async function findOtherActiveAssignment(
   return rows[0]?.project_id ?? null;
 }
 
-export async function findProjectById(db: Queryable, projectId: string): Promise<Project | null> {
-  const { rows } = await db.query(`SELECT * FROM projects WHERE id = $1`, [projectId]);
+// lock: 'share'는 멤버 변경(시작과 겹치면 시작이 끝날 때까지 기다린 뒤 started_at을 본다),
+// 'update'는 시작(FOR NO KEY UPDATE — 외래 키 검사의 FOR KEY SHARE와 충돌하지 않아 다른 INSERT를 막지 않는다).
+export async function findProjectById(
+  db: Queryable,
+  projectId: string,
+  options: { lock?: 'share' | 'update' } = {},
+): Promise<Project | null> {
+  const lock = options.lock === 'update' ? ' FOR NO KEY UPDATE' : options.lock === 'share' ? ' FOR SHARE' : '';
+  const { rows } = await db.query(`SELECT * FROM projects WHERE id = $1${lock}`, [projectId]);
   const row = rows[0];
   return row ? toProject(row) : null;
 }
@@ -260,4 +267,46 @@ export async function deleteProjectMember(
 export async function findAgentOrg(db: Queryable, agentId: string): Promise<string | null | undefined> {
   const { rows } = await db.query(`SELECT org_id FROM agents WHERE id = $1`, [agentId]);
   return rows.length === 0 ? undefined : (rows[0]!.org_id as string | null);
+}
+
+// ── 프로젝트 시작(G1) ────────────────────────────────────────────────────
+
+// 시작 전 점검용: 태스크 수와, 아직 끝나지 않은 태스크가 요구하는 역할.
+export async function summarizeProjectTasks(
+  db: Queryable,
+  projectId: string,
+): Promise<{ total: number; openRoles: TeamRole[] }> {
+  const { rows } = await db.query(
+    `SELECT count(*)::int AS total,
+            coalesce(array_agg(DISTINCT team_role) FILTER (WHERE team_role IS NOT NULL AND state <> 'DONE'), '{}') AS roles
+       FROM tasks WHERE project_id = $1`,
+    [projectId],
+  );
+  return { total: rows[0]!.total as number, openRoles: (rows[0]!.roles as TeamRole[]).sort() };
+}
+
+// 조건부 — 이미 시작했으면 0행(false). 상태 전이는 서버가 소유한다(P1).
+export async function markProjectStarted(db: Queryable, projectId: string): Promise<boolean> {
+  const { rowCount } = await db.query(
+    `UPDATE projects SET status = 'active', started_at = now() WHERE id = $1 AND started_at IS NULL AND status = 'planning'`,
+    [projectId],
+  );
+  return rowCount === 1;
+}
+
+// G1 승인 = 잠김. 시작 시점에 있는 명세·적용된 계획에 승인 시각을 기록한다.
+export async function approveProjectSpecs(db: Queryable, projectId: string): Promise<number> {
+  const { rowCount } = await db.query(
+    `UPDATE specs SET approved_at = now() WHERE project_id = $1 AND approved_at IS NULL`,
+    [projectId],
+  );
+  return rowCount ?? 0;
+}
+
+export async function approveAppliedPlans(db: Queryable, projectId: string): Promise<string[]> {
+  const { rows } = await db.query(
+    `UPDATE plans SET approved_at = now() WHERE project_id = $1 AND status = 'applied' AND approved_at IS NULL RETURNING id`,
+    [projectId],
+  );
+  return rows.map((r) => r.id as string);
 }
