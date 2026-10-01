@@ -18,7 +18,7 @@ export type RunResult = {
 // shell:true는 인자를 이스케이프 없이 이어붙여서 따옴표·괄호가 든 프롬프트가 셸에 먹힌다
 // (스파이크에서 도구 호출이 한 번도 안 일어났다). .cmd 셰이퍼는 shell 없이 못 돌리므로
 // node로 CLI 진입점을 직접 띄운다.
-function resolveClaudeCommand(args: string[]): { command: string; commandArgs: string[] } {
+export function resolveClaudeCommand(args: string[]): { command: string; commandArgs: string[] } {
   if (process.platform === 'win32' && process.env.APPDATA) {
     const cli = path.join(
       process.env.APPDATA,

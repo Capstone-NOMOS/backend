@@ -483,12 +483,13 @@ components:
         task: { $ref: '#/components/schemas/Task' }
         repo:
           type: object
-          required: [id, fullName, defaultBranch, devBranch]
+          required: [id, fullName, defaultBranch, devBranch, cloneUrl]
           properties:
             id: { type: string, format: uuid }
             fullName: { type: string }
             defaultBranch: { type: string }
             devBranch: { type: string }
+            cloneUrl: { type: string, nullable: true, description: 'CLI가 노트북에 레포가 없으면 여기서 받아 둔다(null이면 https://github.com/{fullName})' }
         spec: { $ref: '#/components/schemas/TaskSpec', nullable: true }
         notes: { type: array, items: { $ref: '#/components/schemas/Note' } }
         notesBlock: { type: string }
@@ -2260,7 +2261,7 @@ paths:
               example:
                 data:
                   task: { id: '{{TASK_BE}}', title: 'T-001 참여 신청 API 구현', state: READY }
-                  repo: { id: '{{REPO_API}}', fullName: acme/study-api, defaultBranch: main, devBranch: dev }
+                  repo: { id: '{{REPO_API}}', fullName: acme/study-api, defaultBranch: main, devBranch: dev, cloneUrl: null }
                   spec: { featureKey: F-03, title: 참여 신청 API, content: 'WHEN 정원이 찬 스터디에 신청하면 THEN 409를 반환한다' }
                   notesBlock: "[인계 노트]\n#1 [명세 이탈] quota check moved to service\n  · handler was too late\n  영향: contracts/F-03.yaml"
                   writablePaths: [{ pathPattern: 'src/**', access: write, ownerRole: BACKEND }]

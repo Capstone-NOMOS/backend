@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -13,8 +13,7 @@ export function workspaceDir(projectId: string, taskId: string): string {
   return path.join(workspacesRoot(), projectId, taskId);
 }
 
-// 레포 fullName → 로컬 클론 경로. Executor는 노트북에서 도는 프로그램이라
-// 어느 디렉터리가 그 레포인지 알 방법이 없다. 사람이 한 번 적어준다.
+// 레포 fullName → 이미 받아 둔 로컬 경로(선택). 없으면 CLI가 ~/.nomos/repos/에 받는다(repo-checkout.ts).
 export function repoMapPath(): string {
   return path.join(os.homedir(), '.nomos', 'repos.json');
 }
@@ -24,17 +23,6 @@ export function readRepoMap(): Record<string, string> {
   const file = repoMapPath();
   if (!existsSync(file)) return {};
   return JSON.parse(readFileSync(file, 'utf-8')) as Record<string, string>;
-}
-
-export function resolveRepoPath(fullName: string): string {
-  const file = repoMapPath();
-  if (!existsSync(file)) {
-    throw new Error(`${file}이 없습니다. {"${fullName}": "C:/path/to/repo"} 형식으로 만들어 주세요`);
-  }
-  const dir = readRepoMap()[fullName];
-  if (!dir) throw new Error(`${file}에 "${fullName}" 항목이 없습니다`);
-  if (!existsSync(path.join(dir, '.git'))) throw new Error(`${dir}는 git 레포가 아닙니다`);
-  return dir;
 }
 
 function git(repoPath: string, args: string[]): string {
@@ -101,16 +89,22 @@ export function prepareWorkspace(input: PrepareInput): PreparedWorkspace {
 // executor clean — worktree를 정리한다. 남겨두는 게 기본이라 정리는 명시적 명령으로만 한다.
 export function cleanWorkspaces(): { pruned: string[]; removed: string | null } {
   const pruned: string[] = [];
-  const file = repoMapPath();
-  if (existsSync(file)) {
-    const map = JSON.parse(readFileSync(file, 'utf-8')) as Record<string, string>;
-    for (const [fullName, repoPath] of Object.entries(map)) {
-      try {
-        git(repoPath, ['worktree', 'prune']);
-        pruned.push(fullName);
-      } catch {
-        // 레포가 사라졌거나 git이 없어도 디렉터리 삭제는 진행한다.
-      }
+  // repos.json에 적힌 레포 + CLI가 받아 둔 레포(~/.nomos/repos/<조직>/<레포>).
+  const repos: Record<string, string> = { ...readRepoMap() };
+  const managed = path.join(os.homedir(), '.nomos', 'repos');
+  if (existsSync(managed)) {
+    for (const owner of readdirSync(managed)) {
+      const ownerDir = path.join(managed, owner);
+      if (!statSync(ownerDir).isDirectory()) continue;
+      for (const name of readdirSync(ownerDir)) repos[`${owner}/${name}`] ??= path.join(ownerDir, name);
+    }
+  }
+  for (const [fullName, repoPath] of Object.entries(repos)) {
+    try {
+      git(repoPath, ['worktree', 'prune']);
+      pruned.push(fullName);
+    } catch {
+      // 레포가 사라졌거나 git이 없어도 디렉터리 삭제는 진행한다.
     }
   }
 

@@ -23,8 +23,10 @@ npm test                            # vitest run (전체)
 npm run seed                        # 수동 테스트용 시드 (기존 데이터 비우고 같은 상태 재생성, 로컬 DB만)
 npm run seed:tasks -- <projectId> <파일.json> --as <대표> [--apply]   # 기존 프로젝트에 명세·태스크만 INSERT (운영용, 기본 dry-run)
 npm run typecheck                   # src + scripts 타입체크
-npm run executor once               # READY 태스크 하나 처리 (start=폴링, clean=worktree 정리)
-npm run executor login <baseUrl>    # 브라우저 승인으로 연결해 ~/.nomos/credentials를 새로 쓴다 (--connect-key=연결 키 경로, refresh=재발급)
+npm run executor -- connect --server http://localhost:3000   # 로그인 → 배정 대기 → 폴링 (팀원은 npx @capstone-nomos/cli@latest connect)
+npm run executor once               # READY 태스크 하나 처리 (start=폴링, clean=worktree 정리, doctor=설치 점검)
+npm run executor -- login <baseUrl> # 로그인만 (--connect-key=연결 키 경로, refresh=재발급). 플래그를 넘기려면 -- 필수
+npm run build:cli                   # CLI 패키지 → packages/cli/dist (check:cli-package = pack·설치·실행 점검)
 docker build -t nomos-server .      # 운영 이미지. 배포 절차는 docs/deploy-aws.md
 npm run verify:settings             # worktree의 settings.json을 서버 판정과 대조
 npm run db:psql                     # .env의 DATABASE_URL로 조회 (접속 대상을 첫 줄에 찍는다)
@@ -231,6 +233,19 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
 ### Executor (브릿지 본체)
 
 팀원 노트북에서 도는 프로그램(`src/executor/`). 서버 주소는 `~/.nomos/credentials`의 `baseUrl`에서 온다.
+
+- **npm 패키지 `@capstone-nomos/cli`(bin `nomos`)로 배포한다.** 팀원에게 서버 레포를 받게 하지 않는다 — 웹 안내는 `npx @capstone-nomos/cli@latest connect` 한 줄이다
+  (`@latest`: npx가 캐시한 옛 버전이 바뀐 서버 API와 어긋나지 않게). 패키지는 `src/executor`·`src/bridge`만 빌드한 것이고(`tsconfig.cli.json` → `packages/cli/dist`),
+  **이 두 폴더는 서버 코드(`config`·`domain`·`utils`)를 import하지 않는다** — 하면 서버 파일이 노트북으로 실려 나간다(`tests/cli-package.test.ts`가 막는다).
+  외부 의존성을 추가하면 `packages/cli/package.json`에도 같은 범위로 넣는다(같은 테스트).
+- **파일 위치는 `import.meta.url` 기준이다**(`executor/paths.ts`). 패키지는 아무 폴더에서나 실행되므로 `path.resolve('dist/...')`처럼 cwd 기준으로 찾지 말 것 —
+  MCP 서버 경로가 실제로 그렇게 backend 폴더에서만 맞았다. 설치·실행은 `npm run check:cli-package`가 pack한 패키지를 다른 폴더에서 돌려 확인한다(배포 워크플로가 publish 전에 돈다).
+- `connect`: 자격 증명이 없거나 다른 서버 것이거나 재발급이 4xx면 브라우저 승인 로그인 → 배정 전이면 15초마다 **재발급 후** `/agents/me`로 확인
+  (배정 전 토큰에는 `project_id`가 없다) → `start`. `--server` 기본값은 운영 주소(`connect.ts`의 `DEFAULT_SERVER`). 시작 전에 `git`·`claude`를 확인한다.
+- **태스크의 레포는 CLI가 받는다**(`executor/repo-checkout.ts`): `~/.nomos/repos/<조직>/<레포>`에 브리핑의 `repo.cloneUrl`(NULL이면 `github.com/{fullName}`)로 클론하고,
+  태스크마다 fetch해 `origin/<기본 브랜치>`에서 분기한다. `repos.json`에 적힌 경로가 있으면 그게 우선이다(fetch하지 않음, 시드·기존 클론용).
+  서버가 준 주소라도 노트북에서 한 번 더 거른다(https·로컬 경로만, `-` 시작·`::`·자격 증명 거부, `git clone --`). git 비밀값은 서버가 주지 않는다 — 사용자의 git 자격 증명을 쓴다.
+- **npm 배포는 `cli-v*` 태그 → Trusted Publishing(OIDC)이다**(`publish-cli.yml`). `NPM_TOKEN`을 Secrets에 두지 말 것. 태그와 `packages/cli/package.json` 버전이 다르면 멈춘다.
 
 - **자격 증명의 정본은 `~/.nomos/credentials`(0600)다.** MCP 설정 파일에 토큰을 넣지 말 것 —
   그 파일은 Claude Code에 넘기는 설정이고, 재발급 결과를 되돌려 쓸 곳이 없어 매 실행이 401로 시작했다.

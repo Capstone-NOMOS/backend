@@ -1,7 +1,11 @@
-// Executor — 팀원 노트북에서 도는 프로그램.
+#!/usr/bin/env node
+// Executor — 팀원 노트북에서 도는 프로그램. npm 패키지 @capstone-nomos/cli로 배포된다(bin: nomos).
 // 서버 주소는 ~/.nomos/credentials의 baseUrl에서 온다.
 //
-//   executor login <baseUrl> [--name 이름] [--connect-key]
+//   nomos connect [--server 주소] [--name 이름]
+//                              웹 안내의 한 줄. 로그인(필요하면) → 배정 대기(자동 재발급) → start. --server 기본은 운영 주소.
+//   nomos doctor [--json]      git·claude·자격 증명·MCP 서버 파일 점검
+//   nomos login [baseUrl] [--name 이름] [--connect-key]
 //                              브라우저 승인으로 연결해 자격 증명을 새로 쓴다(기본). 브라우저가 없는 환경(SSH)은
 //                              --connect-key 또는 NOMOS_CONNECT_KEY로 가입 때 받은 연결 키를 쓴다.
 //   executor refresh           토큰 재발급 (프로젝트에 배정된 뒤 한 번)
@@ -23,23 +27,27 @@ import {
   writeCredentials,
 } from '../bridge/credentials.js';
 import { NomosClient } from '../bridge/nomos-client.js';
+import { connect, DEFAULT_SERVER, serverCalls } from './connect.js';
 import { deviceLogin } from './device-login.js';
+import { cliVersion, mcpServerPath } from './paths.js';
+import { checkTools } from './preflight.js';
 import { buildTaskPrompt } from './prompt.js';
 import { runClaude } from './runner.js';
 import { pollingTaskSource, type TaskSource, type TaskSummary } from './task-source.js';
 import { runLint, runSpecTests, type SpecTest, type StageReport } from './verify.js';
-import { cleanWorkspaces, headSha, prepareWorkspace, resolveRepoPath } from './workspace.js';
+import { ensureRepo } from './repo-checkout.js';
+import { cleanWorkspaces, headSha, prepareWorkspace } from './workspace.js';
 
 const POLL_INTERVAL_MS = 10_000;
 
 function log(line: string): void {
-  process.stdout.write(`[executor] ${line}\n`);
+  process.stdout.write(`[nomos] ${line}\n`);
 }
 
 function createClient(): NomosClient {
   const credentials = readCredentials();
   if (!credentials) {
-    throw new Error(`${credentialsPath()}가 없습니다. npm run seed로 만들거나 직접 작성하세요`);
+    throw new Error(`${credentialsPath()}가 없습니다. 먼저 connect(또는 login)를 실행하세요`);
   }
   return new NomosClient({
     baseUrl: credentials.baseUrl,
@@ -51,7 +59,7 @@ function createClient(): NomosClient {
 
 type Briefing = {
   task: { id: string; title: string; teamRole: string | null; branchName: string | null };
-  repo: { fullName: string; defaultBranch: string };
+  repo: { fullName: string; defaultBranch: string; cloneUrl?: string | null };
   spec: { featureKey: string; title: string; content: string } | null;
   notesBlock: string;
   writablePaths: { pathPattern: string }[];
@@ -64,13 +72,15 @@ async function handleTask(client: NomosClient, projectId: string, task: TaskSumm
   log(`태스크 ${task.id} — ${task.title}`);
   const briefing = (await client.getBriefing(task.id)) as unknown as Briefing;
 
-  const repoPath = resolveRepoPath(briefing.repo.fullName);
+  // cloneUrl이 없는 옛 서버(브리핑에 필드 자체가 없음)도 github.com/{fullName}으로 받는다.
+  const checkout = ensureRepo({ fullName: briefing.repo.fullName, cloneUrl: briefing.repo.cloneUrl ?? null }, { log });
   const workspace = prepareWorkspace({
-    repoPath,
+    repoPath: checkout.path,
     projectId,
     taskId: task.id,
     branchName: briefing.task.branchName,
-    baseBranch: briefing.repo.defaultBranch,
+    // CLI가 관리하는 클론은 방금 fetch한 origin/<기본 브랜치>에서 분기한다.
+    baseBranch: checkout.baseRef(briefing.repo.defaultBranch),
     settings: briefing.claudeSettings,
     policyHash: briefing.policyHash,
   });
@@ -85,7 +95,7 @@ async function handleTask(client: NomosClient, projectId: string, task: TaskSumm
   writeFileSync(
     mcpConfigPath,
     // 작업공간 경로를 넘겨야 submit_artifact가 이 worktree의 태스크 브랜치를 push한다.
-    buildMcpConfig({ serverPath: path.resolve('dist/bridge/mcp-server.js'), workspaceDir: workspace.dir }),
+    buildMcpConfig({ serverPath: mcpServerPath(), workspaceDir: workspace.dir }),
   );
 
   const before = headSha(workspace.dir);
@@ -188,8 +198,7 @@ async function start(): Promise<void> {
 
 // 토큰이 헤더로 다니므로 원격은 https만 받는다. 로컬 개발 서버만 예외다.
 function normalizeBaseUrl(raw: string | undefined): string {
-  if (!raw) throw new Error('사용법: executor login <baseUrl>   예) executor login https://your-team.duckdns.org');
-  const url = new URL(raw);
+  const url = new URL(raw ?? DEFAULT_SERVER);
   const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
   if (url.protocol !== 'https:' && !local) {
     throw new Error(`원격 서버는 https여야 한다: ${raw}`);
@@ -210,46 +219,39 @@ async function postJson(url: string, body: unknown): Promise<Record<string, unkn
   return json.data;
 }
 
-function parseLoginArgs(argv: string[]): { baseUrl: string | undefined; name: string | undefined; connectKey: boolean } {
-  let baseUrl: string | undefined;
-  let name: string | undefined;
-  let connectKey = false;
+type ParsedArgs = { positional: string | undefined; server: string | undefined; name: string | undefined; connectKey: boolean; json: boolean };
+
+function parseArgs(argv: string[]): ParsedArgs {
+  const out: ParsedArgs = { positional: undefined, server: undefined, name: undefined, connectKey: false, json: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
-    if (arg === '--name') name = argv[(i += 1)];
-    else if (arg === '--connect-key') connectKey = true;
-    else baseUrl ??= arg;
+    if (arg === '--name') out.name = argv[(i += 1)];
+    else if (arg === '--server') out.server = argv[(i += 1)];
+    else if (arg === '--connect-key') out.connectKey = true;
+    else if (arg === '--json') out.json = true;
+    else out.positional ??= arg;
   }
-  return { baseUrl, name, connectKey };
+  return out;
 }
 
-async function login(argv: string[]): Promise<void> {
-  const args = parseLoginArgs(argv);
-  const baseUrl = normalizeBaseUrl(args.baseUrl);
-  const previous = readCredentials();
-  if (previous && previous.baseUrl !== baseUrl) {
-    log(`기존 자격 증명(${previous.baseUrl})을 ${baseUrl}용으로 교체한다`);
-  }
-  const agentName = args.name?.trim() || os.hostname();
-
-  // 기본은 브라우저 승인. 연결 키를 명시했거나(--connect-key) 환경변수로 줬으면 기존 경로.
-  if (!args.connectKey && process.env.NOMOS_CONNECT_KEY === undefined) {
+// 서버에 붙어 ~/.nomos/credentials를 새로 쓴다. 기본은 브라우저 승인,
+// 연결 키를 명시했거나(--connect-key) 환경변수로 줬으면 기존 경로(SSH 등 브라우저가 없는 환경).
+async function loginTo(baseUrl: string, agentName: string, viaConnectKey: boolean): Promise<void> {
+  if (!viaConnectKey && process.env.NOMOS_CONNECT_KEY === undefined) {
     const { credentials, account } = await deviceLogin({ baseUrl, agentName });
     writeCredentials(credentials);
     // 연결된 계정을 반드시 보여 준다 — 내가 아닌 계정이면 누군가 내 코드를 승인한 것이다.
     const org = account.orgName ? ` · 조직 ${account.orgName}` : ' · 조직 없음';
     log(`연결됨: ${account.nickname ?? account.loginId ?? '?'} (${account.loginId ?? '?'})${org} — 에이전트 ${agentName}`);
     log(`${credentialsPath()}에 저장했다. 내 계정이 아니면 바로 웹에서 이 에이전트를 확인하라.`);
-    log('대표에게 이 에이전트를 프로젝트에 배정해 달라고 한 뒤 `npm run executor refresh`를 한 번 실행하라');
     return;
   }
 
   // 연결 키는 NOMOS_CONNECT_KEY로도 받는다 — 인자로 받으면 셸 기록에 남는다.
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
-    const connectKey = (process.env.NOMOS_CONNECT_KEY ?? (await rl.question('연결 키 (원격 서버에 가입할 때 받은 값): '))).trim();
+    const connectKey = (process.env.NOMOS_CONNECT_KEY ?? (await rl.question('연결 키 (가입할 때 받은 값): '))).trim();
     rl.close();
-
     const data = await postJson(`${baseUrl}/api/agents/connect`, {
       connectKey,
       agentName,
@@ -264,16 +266,77 @@ async function login(argv: string[]): Promise<void> {
       agentId: String(data.agentId),
     });
     log(`${credentialsPath()}에 저장했다 (에이전트 ${String(data.agentId)})`);
-    log('대표에게 이 에이전트를 프로젝트에 배정해 달라고 한 뒤 `npm run executor refresh`를 한 번 실행하라');
   } finally {
     rl.close();
   }
 }
 
+async function login(argv: string[]): Promise<void> {
+  const args = parseArgs(argv);
+  const baseUrl = normalizeBaseUrl(args.positional ?? args.server);
+  const previous = readCredentials();
+  if (previous && previous.baseUrl !== baseUrl) {
+    log(`기존 자격 증명(${previous.baseUrl})을 ${baseUrl}용으로 교체한다`);
+  }
+  await loginTo(baseUrl, args.name?.trim() || os.hostname(), args.connectKey);
+  log('대표에게 이 에이전트를 프로젝트에 배정해 달라고 한 뒤 connect를 실행하라(배정되면 자동으로 시작한다)');
+}
+
+async function connectCommand(argv: string[]): Promise<void> {
+  const args = parseArgs(argv);
+  const server = normalizeBaseUrl(args.server ?? args.positional ?? process.env.NOMOS_SERVER);
+  const agentName = args.name?.trim() || os.hostname();
+  log(`NOMOS CLI ${cliVersion()} — 서버 ${server}`);
+
+  const missing = checkTools().filter((t) => !t.ok);
+  if (missing.length > 0) {
+    for (const t of missing) log(`${t.name}을 실행할 수 없다: ${t.detail}\n        → ${t.hint}`);
+    throw new Error('필요한 도구가 없어 시작하지 않는다');
+  }
+
+  await connect({
+    server,
+    agentName,
+    readCredentials,
+    login: () => loginTo(server, agentName, args.connectKey),
+    ...serverCalls({ read: readCredentials, updateAccessToken }),
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    log,
+  });
+  await start();
+}
+
+async function doctor(argv: string[]): Promise<void> {
+  const { json } = parseArgs(argv);
+  let mcp: { ok: boolean; detail: string };
+  try {
+    mcp = { ok: true, detail: mcpServerPath() };
+  } catch (err) {
+    mcp = { ok: false, detail: err instanceof Error ? err.message : String(err) };
+  }
+  let server: string | null = null;
+  try {
+    server = readCredentials()?.baseUrl ?? null;
+  } catch {
+    server = null;
+  }
+  const report = { version: cliVersion(), node: process.version, mcpServer: mcp, tools: checkTools(), server };
+  if (json) {
+    process.stdout.write(`${JSON.stringify(report)}\n`);
+  } else {
+    log(`버전 ${report.version} (node ${report.node})`);
+    log(`MCP 서버: ${mcp.ok ? 'OK' : '없음'} — ${mcp.detail}`);
+    for (const t of report.tools) log(`${t.name}: ${t.ok ? t.detail : `없음 — ${t.hint}`}`);
+    log(`연결된 서버: ${server ?? '없음 (connect를 실행하라)'}`);
+  }
+  // 패키지 자체가 깨진 경우만 실패로 끝낸다. git·claude가 없는 건 안내로 충분하다.
+  if (!mcp.ok) process.exitCode = 1;
+}
+
 // 배정 전에 받은 토큰에는 project_id가 없다. 배정 뒤 한 번 재발급해야 태스크 API를 쓸 수 있다.
 async function refresh(): Promise<void> {
   const credentials = readCredentials();
-  if (!credentials) throw new Error(`${credentialsPath()}가 없다. 먼저 executor login <baseUrl>`);
+  if (!credentials) throw new Error(`${credentialsPath()}가 없다. 먼저 connect(또는 login)를 실행하라`);
   const data = await postJson(`${credentials.baseUrl}/api/agents/token/refresh`, { refreshToken: credentials.refreshToken });
   updateAccessToken(String(data.accessToken));
   try {
@@ -286,6 +349,12 @@ async function refresh(): Promise<void> {
 
 async function main(): Promise<void> {
   const command = process.argv[2];
+  if (command === 'connect') return connectCommand(process.argv.slice(3));
+  if (command === 'doctor') return doctor(process.argv.slice(3));
+  if (command === '--version' || command === '-v' || command === 'version') {
+    process.stdout.write(`${cliVersion()}\n`);
+    return;
+  }
   if (command === 'login') return login(process.argv.slice(3));
   if (command === 'refresh') return refresh();
   if (command === 'once') return once();
@@ -295,7 +364,16 @@ async function main(): Promise<void> {
     log(`worktree prune: ${pruned.join(', ') || '없음'} / 삭제: ${removed ?? '없음'}`);
     return;
   }
-  process.stderr.write('사용법: executor <login <baseUrl> [--name 이름] [--connect-key]|refresh|once|start|clean>\n');
+  process.stderr.write(
+    [
+      '사용법: nomos <명령>',
+      '  connect [--server 주소] [--name 이름]        로그인 → 배정 대기 → 작업 시작 (처음이라면 이것만)',
+      '  doctor                                       설치 상태 점검',
+      '  login [주소] [--name 이름] [--connect-key]   로그인만',
+      '  refresh | once | start | clean | --version',
+      '',
+    ].join('\n'),
+  );
   process.exitCode = 1;
 }
 
