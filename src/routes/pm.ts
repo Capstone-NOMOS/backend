@@ -7,6 +7,7 @@ import {
   requestPlan,
   revisePlan,
   failRelayJob,
+  getPmStatus,
   rejectPlan,
   submitRelayResult,
   takeRelayJob,
@@ -79,6 +80,18 @@ pmRouter.post(
   async (req, res) => {
     const { projectId, planId } = req.params as z.infer<typeof planParams>;
     res.status(200).json({ data: await applyPlan(req.user!.id, projectId, planId) });
+  },
+);
+
+// GET /api/projects/:projectId/pm/status — 지금 계획을 요청하면 PM이 돌 수 있는가(키 유무·중계 워커 접속), 예산, 작성 중인 계획.
+pmRouter.get(
+  '/projects/:projectId/pm/status',
+  validate({ params: z.object({ projectId: z.string().uuid() }) }),
+  authenticate,
+  requireRepresentative,
+  async (req, res) => {
+    const { projectId } = req.params as { projectId: string };
+    res.status(200).json({ data: await getPmStatus(req.user!.id, projectId) });
   },
 );
 

@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { TEAM_ROLES } from '../domain/roles.js';
 import { authenticate, orgIdOf, requireRepresentative, requireSameOrg } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { connectRepos, listRepos, updateRepoSettings } from '../domain/repo/service.js';
@@ -15,6 +16,8 @@ const connectReposBodySchema = z.object({
         fullName: z.string().min(1),
         githubRepoId: z.number().int().optional(),
         defaultBranch: z.string().optional(),
+        // 주면 '**' 행의 소유 역할까지 지정한다(대표 전용). 온보딩의 "레포 + 역할 선택"을 한 번에.
+        ownerRole: z.enum(TEAM_ROLES).optional(),
       }),
     )
     .min(1),
@@ -36,6 +39,7 @@ reposRouter.post(
     const repos = await connectRepos({
       orgId,
       actorUserId: req.user!.id,
+      actorOrgRole: req.user!.orgRole,
       repos: req.body.repos,
     });
     res.status(201).json({ data: { repos } });

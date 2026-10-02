@@ -23,7 +23,7 @@ export const AGENT_STREAM_PATH = '/api/agents/stream';
 const AUTH_TIMEOUT_MS = 10_000;
 const PING_INTERVAL_MS = 30_000;
 
-type Connection = { ws: WebSocket; ctx: AgentContext; alive: boolean };
+type Connection = { ws: WebSocket; ctx: AgentContext; alive: boolean; running: Promise<void> | null; dirty: boolean };
 
 function send(ws: WebSocket, message: unknown): void {
   if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(message));
@@ -51,7 +51,25 @@ export function attachAgentStream(server: Server): AgentStream {
     if (set?.size === 0) byProject.delete(conn.ctx.projectId);
   };
 
-  const pushSnapshot = async (conn: Connection): Promise<void> => {
+  // 한 연결의 스냅샷은 **차례로** 계산·전송한다. 겹쳐 돌리면 먼저 계산한(옛) 스냅샷이 나중에 도착해 클라이언트가
+  // 낡은 목록을 들고 있게 된다(연결 직후의 첫 스냅샷과 시작 직후의 푸시가 겹친 경우 실제로 그랬다).
+  // 도는 중에 신호가 또 오면 한 번만 더 돈다 — 마지막 전송은 항상 마지막 신호 이후의 상태다.
+  const pushSnapshot = (conn: Connection): Promise<void> => {
+    if (conn.running) {
+      conn.dirty = true;
+      return conn.running;
+    }
+    conn.running = (async () => {
+      do {
+        conn.dirty = false;
+        await sendSnapshot(conn);
+      } while (conn.dirty && conn.ws.readyState === conn.ws.OPEN);
+      conn.running = null;
+    })();
+    return conn.running;
+  };
+
+  const sendSnapshot = async (conn: Connection): Promise<void> => {
     try {
       const tasks = await listClaimableTasksForAgent(conn.ctx);
       send(conn.ws, { type: 'tasks', projectId: conn.ctx.projectId, tasks });
@@ -93,7 +111,7 @@ export function attachAgentStream(server: Server): AgentStream {
       }
       try {
         const ctx = agentContextFrom(await resolveAgentToken(token));
-        conn = { ws, ctx, alive: true };
+        conn = { ws, ctx, alive: true, running: null, dirty: false };
         register(conn);
         send(ws, { type: 'ready', agentId: ctx.agentId, projectId: ctx.projectId });
         await pushSnapshot(conn);
