@@ -11,7 +11,16 @@ import { tasksChanged } from '../dispatch/tasks-changed.js';
 import { appendEvent } from '../events/append.js';
 import { dagHashOf, draftToAuthoring, PLAN_DRAFT_JSON_SCHEMA, planDraftSchema, planStructure, type PlanDraft } from './draft.js';
 import { getPmModel, type PmModel } from './model.js';
-import { completeJob, failJob, relayWorkerLastSeen, takeNextJob, type RelayJob, type RelayResult } from './relay.js';
+import {
+  completeJob,
+  failJob,
+  RelayJobNotTaken,
+  RelayWorkerFailed,
+  relayWorkerLastSeen,
+  takeNextJob,
+  type RelayJob,
+  type RelayResult,
+} from './relay.js';
 import { findUserById } from '../org/repository.js';
 import { costOfAttempts, estimateInputTokens, maxCallCost, type AttemptUsage } from './pricing.js';
 import { buildUserPrompt, PM_SYSTEM_PROMPT } from './prompt.js';
@@ -456,14 +465,17 @@ async function callModel(
     // 요청이 서버에 닿기 전에 거부된 4xx(키·형식 오류)는 과금되지 않는다. 그 밖(시간 제한·연결 끊김·5xx)은
     // 그때까지 생성된 토큰이 과금됐을 수 있으므로 잡아 둔 최대치로 정산한다 — 예산 검사가 느슨해지지 않게.
     const rejectedUpfront = err instanceof Anthropic.APIError && typeof err.status === 'number' && err.status >= 400 && err.status < 500;
+    // 중계: 아무도 가져가지 않았거나(모델이 돌지 않음) 노트북이 실패를 보고했으면(그 노트북의 구독으로 돌았다) 정산할 비용이 없다.
+    // 최대치로 정산하면 노트북이 꺼져 있던 요청마다 예산이 $0.33씩 깎였다(실제로 그랬다).
+    const relayNoCost = err instanceof RelayJobNotTaken || err instanceof RelayWorkerFailed;
     await recordCall(project, planId, {
       purpose,
       attempts: [],
-      costUsd: rejectedUpfront ? 0 : maxCost,
+      costUsd: rejectedUpfront || relayNoCost ? 0 : maxCost,
       latencyMs: Date.now() - started,
       stopReason: null,
       servedModel: null,
-      interrupted: !rejectedUpfront,
+      interrupted: !rejectedUpfront && !relayNoCost,
     });
     if (timedOut) return { kind: 'failed', reason: 'timeout', detail: { timeoutMs: env.PM_TIMEOUT_MS } };
     return { kind: 'failed', reason: 'api_error', detail: { message: err instanceof Error ? err.message : String(err) } };

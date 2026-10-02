@@ -10,6 +10,11 @@ import type { AttemptUsage } from './pricing.js';
 // 대기열은 메모리에 있다(서버 1대). 재시작하면 진행 중 작업은 사라지고, 기존 재시작 정리가 계획을 failed(restart)로 닫는다.
 // 여러 사용자에게 PM을 제공하는 운영에서는 API 모드(PM_PROVIDER=api + ANTHROPIC_API_KEY)를 쓴다 — 개인 구독은 본인용이다.
 
+// 중계 호출이 모델까지 가지 못하고 끝난 경우. 비용 정산이 다르다(service.callModel) — 모델이 돌지 않았거나(아무도 안 가져감)
+// 노트북의 구독으로 돌았다(실패 보고). 어느 쪽이든 NOMOS 키로 나간 돈이 없으니 최대치로 정산하지 않는다.
+export class RelayJobNotTaken extends Error {}
+export class RelayWorkerFailed extends Error {}
+
 export type RelayJob = {
   id: string;
   orgId: string;
@@ -52,7 +57,12 @@ export const relayModel: PmModel = {
       jobs.set(job.id, job);
       // 시간 제한(PM_TIMEOUT_MS)으로 끊기면 대기열에서 뺀다. 노트북이 꺼져 있어 아무도 안 가져간 경우도 여기서 끝난다.
       signal.addEventListener('abort', () => {
-        if (jobs.delete(job.id)) reject(new Error('relay job aborted (timeout) — is the pm-worker running?'));
+        if (!jobs.delete(job.id)) return;
+        reject(
+          job.takenBy === null
+            ? new RelayJobNotTaken('relay job timed out before any pm-worker took it — is the pm-worker running?')
+            : new Error('relay job aborted (timeout) while the pm-worker was running it'),
+        );
       });
     });
   },
@@ -97,7 +107,7 @@ export function failJob(jobId: string, agentId: string, message: string): void {
   const job = jobs.get(jobId);
   if (!job || job.takenBy !== agentId) throw new AppError('PM_JOB_NOT_FOUND', 'relay job not found (finished, timed out, or the server restarted)');
   jobs.delete(jobId);
-  job.reject(new Error(`pm-worker failed: ${message}`));
+  job.reject(new RelayWorkerFailed(`pm-worker failed: ${message}`));
 }
 
 // 테스트용 — 대기열을 비운다.

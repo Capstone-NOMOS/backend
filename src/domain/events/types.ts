@@ -18,6 +18,7 @@ export type EventType =
   | 'PROJECT_CREATED'
   | 'MEMBER_ASSIGNED'
   | 'PROJECT_STARTED'
+  | 'NOTES_ACK_REQUIRED'
   | 'MEMBER_UNASSIGNED'
   | 'REPO_UPDATED'
   | 'TASKS_IMPORTED'
@@ -155,6 +156,15 @@ export type ArtifactSubmittedPayload = {
   attempt: number;
   triggeredActions: string[];
   gateMode: string;
+  // 이 제출이 확인한 인계 노트(브리핑으로 받은 것 + 반려 뒤 모델이 확인한 것). "무엇을 보고 냈나"의 기록이다.
+  acknowledgedNoteIds?: string[];
+};
+
+// 제출을 반려하고 노트 확인을 요구했다. 정책 거부(TOOL_DENIED)가 아니다 — 새 정보가 생긴 것이라 M5′ 분모에 넣지 않고,
+// 재시도 횟수도 올리지 않는다. 몇 번 반려됐는지는 이 이벤트로 센다.
+export type NotesAckRequiredPayload = {
+  taskId: string;
+  noteIds: string[];
 };
 
 // 읽기는 기록하지 않는다. read_notes까지 이벤트로 남기면 events가 조회 로그가 된다.
@@ -302,6 +312,7 @@ export type EventPayloadMap = {
   PROJECT_CREATED: ProjectCreatedPayload;
   MEMBER_ASSIGNED: MemberAssignedPayload;
   PROJECT_STARTED: ProjectStartedPayload;
+  NOTES_ACK_REQUIRED: NotesAckRequiredPayload;
   MEMBER_UNASSIGNED: MemberUnassignedPayload;
   REPO_UPDATED: RepoUpdatedPayload;
   TASKS_IMPORTED: TasksImportedPayload;

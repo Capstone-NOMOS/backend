@@ -29,11 +29,33 @@ export function buildClaudeArgs(options: ClaudeRunOptions): string[] {
   const args = ['-p', options.prompt, '--output-format', 'stream-json', '--verbose'];
   if (options.model) args.push('--model', options.model);
   args.push('--mcp-config', options.mcpConfigPath, '--strict-mcp-config');
+  // 파일 편집은 작업 폴더 안에서 자동 승인한다 — settings.json의 deny(.env·contracts 등)는 여전히 이긴다.
+  // 없으면 모델이 계획만 세우고 "쓰기 권한을 승인해 달라"며 커밋 없이 끝난다(실제로 그랬다).
+  args.push('--permission-mode', 'acceptEdits');
   // 헤드리스에는 권한 프롬프트에 답할 사람이 없다. 이게 없으면 모델이 도구를 고른 뒤
   // "승인 대기"에서 멈춘다 — 도구를 못 찾는 것과 증상이 달라 헷갈리기 쉽다.
   // 가변 인자를 마지막에 두어 뒤에 아무것도 붙지 않게 한다.
-  args.push('--allowedTools', allowedToolNames().join(','));
+  args.push('--allowedTools', [...allowedToolNames(), ...allowedBashRules()].join(','));
   return args;
+}
+
+// 작업에 필요한 셸 명령만 접두사로 허용한다(커밋·시험 실행). **임의 셸을 열지 말 것** — 셸로 파일을 쓰면
+// settings.json의 Edit deny(.env·contracts 등)를 우회한다. 서버의 제출 검증(V3)이 최종 방어선이지만 로컬에서 먼저 막는다.
+export const ALLOWED_BASH_PREFIXES = [
+  'git status',
+  'git diff',
+  'git add',
+  'git commit',
+  'git log',
+  'git rev-parse',
+  'npm test',
+  'npm run test',
+  'npx vitest',
+  'node --test',
+] as const;
+
+export function allowedBashRules(): string[] {
+  return ALLOWED_BASH_PREFIXES.map((prefix) => `Bash(${prefix}:*)`);
 }
 
 // 우리 MCP 서버 하나만 담은 설정. --mcp-config로 넘긴다.
