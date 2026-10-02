@@ -7,7 +7,7 @@ import { settle, type Outcome } from '../outcome.js';
 import { getPolicySnapshot } from '../policy/policy-cache.js';
 import type { PolicyMode } from '../policy/pm-review-fallback.js';
 import { findAgentMembership } from '../policy/repository.js';
-import { buildNotesPromptBlock, selectNotesForTask } from '../note/injection.js';
+import { buildNotesPromptBlock, notesRequiringAck, selectNotesForTask } from '../note/injection.js';
 import type { Note } from '../note/repository.js';
 import { assertProjectVisibleToUser, type UserContext } from '../project/visibility.js';
 import { buildClaudePermissions, type ClaudePermissions } from '../repo/claude-settings.js';
@@ -129,6 +129,8 @@ export type SubmitArtifactInput = {
   taskId: string;
   commitSha: string;
   changedPaths: string[];
+  // 확인한 인계 노트. 브리핑으로 받은 노트는 브릿지가 자동으로 넣고, 반려 뒤 새로 받은 노트는 모델이 넣는다.
+  acknowledgedNoteIds?: string[];
 };
 
 // 제출 결과에는 서버가 즉시 판정한 단계(V1A·V1B·V3)의 결론이 함께 온다.
@@ -229,6 +231,40 @@ export async function submitArtifact(
         });
       }
 
+      // 제출 전 노트 확인 — 이 태스크와 관련된 인계 노트(브리핑과 같은 선택)를 전부 확인했어야 받는다.
+      // 브리핑 뒤에 노트가 새로 생겼으면 산출물을 만들지 않고 반려하고, 그 노트 전문을 돌려준다(실행 중에 끼어들지 않고 제출이라는
+      // 정해진 시점 하나에서만 확인한다 — 재현성). 시각이 아니라 "전달됐는가"로 판정한다: 브리핑으로 받은 노트는 확인한 것이다.
+      // 막을 수 있는 건 전달까지다 — 모델이 내용을 반영했는지는 검증(V1A·V3)의 몫이다.
+      const acknowledged = new Set(input.acknowledgedNoteIds ?? []);
+      const unacknowledged = (await notesRequiringAck(tx, task.id, ctx.agentId)).filter((n) => !acknowledged.has(n.id));
+      if (unacknowledged.length > 0) {
+        await appendEvent(tx, {
+          orgId: ctx.orgId,
+          projectId: ctx.projectId,
+          type: 'NOTES_ACK_REQUIRED',
+          actorAgentId: ctx.agentId,
+          onBehalfOf: ctx.onBehalfOf,
+          policyHash: ctx.policyHash,
+          payload: { taskId: task.id, noteIds: unacknowledged.map((n) => n.id) },
+        });
+        return {
+          denied: {
+            code: 'NOTES_UNACKNOWLEDGED',
+            message:
+              `${unacknowledged.length} handover note(s) related to this task were published after your briefing. ` +
+              'Read them, change your work if they affect it, then submit again with their ids in acknowledged_note_ids.',
+            details: unacknowledged.map((n) => ({
+              id: n.id,
+              seq: n.seq,
+              kind: n.kind,
+              headline: n.headline,
+              keyPoints: n.keyPoints,
+              affects: n.affects,
+            })),
+          },
+        };
+      }
+
       // 판정을 사실로 고정한다. 나중에 정책표나 경로 규칙이 바뀌어도 이 행은 그대로 남는다.
       const artifact = await insertArtifact(tx, {
         taskId: task.id,
@@ -255,6 +291,7 @@ export async function submitArtifact(
           attempt: artifact.attempt,
           triggeredActions,
           gateMode,
+          acknowledgedNoteIds: [...acknowledged].sort(),
         },
       });
 

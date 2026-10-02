@@ -1,7 +1,7 @@
 import type { Queryable } from '../../config/db.js';
 import { matches } from '../repo/glob.js';
 import { listRepoPaths } from '../repo/repository.js';
-import { findTaskById, listDependencyTaskIds } from '../task/repository.js';
+import { findTaskById, listAncestorTaskIds } from '../task/repository.js';
 import { NOTE_KIND_LABEL } from './kinds.js';
 import { listInjectionCandidates, type Note } from './repository.js';
 
@@ -11,10 +11,12 @@ import { listInjectionCandidates, type Note } from './repository.js';
 const CANDIDATE_CAP = 200;
 const DEFAULT_LIMIT = 20;
 
-// 세 갈래로 고른다:
+// 네 갈래로 고른다:
 //   1. 같은 spec_id — 같은 기능을 이어받는 사람에게 가장 직접적이다
-//   2. 선행 태스크(task_deps)가 만든 노트 — 내가 그 결과 위에 올라간다
-//   3. affects가 내가 수정할 수 있는 경로와 겹치는 노트 — 내 작업 면에 영향이 온다
+//   2. 선행 태스크가 만든 노트 — **선행의 선행까지**(task_deps를 끝까지). 한 단계만 보면 인증 → 스터디 → 통합처럼
+//      건너뛴 태스크의 결정이 전달되지 않았다
+//   3. DECIDED(결정 사항) — 프로젝트 전체에. 인증 방식·오류 형식 같은 결정은 기능·레포를 가리지 않고 모두가 알아야 한다
+//   4. affects가 내가 수정할 수 있는 경로와 겹치는 노트 — 내 작업 면에 영향이 온다
 // supersedes로 대체된 노트는 후보 쿼리에서 이미 빠진다. 낡은 정보를 프롬프트에 넣으면 안 된다.
 export async function selectNotesForTask(
   db: Queryable,
@@ -26,7 +28,7 @@ export async function selectNotesForTask(
 
   const [candidates, dependencyIds, rules] = [
     await listInjectionCandidates(db, taskId, CANDIDATE_CAP),
-    await listDependencyTaskIds(db, taskId),
+    await listAncestorTaskIds(db, taskId),
     await listRepoPaths(db, task.repoId),
   ];
   const dependencies = new Set(dependencyIds);
@@ -39,6 +41,7 @@ export async function selectNotesForTask(
   const relevant = candidates.filter((note) => {
     if (task.specId !== null && note.specId === task.specId) return true;
     if (note.taskId !== null && dependencies.has(note.taskId)) return true;
+    if (note.kind === 'DECIDED') return true;
     return note.affects.some((path) => writable.some((rule) => matches(rule.pathPattern, path)));
   });
 
@@ -61,4 +64,11 @@ export function buildNotesPromptBlock(notes: Note[]): string {
     .join('\n\n');
 
   return `[인계 노트]\n${body}`;
+}
+
+// 제출 전에 이 에이전트가 확인해야 하는 노트 — 브리핑과 **같은 선택**에서 자기가 쓴 노트와 이 태스크의 노트를 뺀 것.
+// 판정을 두 벌 두지 않는다: 브리핑으로 받은 노트와 제출 때 요구하는 노트가 같은 규칙에서 나와야 "받았다"가 성립한다.
+export async function notesRequiringAck(db: Queryable, taskId: string, agentId: string): Promise<Note[]> {
+  const notes = await selectNotesForTask(db, taskId);
+  return notes.filter((n) => n.authorAgentId !== agentId && n.taskId !== taskId);
 }

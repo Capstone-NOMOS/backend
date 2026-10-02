@@ -212,6 +212,20 @@ export async function insertArtifact(
 }
 
 // 선행 태스크 id 목록. 프롬프트 주입이 "의존 태스크가 만든 노트"를 고를 때 쓴다.
+// 선행의 선행까지 전부(순환은 작성 검증이 막는다 — UNION이 한 번 더 막는다).
+export async function listAncestorTaskIds(db: Queryable, taskId: string): Promise<string[]> {
+  const { rows } = await db.query(
+    `WITH RECURSIVE ancestors(id) AS (
+       SELECT depends_on FROM task_deps WHERE task_id = $1
+       UNION
+       SELECT d.depends_on FROM task_deps d JOIN ancestors a ON d.task_id = a.id
+     )
+     SELECT id FROM ancestors`,
+    [taskId],
+  );
+  return rows.map((r) => r.id as string);
+}
+
 export async function listDependencyTaskIds(db: Queryable, taskId: string): Promise<string[]> {
   const { rows } = await db.query(`SELECT depends_on FROM task_deps WHERE task_id = $1`, [taskId]);
   return rows.map((r) => r.depends_on as string);

@@ -133,13 +133,20 @@ export async function listInjectionCandidates(
   candidateCap: number,
 ): Promise<Note[]> {
   const { rows } = await db.query(
-    `WITH task AS (SELECT id, project_id, spec_id FROM tasks WHERE id = $1)
+    `WITH RECURSIVE task AS (SELECT id, project_id, spec_id FROM tasks WHERE id = $1),
+       -- 선행을 끝까지 따라간다(직접 선행만 보면 한 단계 건너뛴 태스크의 결정이 전달되지 않는다).
+       ancestors(id) AS (
+         SELECT depends_on FROM task_deps WHERE task_id = $1
+         UNION
+         SELECT d.depends_on FROM task_deps d JOIN ancestors a ON d.task_id = a.id
+       )
      SELECT n.* FROM notes n, task t
       WHERE n.project_id = t.project_id
         AND n.id NOT IN (SELECT supersedes FROM notes WHERE supersedes IS NOT NULL)
         AND (
           (t.spec_id IS NOT NULL AND n.spec_id = t.spec_id)
-          OR n.task_id IN (SELECT depends_on FROM task_deps WHERE task_id = t.id)
+          OR n.task_id IN (SELECT id FROM ancestors)
+          OR n.kind = 'DECIDED'
           OR cardinality(n.affects) > 0
         )
       ORDER BY n.seq DESC

@@ -5,7 +5,8 @@ import { publishNote, readNotes } from '../src/domain/note/service.js';
 import { buildNotesPromptBlock, selectNotesForTask } from '../src/domain/note/injection.js';
 import { buildNoteTitle } from '../src/domain/note/title.js';
 import { findForeignAgentMentions, validateNoteShape } from '../src/domain/note/validate.js';
-import { claimTask, type AgentContext } from '../src/domain/task/service.js';
+import { claimTask, submitArtifact, type AgentContext } from '../src/domain/task/service.js';
+import { AppError } from '../src/errors.js';
 import { connectRepos } from '../src/domain/repo/service.js';
 import { createTestAgent, createTestOrg, createTestProject } from './fixtures.js';
 import { expectDenied } from './helpers/assert-denied.js';
@@ -461,5 +462,99 @@ describe('프롬프트 주입 대상 선택', () => {
     expect(block).toContain('· 정원 초과는 409로 거절');
     expect(block).toContain('영향: contracts/F-03.yaml');
     expect(buildNotesPromptBlock([])).toBe('');
+  });
+});
+
+// ── 노트 전달 보강: DECIDED는 프로젝트 전체, 선행은 끝까지 ───────────────────────
+
+// 같은 프로젝트에 다른 에이전트(FRONTEND)를 두고, 그 에이전트가 다른 명세의 태스크를 잡아 노트를 남긴다.
+async function otherAgentNote(s: Session, kind: 'DECIDED' | 'IMPLEMENTED', featureKey: string): Promise<{ noteId: string; taskId: string }> {
+  // 역할당 에이전트는 하나다 — 이미 있으면 그 프론트 에이전트를 쓴다.
+  const existing = await pool.query(`SELECT agent_id FROM project_members WHERE project_id = $1 AND team_role = 'FRONTEND'`, [s.projectId]);
+  let agentId = existing.rows[0]?.agent_id as string | undefined;
+  if (!agentId) {
+    agentId = await createTestAgent(s.userId, 'fe-laptop');
+    await pool.query(`INSERT INTO project_members (project_id, agent_id, team_role) VALUES ($1, $2, 'FRONTEND')`, [s.projectId, agentId]);
+  }
+  const spec = await pool.query(
+    `INSERT INTO specs (project_id, feature_key, title, content) VALUES ($1, $2, '다른 기능', 'WHEN …') RETURNING id`,
+    [s.projectId, featureKey],
+  );
+  const task = await pool.query(
+    `INSERT INTO tasks (project_id, repo_id, spec_id, title, state, kind, team_role)
+     VALUES ($1, $2, $3, $4, 'READY', 'IMPLEMENT', 'FRONTEND') RETURNING id`,
+    [s.projectId, s.repoId, spec.rows[0]!.id, `T-${featureKey}`],
+  );
+  const ctx: AgentContext = { ...s.ctx, agentId };
+  await claimTask(ctx, task.rows[0]!.id);
+  const published = await publishNote(ctx, task.rows[0]!.id, { ...VALID, kind, headline: `${kind} 노트` });
+  return { noteId: published.note.id, taskId: task.rows[0]!.id };
+}
+
+describe('노트 전달 보강', () => {
+  it('DECIDED는 기능·선행과 무관하게 프로젝트 전체에 전달되고, 다른 종류는 그렇지 않다', async () => {
+    const s = await setup();
+    const decided = await otherAgentNote(s, 'DECIDED', 'F-10');
+    const implemented = await otherAgentNote(s, 'IMPLEMENTED', 'F-11');
+    const selected = (await selectNotesForTask(pool, s.taskId)).map((n) => n.id);
+    expect(selected).toContain(decided.noteId);
+    expect(selected).not.toContain(implemented.noteId);
+  });
+
+  it('선행의 선행이 남긴 노트도 고른다', async () => {
+    const s = await setup();
+    const root = await otherAgentNote(s, 'IMPLEMENTED', 'F-20'); // 인증 같은 맨 앞 태스크
+    const mid = await pool.query(
+      `INSERT INTO tasks (project_id, repo_id, title, state, kind) VALUES ($1, $2, '중간', 'READY', 'IMPLEMENT') RETURNING id`,
+      [s.projectId, s.repoId],
+    );
+    // 내 태스크 → 중간 → 맨 앞. 직접 선행만 보면 맨 앞의 노트가 빠진다.
+    await pool.query(`INSERT INTO task_deps (task_id, depends_on) VALUES ($1, $2), ($2, $3)`, [s.taskId, mid.rows[0]!.id, root.taskId]);
+    expect((await selectNotesForTask(pool, s.taskId)).map((n) => n.id)).toContain(root.noteId);
+  });
+});
+
+describe('제출 시점 노트 확인', () => {
+  // 제출 경로 검사를 통과하게 '**'를 이 에이전트(BACKEND) 소유로 둔다. 정책 스냅샷을 읽기 전에 바꾼다.
+  async function submittable(): Promise<Session> {
+    const s = await setup();
+    await pool.query(`UPDATE repo_paths SET owner_role = 'BACKEND' WHERE repo_id = $1 AND path_pattern = '**'`, [s.repoId]);
+    return s;
+  }
+  const submit = (s: Session, acknowledgedNoteIds?: string[]) =>
+    submitArtifact(s.ctx, { taskId: s.taskId, commitSha: 'abc1234', changedPaths: ['src/a.ts'], ...(acknowledgedNoteIds ? { acknowledgedNoteIds } : {}) });
+
+  it('확인하지 않은 관련 노트가 있으면 반려하고 노트 전문을 돌려준다 — 산출물·재시도 횟수는 그대로, 확인하면 받는다', async () => {
+    const s = await submittable();
+    const { noteId } = await otherAgentNote(s, 'DECIDED', 'F-30');
+
+    const err = await submit(s).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(AppError);
+    expect((err as AppError).code).toBe('NOTES_UNACKNOWLEDGED');
+    expect((err as AppError).details).toEqual([expect.objectContaining({ id: noteId, kind: 'DECIDED', headline: 'DECIDED 노트' })]);
+
+    const after = await pool.query(`SELECT state, retry_count FROM tasks WHERE id = $1`, [s.taskId]);
+    expect(after.rows[0]).toEqual({ state: 'CLAIMED', retry_count: 0 });
+    expect((await pool.query(`SELECT count(*)::int AS n FROM artifacts WHERE task_id = $1`, [s.taskId])).rows[0].n).toBe(0);
+    const required = await pool.query(`SELECT payload FROM events WHERE type = 'NOTES_ACK_REQUIRED'`);
+    expect(required.rows.map((r) => r.payload)).toEqual([{ taskId: s.taskId, noteIds: [noteId] }]);
+    // 정책 거부가 아니다 — TOOL_DENIED로 남기지 않는다(M5′ 분모 아님).
+    expect((await pool.query(`SELECT count(*)::int AS n FROM events WHERE type = 'TOOL_DENIED'`)).rows[0].n).toBe(0);
+
+    const ok = await submit(s, [noteId]);
+    expect(ok.artifact.taskId).toBe(s.taskId);
+    const submitted = await pool.query(`SELECT payload FROM events WHERE type = 'ARTIFACT_SUBMITTED'`);
+    expect(submitted.rows[0]!.payload.acknowledgedNoteIds).toEqual([noteId]);
+  });
+
+  it('자기가 쓴 노트와 관련 없는 노트는 확인을 요구하지 않는다', async () => {
+    const s = await submittable();
+    await publishNote(s.ctx, s.taskId, VALID); // 내 노트
+    await otherAgentNote(s, 'IMPLEMENTED', 'F-31'); // 다른 기능의 구현 노트 — 관련 없음
+    const ok = await submit(s);
+    expect(ok.artifact.taskId).toBe(s.taskId);
   });
 });

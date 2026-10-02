@@ -1698,6 +1698,11 @@ paths:
         나중에 정책표나 경로 규칙이 바뀌어도 "그때 무엇에 걸렸나"가 남아야 리플레이가 성립한다.
 
         `changedPaths`에 `migrations/010_x.sql`을 섞으면 `db:migration`이 걸려 L2에서 `gateMode=HUMAN`이 된다.
+
+        **인계 노트 확인**: 이 태스크와 관련된 노트(브리핑과 같은 선택 — 같은 기능·선행 전체·`DECIDED`·영향 경로, 자기가 쓴 노트 제외)를
+        전부 `acknowledgedNoteIds`에 넣어야 받는다. 브리핑으로 받은 노트는 브릿지가 자동으로 넣으므로, 실제로 반려되는 건 **브리핑 뒤에 새 노트가
+        생겼을 때**다 — 409 `NOTES_UNACKNOWLEDGED`, `details`에 노트 전문. 산출물은 만들지 않고 태스크는 그대로라 고쳐서 다시 낸다.
+        재시도 횟수는 오르지 않는다(이벤트 `NOTES_ACK_REQUIRED`).
       security: [{ agentToken: [] }]
       parameters: [{ $ref: '#/components/parameters/TaskId' }]
       requestBody:
@@ -1710,6 +1715,7 @@ paths:
               properties:
                 commitSha: { type: string, pattern: '^[0-9a-f]{7,40}$' }
                 changedPaths: { type: array, minItems: 1, items: { type: string } }
+                acknowledgedNoteIds: { type: array, maxItems: 200, items: { type: string, format: uuid }, description: '확인한 인계 노트 id' }
             examples:
               정상:
                 value: { commitSha: a1b2c3d, changedPaths: [src/participation.ts, tests/participation.test.ts] }
@@ -1766,11 +1772,18 @@ paths:
                 남의태스크:
                   value: { error: { code: NOT_TASK_ASSIGNEE, message: task is assigned to another agent } }
         '409':
-          description: CLAIMED·IN_PROGRESS가 아닌 상태
+          description: CLAIMED·IN_PROGRESS가 아닌 상태, 또는 확인하지 않은 인계 노트가 있다
           content:
             application/json:
-              example:
-                error: { code: TASK_STATE_INVALID, message: cannot submit while task is VERIFYING }
+              examples:
+                상태:
+                  value: { error: { code: TASK_STATE_INVALID, message: cannot submit while task is VERIFYING } }
+                노트확인:
+                  value:
+                    error:
+                      code: NOTES_UNACKNOWLEDGED
+                      message: '1 handover note(s) related to this task were published after your briefing. Read them, change your work if they affect it, then submit again with their ids in acknowledged_note_ids.'
+                      details: [{ id: 5c457d82-8804-4408-a76e-3f5a355b8484, seq: 1, kind: DECIDED, headline: 인증 API 계약 확정, keyPoints: [인증이 필요한 요청은 Authorization Bearer 헤더를 쓴다], affects: [] }]
 
     get:
       tags: [검증]
