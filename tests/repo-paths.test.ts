@@ -233,4 +233,44 @@ describe('레포 연결 권한 (HTTP)', () => {
     expect(res.status).toBe(403);
     expect(res.body).toMatchObject({ error: { code: 'CROSS_ORG_ACCESS' } });
   });
+
+  it('대표는 연결과 함께 소유 역할을 지정할 수 있다 — PATCH와 같은 이벤트·결과', async () => {
+    const rep = await account('rep-4004');
+    const { orgId } = await createOrganization(rep.userId, 'Acme Inc.');
+
+    const res = await send('POST', `/api/orgs/${orgId}/repos`, rep.token, {
+      repos: [{ fullName: 'acme/api', ownerRole: 'BACKEND' }, { fullName: 'acme/docs' }],
+    });
+    expect(res.status).toBe(201);
+    const repos = (res.body as { data: { repos: { id: string; rootOwnerRole: string | null }[] } }).data.repos;
+    expect(repos.map((r) => r.rootOwnerRole)).toEqual(['BACKEND', null]);
+
+    const root = await pool.query(`SELECT owner_role FROM repo_paths WHERE repo_id = $1 AND path_pattern = '**'`, [repos[0]!.id]);
+    expect(root.rows[0]!.owner_role).toBe('BACKEND');
+    const events = await pool.query(`SELECT on_behalf_of, payload FROM events WHERE type = 'REPO_PATH_UPDATED'`);
+    expect(events.rows).toHaveLength(1);
+    expect(events.rows[0]!.on_behalf_of).toBe(rep.userId);
+    expect(events.rows[0]!.payload).toMatchObject({ before: { ownerRole: null }, after: { ownerRole: 'BACKEND' } });
+
+    // 소유 역할이 있으니 바로 프로젝트에 넣을 수 있다(REPO_OWNERSHIP_NOT_SET이 아니다).
+    const project = await send('POST', `/api/orgs/${orgId}/projects`, rep.token, {
+      name: 'p', autonomyPreset: 'L2', pmBudgetUsd: 1, repoIds: [repos[0]!.id],
+    });
+    expect(project.status).toBe(201);
+  });
+
+  it('팀원이 ownerRole을 주면 403이고 아무것도 연결되지 않는다 — 소유권 지정은 대표 전용이다', async () => {
+    const rep = await account('rep-4005');
+    const { orgId } = await createOrganization(rep.userId, 'Acme Inc.');
+    const member = await account('be-4005');
+    const invite = await createInvite(orgId, rep.userId, { teamRole: 'BACKEND' });
+    await acceptInvite(invite.token, member.userId);
+
+    const res = await send('POST', `/api/orgs/${orgId}/repos`, member.token, {
+      repos: [{ fullName: 'acme/web' }, { fullName: 'acme/api', ownerRole: 'BACKEND' }],
+    });
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({ error: { code: 'NOT_REPRESENTATIVE' } });
+    expect((await pool.query(`SELECT count(*)::int AS n FROM repos WHERE org_id = $1`, [orgId])).rows[0].n).toBe(0);
+  });
 });

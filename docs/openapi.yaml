@@ -237,11 +237,12 @@ components:
         defaultBranch: { type: string }
     ConnectedRepo:
       type: object
-      required: [id, fullName, seededPathCount]
+      required: [id, fullName, seededPathCount, rootOwnerRole]
       properties:
         id: { type: string, format: uuid }
         fullName: { type: string }
         seededPathCount: { type: integer }
+        rootOwnerRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true, description: '`**` 행의 소유 역할. 연결 때 ownerRole을 주지 않았으면 null(나중에 PATCH로 지정)' }
     RepoSettings:
       type: object
       required: [id, fullName, githubRepoId, defaultBranch, devBranch, cloneUrl]
@@ -1252,8 +1253,14 @@ paths:
                       fullName: { type: string }
                       githubRepoId: { type: integer }
                       defaultBranch: { type: string }
+                      ownerRole:
+                        type: string
+                        enum: [FRONTEND, BACKEND]
+                        description: |
+                          주면 연결과 함께 `**` 행(레포 전체)의 소유 역할을 지정한다 — `GET …/paths` → `PATCH …/paths/{pathId}`를 대신한다.
+                          **대표 전용**: 대표가 아닌데 하나라도 있으면 아무것도 연결하지 않고 403 `NOT_REPRESENTATIVE`.
             example:
-              repos: [{ fullName: acme/extra-repo }]
+              repos: [{ fullName: acme/extra-repo, ownerRole: BACKEND }]
       responses:
         '201':
           description: 연결됨
@@ -1261,7 +1268,7 @@ paths:
             application/json:
               schema: { type: object, required: [data], properties: { data: { type: object, required: [repos], properties: { repos: { type: array, items: { $ref: '#/components/schemas/ConnectedRepo' } } } } } }
               example:
-                data: { repos: [{ id: 2ea71bc6-05b8-4725-9fa0-2b2eec9d3674, fullName: acme/extra-repo, seededPathCount: 15 }] }
+                data: { repos: [{ id: 2ea71bc6-05b8-4725-9fa0-2b2eec9d3674, fullName: acme/extra-repo, seededPathCount: 15, rootOwnerRole: BACKEND }] }
         '409':
           description: 이미 연결된 레포
           content:
@@ -2296,6 +2303,41 @@ paths:
               example:
                 error: { code: PM_UNAVAILABLE, message: the built-in PM is not configured on this server (ANTHROPIC_API_KEY) }
 
+  /projects/{projectId}/pm/status:
+    get:
+      tags: [내장 PM]
+      summary: PM 준비 상태 (대표 전용)
+      description: |
+        "계획 받기" 버튼을 켜기 전에 본다. **요청 자체를 막지는 않는다.**
+        - `ready: false`, `reason: NO_API_KEY` — API 모드인데 서버에 키가 없다. 요청하면 503.
+        - `ready: false`, `reason: WORKER_OFFLINE` — 중계 모드인데 대표 노트북의 pm-worker가 30초 넘게 작업을 확인하지 않았다(꺼져 있다).
+          요청하면 받아지지만 아무도 가져가지 않아 `PM_TIMEOUT_MS`(기본 10분) 뒤 `failed(timeout)`이 된다.
+          pm-worker는 3초마다 확인하므로 켜면 몇 초 안에 `ready: true`가 된다.
+        - `pendingPlanId`가 있으면 작성 중인 계획이 있어 새 요청은 409다.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/ProjectId' }]
+      responses:
+        '200':
+          description: 상태
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [provider, ready, reason, workerLastSeenAt, budgetUsd, spentUsd, pendingPlanId]
+                    properties:
+                      provider: { type: string, enum: [api, relay] }
+                      ready: { type: boolean }
+                      reason: { type: string, enum: [NO_API_KEY, WORKER_OFFLINE], nullable: true }
+                      workerLastSeenAt: { type: string, format: date-time, nullable: true, description: '중계 모드에서 pm-worker가 마지막으로 작업을 확인한 시각' }
+                      budgetUsd: { type: number }
+                      spentUsd: { type: number }
+                      pendingPlanId: { type: string, format: uuid, nullable: true }
+              example:
+                data: { provider: relay, ready: false, reason: WORKER_OFFLINE, workerLastSeenAt: null, budgetUsd: 5, spentUsd: 0.1077, pendingPlanId: null }
   /projects/{projectId}/pm/plans/{planId}:
     get:
       tags: [내장 PM]

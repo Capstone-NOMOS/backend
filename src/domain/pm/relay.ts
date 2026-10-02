@@ -23,6 +23,13 @@ export type RelayJob = {
 type Pending = RelayJob & { resolve: (r: PmModelResponse) => void; reject: (e: Error) => void };
 
 const jobs = new Map<string, Pending>();
+// 조직별로 pm-worker가 마지막으로 작업을 확인한 시각. 워커는 3초마다 묻는다 — 한동안 안 물었으면 노트북이 꺼진 것이다.
+// 화면이 요청 전에 "PM 노트북이 꺼져 있다"를 보여 주기 위한 값이다(안 그러면 10분 뒤 timeout으로야 안다).
+const workerSeen = new Map<string, Date>();
+
+export function relayWorkerLastSeen(orgId: string): Date | null {
+  return workerSeen.get(orgId) ?? null;
+}
 
 export const relayModel: PmModel = {
   kind: 'relay',
@@ -53,6 +60,7 @@ export const relayModel: PmModel = {
 
 // 그 조직의 가장 오래된 미할당 작업을 이 에이전트에게 맡긴다. 없으면 null.
 export function takeNextJob(orgId: string, agentId: string): RelayJob | null {
+  workerSeen.set(orgId, new Date());
   for (const job of jobs.values()) {
     if (job.orgId === orgId && job.takenBy === null) {
       job.takenBy = agentId;
@@ -96,4 +104,5 @@ export function failJob(jobId: string, agentId: string, message: string): void {
 export function clearRelayJobs(): void {
   for (const job of jobs.values()) job.reject(new Error('relay queue cleared'));
   jobs.clear();
+  workerSeen.clear();
 }

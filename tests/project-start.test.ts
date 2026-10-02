@@ -207,6 +207,30 @@ describe('웹소켓 푸시 (/api/agents/stream)', () => {
     s.ws.close();
   });
 
+  it('연결 직후 곧바로 상태가 바뀌어도 마지막에 받은 스냅샷은 최신이다', async () => {
+    const w = await world();
+    const agent = await backendAgent(w);
+    const task = await backendTask(w);
+    for (let round = 0; round < 3; round += 1) {
+      const s = openStream();
+      await s.opened;
+      s.ws.send(JSON.stringify({ type: 'auth', token: agent.accessToken }));
+      if (round === 0) await call('POST', `/projects/${w.projectId}/start`, w.rep.token); // 첫 스냅샷 계산과 겹친다
+      await s.next('ready');
+      // 받은 스냅샷 중 마지막 것이 지금 상태(태스크 1개)여야 한다.
+      let last: { id: string }[] | undefined;
+      for (let i = 0; i < 10; i += 1) {
+        try {
+          last = (await s.next('tasks', 300)).tasks;
+        } catch {
+          break;
+        }
+      }
+      expect(last?.map((t) => t.id)).toEqual([task.id]);
+      s.ws.close();
+    }
+  });
+
   it('토큰이 틀리면 4401, 프로젝트에 배정되지 않은 에이전트는 4403, 첫 메시지가 auth가 아니면 4400', async () => {
     const w = await world();
     const bad = openStream();
@@ -255,10 +279,14 @@ describe('Executor 쪽 수신(streamTaskSource)', () => {
       expect(source.connected).toBe(true);
       expect(await source.nextTasks(5)).toEqual([]);
 
-      const changed = source.waitForChange(3000);
+      // 시작 직후의 푸시가 연결 직후의 첫 스냅샷과 겹쳐도 마지막에 들고 있는 목록은 최신이어야 한다(서버가 연결별로 차례로 보낸다).
       await call('POST', `/projects/${w.projectId}/start`, w.rep.token);
-      await changed;
-      expect((await source.nextTasks(5)).map((t) => t.id)).toEqual([task.id]);
+      let ids: string[] = [];
+      for (let i = 0; i < 30 && ids.length === 0; i += 1) {
+        await source.waitForChange(100);
+        ids = (await source.nextTasks(5)).map((t) => t.id);
+      }
+      expect(ids).toEqual([task.id]);
       expect(lines.join('\n')).toContain('서버 푸시 연결됨');
     } finally {
       source.close();

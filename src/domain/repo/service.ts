@@ -36,16 +36,24 @@ async function assertRepoInOrg(db: Queryable, orgId: string, repoId: string): Pr
   return repo;
 }
 
-export type ConnectRepoInput = { fullName: string; githubRepoId?: number; defaultBranch?: string };
-export type ConnectRepoResult = { id: string; fullName: string; seededPathCount: number };
+export type ConnectRepoInput = { fullName: string; githubRepoId?: number; defaultBranch?: string; ownerRole?: OwnerRole };
+export type ConnectRepoResult = { id: string; fullName: string; seededPathCount: number; rootOwnerRole: OwnerRole | null };
 
 // 레포들을 조직에 연결한다. 레포마다 (INSERT repos -> 기본 경로 규칙 시드 -> REPO_CONNECTED
 // 이벤트)를 하나의 트랜잭션으로 묶는다.
+//
+// ownerRole을 주면 같은 트랜잭션에서 '**' 행의 소유 역할도 지정한다 — 온보딩 화면이 "레포 + 역할 선택" 한 번으로 끝나게.
+// 연결은 멤버 누구나 하지만 **소유권 지정은 대표 전용**이다(관문은 소유권이다). 그래서 대표가 아닌데 ownerRole이 하나라도
+// 있으면 아무것도 연결하지 않고 403 — 연결만 되고 역할은 빠지는 반쪽 결과를 남기지 않는다. 소유권 변경은 PATCH와 같은 이벤트를 남긴다.
 export async function connectRepos(input: {
   orgId: string;
   actorUserId: string;
+  actorOrgRole?: string;
   repos: ConnectRepoInput[];
 }): Promise<ConnectRepoResult[]> {
+  if (input.repos.some((r) => r.ownerRole !== undefined) && input.actorOrgRole !== 'REPRESENTATIVE') {
+    throw new AppError('NOT_REPRESENTATIVE', 'only the organization representative can assign path ownership (ownerRole)');
+  }
   return withTransaction(async (tx) => {
     const results: ConnectRepoResult[] = [];
     for (const r of input.repos) {
@@ -62,7 +70,26 @@ export async function connectRepos(input: {
         onBehalfOf: input.actorUserId,
         payload: { repoId: repo.id, fullName: repo.fullName, seededPathCount: seeded.length },
       });
-      results.push({ id: repo.id, fullName: repo.fullName, seededPathCount: seeded.length });
+      let rootOwnerRole: OwnerRole | null = null;
+      if (r.ownerRole !== undefined) {
+        const root = seeded.find((p) => p.pathPattern === '**');
+        if (!root) throw new Error('seed rules must include "**"');
+        const updated = await updateRepoPathOwnership(tx, root.id, { ownerRole: r.ownerRole });
+        await appendEvent(tx, {
+          orgId: input.orgId,
+          type: 'REPO_PATH_UPDATED',
+          onBehalfOf: input.actorUserId,
+          payload: {
+            pathId: root.id,
+            before: { ownerRole: root.ownerRole, access: root.access },
+            after: { ownerRole: updated.ownerRole, access: updated.access },
+          },
+        });
+        // 새 레포라 쓰는 프로젝트는 아직 없지만, 경로 규칙을 바꾸는 서비스는 항상 부른다(빠뜨리는 경로를 만들지 않는다).
+        await recomputePolicyHashesForRepo(tx, repo.id);
+        rootOwnerRole = updated.ownerRole;
+      }
+      results.push({ id: repo.id, fullName: repo.fullName, seededPathCount: seeded.length, rootOwnerRole });
     }
     return results;
   });

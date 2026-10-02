@@ -11,7 +11,7 @@ import { tasksChanged } from '../dispatch/tasks-changed.js';
 import { appendEvent } from '../events/append.js';
 import { dagHashOf, draftToAuthoring, PLAN_DRAFT_JSON_SCHEMA, planDraftSchema, planStructure, type PlanDraft } from './draft.js';
 import { getPmModel, type PmModel } from './model.js';
-import { completeJob, failJob, takeNextJob, type RelayJob, type RelayResult } from './relay.js';
+import { completeJob, failJob, relayWorkerLastSeen, takeNextJob, type RelayJob, type RelayResult } from './relay.js';
 import { findUserById } from '../org/repository.js';
 import { costOfAttempts, estimateInputTokens, maxCallCost, type AttemptUsage } from './pricing.js';
 import { buildUserPrompt, PM_SYSTEM_PROMPT } from './prompt.js';
@@ -224,6 +224,45 @@ export async function listProjectPlans(actorUserId: string, projectId: string): 
   const costs = await planCostsUsd(pool, plans.map((p) => p.id));
   const assignees = await listRoleAssignees(pool, projectId);
   return plans.map((p) => toView(p, costs.get(p.id) ?? 0, assignees));
+}
+
+// ── PM 준비 상태 ─────────────────────────────────────────────────────────
+
+// 워커는 3초마다 묻는다. 이만큼 조용하면 꺼진 것으로 본다(잠깐의 네트워크 끊김은 넘긴다).
+export const RELAY_WORKER_STALE_MS = 30_000;
+
+export type PmStatus = {
+  provider: 'api' | 'relay';
+  // 지금 요청하면 PM이 돌 수 있는가. false면 reason이 이유다.
+  ready: boolean;
+  reason: 'NO_API_KEY' | 'WORKER_OFFLINE' | null;
+  workerLastSeenAt: string | null;
+  budgetUsd: number;
+  spentUsd: number;
+  // 작성 중인 계획(프로젝트당 하나). 있으면 새 요청은 409다.
+  pendingPlanId: string | null;
+};
+
+// 화면이 "계획 받기" 버튼을 켜기 전에 본다. 요청 자체를 막지는 않는다 — 판단은 화면이, 실패는 기존 경로(timeout)가 한다.
+export async function getPmStatus(actorUserId: string, projectId: string): Promise<PmStatus> {
+  await assertCanView(actorUserId, projectId);
+  const project = (await findProjectForPm(pool, projectId))!;
+  const model = getPmModel();
+  const provider = model?.kind === 'relay' ? 'relay' : env.PM_PROVIDER;
+  const seen = model?.kind === 'relay' ? relayWorkerLastSeen(project.orgId) : null;
+  let reason: PmStatus['reason'] = null;
+  if (!model) reason = 'NO_API_KEY';
+  else if (model.kind === 'relay' && (!seen || Date.now() - seen.getTime() > RELAY_WORKER_STALE_MS)) reason = 'WORKER_OFFLINE';
+  const pending = await findPendingPlan(pool, projectId);
+  return {
+    provider,
+    ready: reason === null,
+    reason,
+    workerLastSeenAt: seen ? seen.toISOString() : null,
+    budgetUsd: project.pmBudgetUsd,
+    spentUsd: await pmSpentUsd(pool, projectId),
+    pendingPlanId: pending?.id ?? null,
+  };
 }
 
 // ── 반려 ────────────────────────────────────────────────────────────────
