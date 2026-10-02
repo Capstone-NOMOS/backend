@@ -221,6 +221,10 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
 에이전트는 서버 API를 직접 부르지 않는다. `src/bridge/mcp-server.ts`가 노출한 도구(`claim_task`·`submit_artifact`)만 쓰고,
 그 도구가 `src/bridge/nomos-client.ts`를 통해 HTTP로 서버를 부른다.
 
+- **헤드리스 권한**: `--permission-mode acceptEdits`(작업 폴더 안 편집 자동 승인, settings.json deny가 여전히 이긴다) +
+  셸은 `ALLOWED_BASH_PREFIXES`(git·시험 실행)만. 없으면 모델이 계획만 세우고 "쓰기 권한을 승인해 달라"며 커밋 없이 끝난다(실제로 그랬다).
+  **임의 셸(`Bash`·`Bash(*)`)을 열지 말 것** — 셸로 파일을 쓰면 Edit deny(.env·contracts)를 우회한다.
+  Executor가 작업공간에 쓰는 파일(`.nomos-*`, `.claude/settings.json` 등)은 레포 `info/exclude`에 넣어 모델 커밋에 섞이지 않게 한다(섞이면 V3 FAIL).
 - **`--mcp-config`와 `--strict-mcp-config`는 항상 함께 간다**(`src/bridge/claude-args.ts`). 후자가 빠지면 사용자의
   `~/.claude.json`에 등록된 MCP 서버가 함께 로드되고, GitHub MCP가 살아 있으면 `submit_artifact`를 건너뛰고
   직접 push할 수 있다. 그러면 제출 시점 경로 검증이 아무것도 못 막는다. `tests/bridge-args.test.ts`가 이걸 고정한다.
@@ -318,6 +322,14 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
   사람의 권한 부족은 `TOOL_DENIED`로 남기지 않는다(도구 호출 차단이 아니므로 M5′ 분모가 오염된다).
   노트는 에이전트의 **자기 보고**이므로 검증 결과(`verifications`)를 대체하지 않는다 — 화면에 둘 다 필요하다.
 - 프롬프트 주입은 `read_notes` 호출에 의존하지 않는다(`domain/note/injection.ts`). 서버가 골라 넣는다.
+  고르는 기준: 같은 명세 · **선행의 선행까지**(task_deps를 끝까지 — 직접 선행만 보면 인증 → 스터디 → 통합처럼 건너뛴 결정이 빠졌다) ·
+  **`DECIDED`는 프로젝트 전체**(인증·오류 형식 같은 결정은 기능·레포를 가리지 않는다) · `affects`가 내 쓰기 경로와 겹침.
+- 노트는 **태스크를 시작할 때 브리핑으로 한 번** 들어간다(웹소켓으로 보내지 않는다 — 웹소켓은 태스크 목록만). 실행 중인 모델에 끼워 넣지 않는다:
+  도착 시각에 따라 모델이 본 것이 달라져 리플레이(M6b)가 깨지고, 노트가 채널이 된다.
+- **대신 제출 시점에 확인한다**(`notesRequiringAck`): 관련 노트(브리핑과 같은 선택, 자기 노트·이 태스크 노트 제외)를 전부 `acknowledgedNoteIds`에
+  넣어야 제출을 받는다. 아니면 산출물 없이 409 `NOTES_UNACKNOWLEDGED` + 노트 전문, 이벤트 `NOTES_ACK_REQUIRED`. 시각이 아니라 **전달 여부**로 판정한다 —
+  브리핑으로 받은 노트는 Executor가 작업공간(`.nomos-briefing.json`)에 남기고 MCP `submit_artifact`가 자동으로 넣는다. 그래서 실제 반려는 브리핑 뒤 새 노트가 생겼을 때뿐이다.
+  정책 거부가 아니라 `TOOL_DENIED`로 남기지 않고 재시도 횟수도 올리지 않는다. 보장하는 건 **전달**까지다 — 반영 여부는 검증(V1A·V3)의 몫이다.
 
 ### 명세·태스크 작성 (`domain/authoring`)
 
@@ -359,6 +371,8 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
   두 번 잡아야 했다($3.9). 계획 작성이 거절될 일은 드물다 — 거절되면 `failed(refused)`, 대표가 다시 요청한다. 다시 켜면 `maxCallCost`도 같이 고칠 것.
 - **예산**: 매 호출 전(교정 포함) "누적 + 이번 최대치 > `pm_budget_usd`"면 부르지 않는다. 최대치는 `max_tokens`(기본 32,000) × 출력가 + 입력분 —
   Sonnet 5.5 기준 약 $0.4, 계획 하나(교정 포함 2회) 약 $0.8. 초과 시 설계상 승인 카드가 떠야 하지만 **승인 경로 미구현**이라 409로 거절하고 메시지에 그렇게 적는다.
+- **중계 실패는 $0으로 정산한다**: 아무도 가져가지 않은 timeout(`RelayJobNotTaken`)·노트북의 실패 보고(`RelayWorkerFailed`)는 NOMOS 키로 나간 돈이 없다.
+  최대치로 정산하면 노트북이 꺼져 있던 요청마다 예산이 $0.33씩 깎였다. 가져간 뒤 끊긴 경우만 아래처럼 최대치다.
 - **끊긴 호출**: 호출 직전 최대치를 `plans.inflight_max_cost_usd`에 적고, 시간 제한(`PM_TIMEOUT_MS`)·재시작으로 끊기면 그 값으로 `PM_CALL(interrupted)`을 남긴다.
   재시작 정리(`recoverInterruptedPlans`)는 **`startServer`에서만** 부른다 — migrate 단계에서는 옛 서버가 아직 작업 중일 수 있다.
   상태 전이는 전부 `WHERE status = 'pending'` 조건부라 정리된 계획을 늦게 끝난 작업이 덮어쓰지 못한다.
@@ -381,6 +395,8 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
   바뀌고 나머지 흐름은 같다(`domain/pm/relay.ts`, 대기열은 메모리). 작업은 **그 조직 대표 본인의 에이전트만** 가져간다(`GET /pm/jobs/next`) —
   작업에 프로젝트 맥락이 들어 있고 결과가 곧 초안이다. 아무도 안 가져가면 `PM_TIMEOUT_MS`로 `failed(timeout)`. 개인 구독을 여러 사용자의 PM으로
   쓰지 말 것 — 운영은 API 모드(기본)다. 워커는 지침을 파일·프롬프트를 stdin으로 넘긴다(Windows 명령줄 32k자 제한).
+- **PM 지침의 선행(dependsOn)**: 계약만 보고 만들 수 있으면 걸지 않는다(병행). 상대가 구현하며 정할 것·실제 동작하는 상대 API에 기대면 건다.
+  계약을 먼저 정해야 하는데 명세에 다 못 적으면 "계약 확정"(DECIDED 노트) 태스크로 쪼개고 상대는 거기에만 건다. 선행을 거는 것 = 그 결과와 노트를 받고 시작한다는 뜻이다.
 - **PM은 시험지(spec_tests)를 쓰지 않는다.** 명세 content에 계약(API: 메서드·경로·상태코드·응답 필드 / 화면: 경로·동작·문구)과 EARS 수용 기준을 쓰고,
   태스크로 어느 레포·역할에 보낼지를 정하는 데 집중한다. 실제로 써 보니 시험지는 시험 데이터·인증·서버 기동을 아무도 마련하지 않는 상태에서
   추측(`LEADER_TOKEN`, `localStorage['token']`)으로 채워졌고, 출력 토큰의 대부분을 차지했다. 그 코드가 팀원 노트북에서 실행되기도 한다.

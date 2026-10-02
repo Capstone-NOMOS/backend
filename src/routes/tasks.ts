@@ -52,6 +52,8 @@ const submitBodySchema = z.object({
     .regex(/^[0-9a-f]{7,40}$/, 'commitSha must be a lowercase hex sha'),
   // 빈 제출은 받지 않는다 — 바꾼 게 없으면 경로 검증할 대상도 없다.
   changedPaths: z.array(z.string().min(1)).min(1).max(1000),
+  // 확인한 인계 노트 id. 관련 노트를 다 확인하지 않았으면 409 NOTES_UNACKNOWLEDGED(details에 노트 전문).
+  acknowledgedNoteIds: z.array(z.string().uuid()).max(200).optional(),
 });
 
 // POST /api/tasks/:taskId/artifacts — MCP 도구 submit_artifact의 서버 쪽.

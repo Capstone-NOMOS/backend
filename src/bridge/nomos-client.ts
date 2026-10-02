@@ -65,7 +65,7 @@ export class NomosClient {
 
   async submitArtifact(
     taskId: string,
-    input: { commitSha: string; changedPaths: string[] },
+    input: { commitSha: string; changedPaths: string[]; acknowledgedNoteIds?: string[] },
   ): Promise<Record<string, unknown>> {
     return (await this.request('POST', `/api/tasks/${taskId}/artifacts`, input)) as Record<string, unknown>;
   }

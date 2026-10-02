@@ -20,6 +20,7 @@ import { writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
+import { writeBriefingNotes } from '../bridge/briefing-notes.js';
 import { buildMcpConfig } from '../bridge/claude-args.js';
 import {
   credentialsPath,
@@ -65,6 +66,7 @@ type Briefing = {
   task: { id: string; title: string; teamRole: string | null; branchName: string | null };
   repo: { fullName: string; defaultBranch: string; cloneUrl?: string | null };
   spec: { featureKey: string; title: string; content: string } | null;
+  notes: { id: string }[];
   notesBlock: string;
   writablePaths: { pathPattern: string }[];
   claudeSettings: unknown;
@@ -89,6 +91,8 @@ async function handleTask(client: NomosClient, projectId: string, task: TaskSumm
     policyHash: briefing.policyHash,
   });
   log(`작업공간 ${workspace.dir} (브랜치 ${workspace.branch})`);
+  // 프롬프트에 넣는 노트 = 제출 때 "받은 노트"로 함께 보낼 노트. MCP 서버(submit_artifact)가 읽는다.
+  writeBriefingNotes(workspace.dir, task.id, (briefing.notes ?? []).map((n) => n.id));
 
   if (workspace.createdBranch) {
     await client.reportBranch(task.id, workspace.branch);

@@ -189,6 +189,9 @@ describe('중계 모드 — 서버 → 대표 노트북 → 서버', () => {
     expect(plan.status).toBe('failed');
     expect(plan.error!.reason).toBe('api_error');
     expect(plan.error!.detail!.message).toContain('Not logged in');
+    // 노트북이 실패를 보고했다 — NOMOS 키로 나간 돈이 없으니 최대치로 정산하지 않는다.
+    const failedCall = await pool.query(`SELECT token_cost::float8 AS cost, payload FROM events WHERE type = 'PM_CALL'`);
+    expect(failedCall.rows.map((r) => [r.cost, r.payload.interrupted])).toEqual([[0, false]]);
   });
 
   it('아무도 가져가지 않으면 시간 제한으로 failed(timeout)이고, 대기열에서도 빠진다', async () => {
@@ -200,6 +203,9 @@ describe('중계 모드 — 서버 → 대표 노트북 → 서버', () => {
 
     const plan = await getPlan(w, (req.body.data as unknown as { id: string }).id);
     expect(plan).toMatchObject({ status: 'failed', error: { reason: 'timeout' } });
+    // 아무도 가져가지 않았다 — 모델이 돌지 않았으니 비용 0(노트북이 꺼져 있던 요청마다 예산이 깎이지 않게).
+    const untaken = await pool.query(`SELECT token_cost::float8 AS cost FROM events WHERE type = 'PM_CALL'`);
+    expect(untaken.rows.map((r) => r.cost)).toEqual([0]);
     expect(await worker.nextPmJob()).toBeNull();
   });
 
