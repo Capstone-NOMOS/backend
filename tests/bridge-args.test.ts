@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { allowedToolNames, buildClaudeArgs, buildMcpConfig } from '../src/bridge/claude-args.js';
+import { allowedBashRules, allowedToolNames, buildClaudeArgs, buildMcpConfig } from '../src/bridge/claude-args.js';
 
 const OPTIONS = {
   prompt: '태스크 T-042를 구현하세요',
@@ -30,7 +30,17 @@ describe('MCP 격리', () => {
       'mcp__nomos__submit_artifact',
       'mcp__nomos__publish_note',
       'mcp__nomos__read_notes',
+      ...allowedBashRules(),
     ]);
+  });
+
+  it('파일 편집은 자동 승인(acceptEdits), 셸은 커밋·시험 명령 접두사만 — 임의 셸은 Edit deny를 우회한다', () => {
+    const args = buildClaudeArgs(OPTIONS);
+    expect(args[args.indexOf('--permission-mode') + 1]).toBe('acceptEdits');
+    const bash = args[args.indexOf('--allowedTools') + 1]!.split(',').filter((t) => t.startsWith('Bash'));
+    expect(bash).toContain('Bash(git commit:*)');
+    // 접두사 없는 Bash·와일드카드 Bash는 없다.
+    for (const rule of bash) expect(rule, rule).toMatch(/^Bash\([a-z][a-z -]+:\*\)$/);
   });
 
   it('도구 이름은 설정의 서버 이름에서 파생된다', () => {
