@@ -823,7 +823,7 @@ flowchart LR
 | VERIFYING | FAIL / FORBIDDEN | IN_PROGRESS | 재시도 카운터 &lt; 3 |
 | VERIFYING | FAIL / FORBIDDEN | ESCALATED | 재시도 카운터 ≥ 3 |
 | AWAITING_APPROVAL | APPROVE | DONE | HUMAN 승인, 또는 PM_REVIEW에서 반려 없음 |
-| AWAITING_APPROVAL | REJECT | IN_PROGRESS | 반려 사유 전달 |
+| AWAITING_APPROVAL | REJECT | READY | 반려 사유는 다음 시도의 브리핑(`lastRejection`)으로. 재시도 +1, 3회째 ESCALATED. IN_PROGRESS가 아닌 이유: 제출 뒤 에이전트 실행은 이미 끝나 있어 IN_PROGRESS를 이어받을 주체가 없다. 다음 시도는 같은 태스크 브랜치에서 이어서 고친다 |
 | IN_PROGRESS | DISPUTE | BLOCKED | evidence 스키마 유효, `blocked_reason=DISPUTE` |
 | IN_PROGRESS | QUESTION | BLOCKED | `ask_principal` 호출, `blocked_reason=QUESTION` |
 | IN_PROGRESS | WAIT_DEPENDENCY | BLOCKED | `blocked_reason=DEPENDENCY` |
@@ -1038,6 +1038,9 @@ MCP를 껐다고 안심하면 안 됩니다. 나중에 다시 켤 수도 있고 
 | V1A 스펙 대조 | 산출물의 API 정의가 LOCKED yaml과 일치하는가 | 서버 | Spectral 등 | CONTRACT_VIOLATION |
 | V1B 실제 응답 | dev 배포 주소(`repos.dev_base_url`)를 실제로 호출해 계약과 대조 | **서버** | schemathesis 등 | CONTRACT_VIOLATION |
 | V2 테스트 | G1에 잠긴 시험지(`spec_tests`, EARS 수용기준에서 생성) 통과 | 브릿지 | vitest | TEST_FAILED |
+
+> **구현 결정(2026-10): 내장 PM은 시험지를 만들지 않는다.** PM 명세는 `tests: []`이고 버그가 아니다. 그 태스크의 V2는
+> `SKIPPED`("잠긴 spec_tests가 없다")로 기록되어 통과로 세지 않는다. 이유와 되살리는 방법은 CLAUDE.md "내장 PM" 절.
 | V3 권한 | **diff의 모든 경로가 소유 범위 안인가, 비밀 파일이 없는가** | 서버 | `git diff --name-only` + `resolveRule()` | 🔒 scope:violation / secret:touch → 즉시 반려 |
 | V4 품질 | 린트, 타입체크, 포맷 | 브릿지 | eslint / tsc | LINT_FAILED |
 

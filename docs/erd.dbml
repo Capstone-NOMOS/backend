@@ -609,9 +609,11 @@ Table disputes {
 Table approvals {
   id           uuid        [pk, default: `gen_random_uuid()`]
   project_id   uuid        [not null]
-  gate         text        [not null, note: 'G1 | G2 | G3 | ACTION']
-  action_key   text        [note: 'gate=ACTION일 때']
-  subject_id   uuid        [note: 'task_id 또는 contract_id']
+  gate         text        [not null, note: 'G1 | G2 | G3 | ACTION. ★ 015: 지금은 ACTION만 쓴다']
+  action_key   text        [note: '비워 둔다 — ACTION은 걸린 행동 키가 여럿이라 payload.triggeredActions에 둔다']
+  subject_id   uuid        [not null, note: 'task_id 또는 contract_id']
+  artifact_id  uuid        [note: '★ 015: ACTION의 승인 대상 산출물']
+  gate_mode    text        [note: '★ 015: ACTION의 판정 HUMAN | PM_REVIEW (PM_REVIEW는 PM 리뷰가 생길 때까지 대표가 대신 처리)']
   payload      jsonb       [not null, note: '승인 카드 내용. G3 피드백 분류도 여기']
   decision     text        [note: 'APPROVE | REJECT. NULL이면 대기']
   decided_by   uuid
@@ -620,10 +622,19 @@ Table approvals {
   decided_at   timestamptz
 
   indexes {
-    (project_id, decision)
+    (project_id, decision, requested_at)
   }
   Note: '''
-  HUMAN 판정 = 승인 카드. decided_by는 대표 또는 해당 역할의 사람
+  HUMAN 판정 = 승인 카드. ★ 015 구현: decided_by는 대표만(해당 역할의 사람 = 제출한 에이전트의 주인이라 자기 승인이 된다).
+  대표가 자기 에이전트의 산출물을 승인하면 APPROVAL_RESULT에 selfApproval: true
+  ★ 015 제약(DBML로 표현 불가)
+    approvals_gate_chk          gate IN ('G1','G2','G3','ACTION')
+    approvals_decision_chk      decision IS NULL OR decision IN ('APPROVE','REJECT')
+    approvals_decided_chk       (decision IS NULL) = (decided_at IS NULL) AND (decision IS NULL) = (decided_by IS NULL)
+    approvals_reject_reason_chk decision IS DISTINCT FROM 'REJECT' OR reason 1~2000자
+    approvals_action_chk        gate <> 'ACTION' OR (artifact_id IS NOT NULL AND gate_mode IN ('HUMAN','PM_REVIEW'))
+    uq_approvals_pending_subject UNIQUE (subject_id) WHERE decision IS NULL   -- 대상당 대기 1개
+  백필: 015 이전부터 AWAITING_APPROVAL인 태스크는 최신 산출물로 카드를 만들고 payload.backfilled = true
   PM_REVIEW도 여기 — PM의 결정은 decided_by NULL, decision은 REJECT만 가능
   PM이 반려하지 않으면 통과 여부는 AUTO 검증이 결정 (PM이 APPROVE로 게이트를 열 수 없음)
   '''
@@ -786,6 +797,7 @@ Ref: disputes.blocking_task_id > tasks.id
 
 Ref: approvals.project_id > projects.id [delete: cascade]
 Ref: approvals.decided_by > users.id
+Ref: approvals.artifact_id > artifacts.id
 Ref: approvals.action_key > action_catalog.action_key
 
 Ref: events.org_id > organizations.id

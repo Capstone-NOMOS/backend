@@ -30,9 +30,13 @@ function git(repoPath: string, args: string[]): string {
 }
 
 function branchExists(repoPath: string, branch: string): boolean {
+  return refExists(repoPath, `refs/heads/${branch}`);
+}
+
+function refExists(repoPath: string, ref: string): boolean {
   try {
     // stdio를 삼킨다 — 없는 브랜치면 git이 stderr에 fatal을 찍어 로그를 더럽힌다.
-    execFileSync('git', ['rev-parse', '--verify', `refs/heads/${branch}`], {
+    execFileSync('git', ['rev-parse', '--verify', '--quiet', ref], {
       cwd: repoPath,
       stdio: 'ignore',
     });
@@ -70,9 +74,14 @@ export function prepareWorkspace(input: PrepareInput): PreparedWorkspace {
 
   if (!existsSync(dir)) {
     mkdirSync(path.dirname(dir), { recursive: true });
+    // 재시도(검증 실패·반려)는 같은 태스크 브랜치에서 **이어서** 고친다. 이 노트북에 브랜치가 없어도(다른 노트북에서 했거나 새로 받은 클론)
+    // origin에 있으면 거기서 이어 간다 — 기본 브랜치에서 새로 따면 이전 작업이 안 보이고, 제출 때 push가 갈라진 이력으로 거부된다.
+    const remote = `refs/remotes/origin/${branch}`;
     const args = existed
       ? ['worktree', 'add', dir, branch]
-      : ['worktree', 'add', '-b', branch, dir, input.baseBranch];
+      : refExists(input.repoPath, remote)
+        ? ['worktree', 'add', '-b', branch, dir, `origin/${branch}`]
+        : ['worktree', 'add', '-b', branch, dir, input.baseBranch];
     git(input.repoPath, args);
   }
 

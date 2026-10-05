@@ -67,6 +67,7 @@ type Briefing = {
   repo: { fullName: string; defaultBranch: string; cloneUrl?: string | null };
   spec: { featureKey: string; title: string; content: string } | null;
   notes: { id: string }[];
+  lastRejection: { reason: string; commitSha: string | null } | null;
   notesBlock: string;
   writablePaths: { pathPattern: string }[];
   claudeSettings: unknown;

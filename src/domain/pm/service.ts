@@ -26,6 +26,7 @@ import { costOfAttempts, estimateInputTokens, maxCallCost, type AttemptUsage } f
 import { buildUserPrompt, PM_SYSTEM_PROMPT } from './prompt.js';
 import {
   chainHasAppliedPlan,
+  countChainRevisions,
   findPendingPlan,
   findPlan,
   findProjectForPm,
@@ -167,6 +168,17 @@ async function openRequest(
     }
     if (await findPendingPlan(tx, projectId)) {
       throw new AppError('PM_PLAN_IN_PROGRESS', 'a PM plan is already being drafted for this project; wait for it to finish');
+    }
+    // 수정 요청 한도 — 같은 잠금 안에서 센다(동시에 두 번 눌러 한도를 넘지 못하게). 새 계획 요청(새 체인)은 0부터다.
+    if (input.parent) {
+      const used = await countChainRevisions(tx, input.parent.rootPlanId);
+      if (used >= env.PM_MAX_REVISIONS) {
+        throw new AppError(
+          'PLAN_REVISION_LIMIT',
+          `this plan has already been revised ${used} time(s) (limit ${env.PM_MAX_REVISIONS}); start a new plan request instead`,
+          { limit: env.PM_MAX_REVISIONS, used },
+        );
+      }
     }
     const project = (await findProjectForPm(tx, projectId))!;
     await assertWithinBudget(tx, project, await nextCallMaxCost(tx, project, input.instruction, input.parent?.draft ?? undefined));

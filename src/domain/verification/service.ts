@@ -1,6 +1,8 @@
 import type { PoolClient } from 'pg';
 import { withTransaction, type Queryable } from '../../config/db.js';
 import { tasksChanged } from '../dispatch/tasks-changed.js';
+import { MAX_RETRIES } from '../task/retry.js';
+import { requestActionApproval } from '../approval/service.js';
 import { AppError } from '../../errors.js';
 import { logger } from '../../config/logger.js';
 import { appendEvent } from '../events/append.js';
@@ -34,19 +36,13 @@ import {
 // 비교 대상인 contracts.schema_yaml을 담을 테이블이 아직 없을 뿐이다.
 const V1A_SKIP_REASON = 'contracts 테이블 미구현 — ⑦ 이후 가능';
 
-// AWAITING_APPROVAL에서 나올 길이 아직 없다. approvals 테이블은 ERD에만 있고 승인·반려 API도
-// 없으므로, 이 상태에 들어간 태스크는 사람이 DB를 직접 고치기 전까지 멈춰 있다.
-// 조용히 멈추면 "왜 안 도나"를 로그에서 찾을 수 없어 경고·이벤트·응답 세 곳에 같은 문장을 남긴다.
-// 승인 API가 생기면 이 상수와 사용처를 지우는 것이 그 작업의 체크리스트다.
-const APPROVAL_PATH_MISSING =
-  '승인 경로 미구현 — approvals 테이블과 승인 API가 없어 이 태스크는 AWAITING_APPROVAL에서 더 진행되지 않는다';
-
 // 이 세 단계가 전부 보고돼야 태스크가 끝난다.
 // V1A·V1B가 빠진 이유는 "선택"이기 때문이다 — 계약이 없는 태스크, 배포 주소가 없는 레포가 정상이다.
 // 대신 SKIPPED를 PASS로 적지 않으므로 나중에 무엇이 실제로 검증됐는지 셀 수 있다.
 const REQUIRED_STAGES: VerificationStage[] = ['V3', 'V2', 'V4'];
 
-export const MAX_RETRIES = 3;
+// 상한은 반려와 같이 쓴다 — task/retry.ts 한 곳.
+export { MAX_RETRIES } from '../task/retry.js';
 
 export type StageOutcome = { stage: VerificationStage; result: VerificationResult };
 
@@ -58,8 +54,8 @@ export type VerificationSummary = {
   outcome: string;
   taskState: TaskState;
   retryCount: number;
-  // 결론은 났지만 그 상태에서 나올 경로가 아직 없을 때의 안내. 지금은 AWAITING_APPROVAL 하나뿐이다.
-  notice?: string;
+  // AWAITING_APPROVAL로 갔으면 그 승인 카드(대표가 승인·반려한다).
+  approvalId?: string;
 };
 
 type Plan = {
@@ -193,14 +189,14 @@ async function evaluateV1B(plan: Plan): Promise<VerificationInput> {
 
 // ── 결론 ──────────────────────────────────────────────────────────────────
 
-async function settle(tx: Queryable, artifact: Artifact, task: Task): Promise<VerificationSummary> {
+async function settle(tx: PoolClient, ctx: EventContext, artifact: Artifact, task: Task): Promise<VerificationSummary> {
   const all = await listVerifications(tx, artifact.id);
   const stages: StageOutcome[] = all.map((v) => ({ stage: v.stage, result: v.result }));
   const summary = (
     outcome: string,
     taskState: TaskState,
     retryCount: number,
-    notice?: string,
+    approvalId?: string,
   ): VerificationSummary => ({
     artifactId: artifact.id,
     attempt: artifact.attempt,
@@ -208,7 +204,7 @@ async function settle(tx: Queryable, artifact: Artifact, task: Task): Promise<Ve
     outcome,
     taskState,
     retryCount,
-    ...(notice === undefined ? {} : { notice }),
+    ...(approvalId === undefined ? {} : { approvalId }),
   });
 
   // 이미 결론이 난 뒤 늦게 도착한 보고는 상태를 건드리지 않는다.
@@ -233,12 +229,9 @@ async function settle(tx: Queryable, artifact: Artifact, task: Task): Promise<Ve
   await markTaskState(tx, task.id, next);
   if (next === 'DONE') return summary(next, next, task.retryCount);
 
-  logger.warn(APPROVAL_PATH_MISSING, {
-    taskId: task.id,
-    artifactId: artifact.id,
-    gateMode: artifact.gateMode,
-  });
-  return summary(next, next, task.retryCount, APPROVAL_PATH_MISSING);
+  // 승인 카드를 같은 트랜잭션에서 만든다 — 대기 상태인데 카드가 없는 순간이 생기지 않게. 대표가 승인(DONE)·반려(READY)한다.
+  const approvalId = await requestActionApproval(tx, ctx, { task, artifact, stages });
+  return summary(next, next, task.retryCount, approvalId);
 }
 
 type EventContext = {
@@ -270,7 +263,9 @@ async function recordSummary(
       outcome: summary.outcome,
       taskState: summary.taskState,
       retryCount: summary.retryCount,
-      ...(summary.notice === undefined ? {} : { notice: summary.notice }),
+      ...(summary.approvalId === undefined ? {} : { approvalId: summary.approvalId }),
+      // 재시도 원인 — 반려(APPROVAL_RESULT의 REJECTED)와 retry_count를 같이 쓰므로 지표를 가를 수 있게 남긴다.
+      ...(summary.outcome === 'RETRY' || summary.outcome === 'ESCALATED' ? { retryCause: 'VERIFICATION_FAILED' as const } : {}),
     },
   });
 }
@@ -331,7 +326,7 @@ export async function runServerVerifications(
     for (const r of results) await insertVerification(tx, r);
     // 결론을 내리기 직전에 태스크를 다시 읽는다 — 위 I/O 동안 상태가 바뀌었을 수 있다.
     const task = (await findTaskById(tx, plan.task.id))!;
-    const summary = await settle(tx, plan.artifact, task);
+    const summary = await settle(tx, ctx, plan.artifact, task);
     await recordSummary(tx, ctx, task, summary);
     return summary;
   });
@@ -424,7 +419,7 @@ async function recordBridgeVerificationTx(
       );
     }
 
-    const summary = await settle(tx, artifact, task);
+    const summary = await settle(tx, ctx, artifact, task);
     await recordSummary(tx, ctx, task, summary);
     return summary;
   });
