@@ -1,4 +1,5 @@
 import { pool, withTransaction } from '../../config/db.js';
+import { presenceOf } from './presence.js';
 import { env } from '../../config/env.js';
 import { AppError } from '../../errors.js';
 import type { Queryable } from '../../config/db.js';
@@ -146,6 +147,9 @@ export type OrgAgentView = {
   nickname: string | null;
   // 처음 CLI로 연결한 시각. 행이 있다는 것 자체가 "연결한 적 있음"이다.
   connectedAt: string;
+  // 지금 접속해 있는가(태스크 스트림이 열려 있거나 최근 60초 안에 요청). 메모리 값이라 서버 재시작 직후에는 false다.
+  online: boolean;
+  lastSeenAt: string | null;
   // 진행 중(completed·aborted가 아닌) 프로젝트 배정. 에이전트는 한 번에 한 프로젝트만 맡는다.
   assignment: { projectId: string; teamRole: string } | null;
 };
@@ -158,6 +162,8 @@ export async function listOrgAgents(orgId: string): Promise<OrgAgentView[]> {
     userId: r.userId,
     nickname: r.nickname,
     connectedAt: r.connectedAt,
+    // 접속 상태는 메모리(presence.ts) — 태스크 스트림이 열려 있거나 최근 60초 안에 요청이 있었으면 online.
+    ...presenceOf(r.agentId),
     assignment:
       r.activeProjectId === null || r.activeTeamRole === null
         ? null

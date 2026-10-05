@@ -197,18 +197,31 @@ export async function findReposWithoutOwnership(db: Queryable, repoIds: string[]
   return rows.map((r) => r.id as string);
 }
 
-// 진행 중(planning·active) 프로젝트가 이미 쓰고 있는 레포. 겹치면 경로 소유권이 두 프로젝트에 걸린다.
-export async function findReposInActiveProjects(
-  db: Queryable,
-  repoIds: string[],
-): Promise<{ repoId: string; projectId: string }[]> {
+// 레포를 "사용 중"으로 잡고 있는 프로젝트 상태 — 끝나지 않은 프로젝트(completed·aborted가 아닌 것).
+// halted(정지)도 포함한다: 재개될 수 있으므로, 그 사이 레포를 다른 프로젝트에 주면 재개 뒤 두 프로젝트가 한 레포를 쓴다.
+// **레포 목록의 activeProjectId와 프로젝트 생성의 REPO_IN_ACTIVE_PROJECT가 이 한 벌을 쓴다** — 둘이 갈리면
+// 목록에서는 고를 수 있는데 저장할 때 막히는 일이 생긴다.
+export const REPO_HOLDING_STATUSES = ['planning', 'active', 'halted'] as const;
+
+export type RepoUsage = { repoId: string; fullName: string; projectId: string; projectName: string; projectStatus: string };
+
+export async function findRepoUsage(db: Queryable, repoIds: string[]): Promise<RepoUsage[]> {
   const { rows } = await db.query(
-    `SELECT pr.repo_id, pr.project_id FROM project_repos pr
+    `SELECT pr.repo_id, r.full_name, p.id AS project_id, p.name AS project_name, p.status
+       FROM project_repos pr
        JOIN projects p ON p.id = pr.project_id
-      WHERE pr.repo_id = ANY($1::uuid[]) AND p.status IN ('planning', 'active')`,
-    [repoIds],
+       JOIN repos r ON r.id = pr.repo_id
+      WHERE pr.repo_id = ANY($1::uuid[]) AND p.status = ANY($2::text[])
+      ORDER BY r.full_name, p.created_at`,
+    [repoIds, [...REPO_HOLDING_STATUSES]],
   );
-  return rows.map((r) => ({ repoId: r.repo_id, projectId: r.project_id }));
+  return rows.map((r) => ({
+    repoId: r.repo_id as string,
+    fullName: r.full_name as string,
+    projectId: r.project_id as string,
+    projectName: r.project_name as string,
+    projectStatus: r.status as string,
+  }));
 }
 
 export async function listProjectRepos(db: Queryable, projectId: string): Promise<RepoRow[]> {

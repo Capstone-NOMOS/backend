@@ -214,6 +214,8 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
   - 피싱 대비: 승인 화면에 에이전트 이름·**요청 IP**·시각을 보여 주고, CLI는 승인 뒤 **연결된 계정**(`account`)을 출력한다(남이 내 코드를 승인한 경우를 드러낸다).
     요청 IP를 위해 `app.set('trust proxy', 1)` — Caddy 한 단만 믿는다. 늘리거나 `true`로 바꾸면 클라이언트가 끼운 X-Forwarded-For를 믿게 된다.
   - userCode는 자음 20자 8자리(약 2.5×10¹⁰), 대소문자·하이픈 무시. 서버에 rate limit이 아직 없다 — 대입 공격은 조합 수와 10분 만료로만 막는다.
+- **에이전트 온라인 상태**(`domain/agent/presence.ts`, 메모리): 태스크 스트림이 열려 있거나 최근 60초 안에 인증된 요청이 있으면 online.
+  인증 통과(`resolveAgentToken`)·웹소켓 연결·pong이 기록한다. DB에 쓰지 않는다(요청마다 UPDATE가 된다). 서버 1대 전제, 재시작 직후에는 offline.
 - 교체 지점은 여전히 `auth.ts` 하나다. 라우트는 `req.user`와 `orgIdOf(req)`만 쓴다. `req.user.orgId`는 조직 가입 전 `null`이므로 조직이 필요한 핸들러는 `orgIdOf(req)`(없으면 403 `NOT_IN_ORG`)를 쓴다.
 
 ### 브릿지와 MCP
@@ -364,6 +366,8 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
   **한 번만** 다시 쓰게 하고, 그래도 틀리면 `failed(invalid)`. 교정 횟수를 늘리지 말 것 — 비용과 비결정성만 는다.
 - **응답은 `stop_reason`부터 본다** → JSON → 형식(zod) → 도메인 검증. `refusal`은 `refused`, `max_tokens`는 `truncated` — PM이 틀린 게 아니라
   교정하지 않는다. 실패 사유는 `error_reason`(refused·truncated·timeout·invalid·restart·budget·api_error)이고 상태에 섞지 않는다.
+- **수정 요청은 한 체인에서 `PM_MAX_REVISIONS`(기본 3)회까지**(원본 요청 제외, 실패한 수정 요청도 센다). 넘으면 409 `PLAN_REVISION_LIMIT`, `details: { limit, used }`.
+  프로젝트 행 잠금 안에서 센다(동시 요청 우회 방지). 새 계획 요청은 새 체인이라 0부터. 중계 모드에서는 API 예산이 상한 역할을 못 해 서버가 센다.
 - **수정 요청과 교정은 새 단발 호출이다**(이전 초안 + 피드백/위반). 대화를 이어 붙이지 않으므로 거절된 턴이 섞이지 않는다.
 - **비용**: 호출마다 `PM_CALL` 이벤트(`on_behalf_of: system:pm`, `events.token_cost` USD). `usage.iterations`의 **시도마다** 그 모델 가격으로 더한다
   캐시 쓰기(입력 × 1.25)와 읽기는 따로 센다. 가격표는 `pm/pricing.ts` 한 곳.
@@ -410,7 +414,9 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
   정책 사본에는 `lock_key`도 함께 복사해야 007의 복합 FK가 🔒 위조를 막는다.
 - `policy_hash`는 NOT NULL인데 계산하려면 정책 사본이 먼저 있어야 한다. 그래서 자리값 `'pending'`으로 INSERT한 뒤
   같은 트랜잭션에서 `recomputeProjectPolicyHash`가 덮어쓴다 — 자리값이 트랜잭션 밖으로 나가면 안 된다.
-- **같은 레포를 두 활성 프로젝트(`planning`·`active`)가 쓸 수 없다.** DB 제약으로 표현할 수 없어 서비스가 막는다(409).
+- **같은 레포를 두 진행 중 프로젝트(`planning`·`active`·`halted`)가 쓸 수 없다.** DB 제약으로 표현할 수 없어 서비스가 막는다(409 `REPO_IN_ACTIVE_PROJECT`,
+  `details`에 겹치는 레포 전부). halted도 포함한다 — 재개될 수 있어서다. **판정은 `findRepoUsage` 한 벌**이고 레포 목록의 `activeProjectId`도 같은 함수를 쓴다 —
+  둘이 갈리면 목록에서는 고를 수 있는데 저장할 때 막힌다.
 - **에이전트는 진행 중(completed·aborted가 아닌) 프로젝트를 하나만 맡는다**(409 `AGENT_IN_ANOTHER_PROJECT`). 토큰의 `project_id`가 하나라서
   두 곳에 배정되면 먼저 배정된 쪽은 조용히 못 쓰게 된다. "진행 중"의 정의는 `findAgentMembership`과 같아야 한다.
 - **프로젝트 시작(G1) = `POST /projects/:id/start`**(대표 전용, `startProject`). 이 순간부터 실행이 시작된다.
@@ -450,7 +456,8 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
 
 ### 에러
 
-도메인 코드는 `src/errors.ts`의 `AppError`만 던진다. HTTP 상태는 `STATUS_BY_CODE` 테이블이 code로부터 결정하므로 서비스는 상태 코드를 몰라도 된다. `error-handler`는 항상 마지막에 등록하고, AppError가 아닌 예외는 500으로 감추고 상세는 로그로만 남긴다.
+도메인 코드는 `src/errors.ts`의 `AppError`만 던진다. 상세(`details`)는 `PUBLIC_DETAIL_CODES`에 있는 코드만 응답에 싣고, 배열이든 객체든 `error.details`에 담는다
+(`POLICY_STALE`만 예전 모양대로 `error.reason`으로 펼친다 — 배포된 브릿지가 읽는다). HTTP 상태는 `STATUS_BY_CODE` 테이블이 code로부터 결정하므로 서비스는 상태 코드를 몰라도 된다. `error-handler`는 항상 마지막에 등록하고, AppError가 아닌 예외는 500으로 감추고 상세는 로그로만 남긴다.
 
 **GitHub API 실패가 우리 기능을 멈추면 안 된다.** collaborator 조회가 실패해도 members 목록은 반환된다 — try/catch로 감싸고 `isCollaborator` 필드를 **생략**한다. `false`로 채우지 말 것: "확인 안 됨"과 "권한 없음"은 다르다. 토큰이 없을 때 레포 목록 조회는 500이 아니라 빈 배열 + 경고 로그를 반환한다.
 

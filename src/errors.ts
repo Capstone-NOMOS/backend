@@ -49,6 +49,7 @@ export type ErrorCode =
   | 'PM_PLAN_IN_PROGRESS'
   | 'PLAN_NOT_FOUND'
   | 'PLAN_NOT_APPLICABLE'
+  | 'PLAN_REVISION_LIMIT'
   | 'PM_JOB_NOT_FOUND'
   | 'PM_RELAY_DISABLED'
   | 'PROJECT_NOT_FOUND'
@@ -131,6 +132,8 @@ const STATUS_BY_CODE: Record<ErrorCode, number> = {
   PLAN_NOT_FOUND: 404,
   // 적용할 수 없는 상태(ready가 아님)이거나, 같은 수정 체인에서 이미 적용된 계획이 있다.
   PLAN_NOT_APPLICABLE: 409,
+  // 409 — 같은 수정 체인에서 수정 요청 한도(PM_MAX_REVISIONS)를 다 썼다. details: { limit, used }. 새 계획 요청은 0부터 다시 센다.
+  PLAN_REVISION_LIMIT: 409,
   // 중계 모드의 작업. 끝났거나 시간 제한에 걸렸거나 서버가 재시작돼 사라졌다.
   PM_JOB_NOT_FOUND: 404,
   // 서버가 중계 모드가 아니다(PM_PROVIDER=api) — pm-worker가 할 일이 없다.

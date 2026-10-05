@@ -3,6 +3,7 @@ import { env } from '../../config/env.js';
 import { AppError } from '../../errors.js';
 import { appendEvent } from '../events/append.js';
 import { recomputePolicyHashesForRepo } from '../policy/policy-hash.js';
+import { findRepoUsage } from '../project/repository.js';
 import { validateCloneUrl } from './clone-url.js';
 import { validatePattern } from './glob.js';
 import {
@@ -280,10 +281,24 @@ export async function updateRepoSettings(
 
 // GET /api/orgs/:orgId/repos — 연결된 레포 목록(조직 멤버 누구나. 연결 자체가 멤버에게 열려 있다).
 // ownershipAssigned=false인 레포는 프로젝트에 넣으면 422 REPO_OWNERSHIP_NOT_SET이 난다 — 화면이 미리 알려줄 수 있게.
-export type RepoListItem = RepoSettings & { ownershipAssigned: boolean };
+export type RepoListItem = RepoSettings & {
+  ownershipAssigned: boolean;
+  activeProjectId: string | null;
+  activeProjectName: string | null;
+};
 
 export async function listRepos(orgId: string): Promise<RepoListItem[]> {
   const repos = await listReposByOrg(pool, orgId);
   const owned = await listRepoIdsWithOwnership(pool, orgId);
-  return repos.map((repo) => ({ ...toSettings(repo), ownershipAssigned: owned.has(repo.id) }));
+  // 진행 중 프로젝트가 쓰고 있는가 — 프로젝트 생성의 REPO_IN_ACTIVE_PROJECT와 같은 판정(findRepoUsage)이다.
+  const usage = new Map((await findRepoUsage(pool, repos.map((r) => r.id))).map((u) => [u.repoId, u]));
+  return repos.map((repo) => {
+    const used = usage.get(repo.id);
+    return {
+      ...toSettings(repo),
+      ownershipAssigned: owned.has(repo.id),
+      activeProjectId: used?.projectId ?? null,
+      activeProjectName: used?.projectName ?? null,
+    };
+  });
 }

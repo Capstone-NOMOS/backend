@@ -9,6 +9,7 @@ import {
   unassignMember,
   type Actor,
 } from '../domain/project/service.js';
+import { listProjectEventsForUser } from '../domain/events/query.js';
 import { TEAM_ROLES } from '../domain/roles.js';
 import { AppError } from '../errors.js';
 import { authenticate, orgIdOf, requireRepresentative, requireSameOrg } from '../middleware/auth.js';
@@ -110,6 +111,29 @@ projectsRouter.post(
   async (req, res) => {
     const { projectId } = req.params as z.infer<typeof projectIdParamsSchema>;
     res.status(200).json({ data: await startProject(actorOf(req), projectId) });
+  },
+);
+
+// GET /api/projects/:projectId/events — 이벤트 로그(최신순, id 커서). 대표 또는 이 프로젝트에 배정된 에이전트의 주인.
+const eventsQuerySchema = z.object({
+  before: z.string().regex(/^\d+$/, 'before must be an event id').optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  // 쉼표로 여러 개: types=TASK_CLAIMED,NOTE_PUBLISHED
+  types: z
+    .string()
+    .regex(/^[A-Z_]+(,[A-Z_]+)*$/, 'types must be comma-separated event types')
+    .transform((v) => v.split(','))
+    .optional(),
+});
+
+projectsRouter.get(
+  '/projects/:projectId/events',
+  validate({ params: projectIdParamsSchema, query: eventsQuerySchema }),
+  authenticate,
+  async (req, res) => {
+    const { projectId } = req.params as z.infer<typeof projectIdParamsSchema>;
+    const query = req.query as unknown as z.infer<typeof eventsQuerySchema>;
+    res.status(200).json({ data: await listProjectEventsForUser(actorOf(req), projectId, query) });
   },
 );
 
