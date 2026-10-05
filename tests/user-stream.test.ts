@@ -165,7 +165,10 @@ describe('연결과 인증', () => {
     const agent = await open('/api/agents/stream');
     agent.ws.send(JSON.stringify({ type: 'auth', token: accessToken }));
     await agent.waitFor((m) => m.type === 'ready');
+    // 서버가 연결 직후 스냅샷을 계산한다 — 받기 전에 닫으면 그 조회가 다음 테스트의 TRUNCATE와 교착한다(CI에서 실제로 났다).
+    await agent.waitFor((m) => m.type === 'tasks');
     agent.close();
+    await quiet();
 
     const unknown = new WebSocket(`${wsBase}/api/nope`);
     await new Promise<void>((resolve) => unknown.once('error', () => resolve()));
