@@ -144,6 +144,34 @@ components:
             이 레포를 쓰고 있는 **진행 중 프로젝트**(planning·active·halted — completed·aborted가 아닌 것). null이 아니면 새 프로젝트에 넣을 수 없다
             (프로젝트 생성의 409 REPO_IN_ACTIVE_PROJECT와 같은 판정). halted도 포함한다 — 재개될 수 있어서다.
         activeProjectName: { type: string, nullable: true, description: 'activeProjectId 프로젝트의 이름' }
+    Approval:
+      type: object
+      required: [id, projectId, projectName, gate, taskId, taskTitle, taskState, artifactId, gateMode, payload, decision, decidedBy, reason, requestedAt, decidedAt]
+      properties:
+        id: { type: string, format: uuid }
+        projectId: { type: string, format: uuid }
+        projectName: { type: string }
+        gate: { type: string, enum: [G1, G2, G3, ACTION], description: '지금은 ACTION(정책 판정이 HUMAN·PM_REVIEW인 산출물)만 생긴다' }
+        taskId: { type: string, format: uuid }
+        taskTitle: { type: string, nullable: true, description: '지금 태스크 제목(카드의 스냅샷은 payload.taskTitle)' }
+        taskState: { type: string, nullable: true, description: '지금 태스크 상태' }
+        artifactId: { type: string, format: uuid, nullable: true }
+        gateMode:
+          type: string
+          nullable: true
+          enum: [HUMAN, PM_REVIEW, null]
+          description: 'PM_REVIEW는 PM 리뷰가 아직 없어 대표가 대신 처리한다(이벤트에 reviewer: human_fallback)'
+        payload:
+          type: object
+          additionalProperties: true
+          description: |
+            요청 시점의 카드 스냅샷 — taskTitle, artifactId, attempt, commitSha, changedPaths, triggeredActions, gateMode, stages, submittedByAgentId.
+            **backfilled: true**면 승인 기능 이전부터 멈춰 있던 태스크라 지금 DB에서 알 수 있는 값만 있다(stages 등 없음) — "정보 일부 없음"을 표시한다.
+        decision: { type: string, enum: [APPROVE, REJECT, null], nullable: true, description: 'null이면 대기 중' }
+        decidedBy: { type: string, format: uuid, nullable: true }
+        reason: { type: string, nullable: true, description: '반려 사유(반려는 필수)' }
+        requestedAt: { type: string, format: date-time }
+        decidedAt: { type: string, format: date-time, nullable: true }
     ProjectEvent:
       type: object
       required: [id, type, ts, onBehalfOf, actorAgentId, payload, tokenCost, pathViolation]
@@ -401,7 +429,7 @@ components:
           description: 'PENDING은 아직 보고 안 된 단계가 있음, SETTLED는 이미 결론이 난 뒤에 온 보고'
         taskState: { type: string, enum: [READY, CLAIMED, IN_PROGRESS, VERIFYING, AWAITING_APPROVAL, BLOCKED, ESCALATED, DONE] }
         retryCount: { type: integer }
-        notice: { type: string, description: '결론은 났지만 빠져나올 경로가 없을 때의 안내(지금은 AWAITING_APPROVAL). 없으면 생략' }
+        approvalId: { type: string, format: uuid, description: 'AWAITING_APPROVAL로 갔으면 그 승인 카드 id(대표가 승인·반려). 없으면 생략' }
     SubmittedArtifact:
       description: 'Artifact의 필드 전부 + 서버가 동기로 끝낸 검증 요약(verification)'
       type: object
@@ -624,7 +652,7 @@ components:
         ownerRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true }
     TaskBriefing:
       type: object
-      required: [task, repo, spec, notes, notesBlock, writablePaths, claudeSettings, specTests, policyHash]
+      required: [task, repo, spec, notes, notesBlock, writablePaths, claudeSettings, specTests, policyHash, lastRejection]
       properties:
         task: { $ref: '#/components/schemas/Task' }
         repo:
@@ -651,6 +679,17 @@ components:
                 deny: { type: array, items: { type: string } }
         specTests: { type: array, items: { $ref: '#/components/schemas/SpecTest' } }
         policyHash: { type: string }
+        lastRejection:
+          type: object
+          nullable: true
+          description: '직전 제출이 대표에게 반려됐으면 그 사유. 반려되면 태스크가 READY로 돌아오고 같은 태스크 브랜치에서 이어서 고친다'
+          required: [approvalId, reason, decidedAt, artifactId, commitSha]
+          properties:
+            approvalId: { type: string, format: uuid }
+            reason: { type: string }
+            decidedAt: { type: string, format: date-time }
+            artifactId: { type: string, format: uuid, nullable: true }
+            commitSha: { type: string, nullable: true }
     Error:
       type: object
       required: [error]
@@ -755,6 +794,7 @@ tags:
   - name: 내장 PM
   - name: 태스크·노트
   - name: 검증
+  - name: 승인
 
 paths:
   /auth/signup:
@@ -2173,6 +2213,165 @@ paths:
                   code: PROJECT_START_INVALID
                   message: 'project cannot start: 1 problem(s)'
                   details: [{ where: members.FRONTEND, message: FRONTEND 역할의 태스크가 있는데 배정된 에이전트가 없다 — 시작하면 멤버를 바꿀 수 없으니 먼저 배정한다 }]
+  /orgs/{orgId}/approvals:
+    get:
+      tags: [승인]
+      summary: 조직 승인 대기열 (대표 전용)
+      description: |
+        대시보드 "승인 · 결정 대기"와 받은 편지함. 기본은 대기 중(`status=pending`)만 준다.
+        지금 생기는 카드는 ACTION 하나다 — 검증은 통과했지만 정책 판정이 HUMAN·PM_REVIEW라 태스크가 `AWAITING_APPROVAL`에 멈춘 산출물.
+      security: [{ userToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - { name: status, in: query, required: false, schema: { type: string, enum: [pending, decided, all], default: pending } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+      responses:
+        '200':
+          description: 요청 시각 최신순
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [approvals]
+                    properties:
+                      approvals: { type: array, items: { $ref: '#/components/schemas/Approval' } }
+              example:
+                data:
+                  approvals:
+                    - id: 7a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d
+                      projectId: '{{PROJECT_ID}}'
+                      projectName: 스터디 관리 웹앱 v1
+                      gate: ACTION
+                      taskId: '{{TASK_BE}}'
+                      taskTitle: T-001 참여 신청 API 구현
+                      taskState: AWAITING_APPROVAL
+                      artifactId: 44444444-4444-4444-4444-444444444444
+                      gateMode: HUMAN
+                      payload: { taskTitle: T-001 참여 신청 API 구현, commitSha: a1b2c3d, changedPaths: [migrations/010_x.sql], triggeredActions: ['artifact:submit', 'db:migration'], gateMode: HUMAN, attempt: 1, stages: [{ stage: V3, result: PASS }] }
+                      decision: null
+                      decidedBy: null
+                      reason: null
+                      requestedAt: '2026-10-05T01:00:00.000Z'
+                      decidedAt: null
+  /projects/{projectId}/approvals:
+    get:
+      tags: [승인]
+      summary: 프로젝트 승인 이력
+      description: 볼 수 있는 범위는 태스크·노트와 같다(대표는 전부, 팀원은 배정된 프로젝트). 결정은 대표만 한다.
+      security: [{ userToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - { name: status, in: query, required: false, schema: { type: string, enum: [pending, decided, all], default: pending } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+      responses:
+        '200':
+          description: 요청 시각 최신순
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [approvals]
+                    properties:
+                      approvals: { type: array, items: { $ref: '#/components/schemas/Approval' } }
+              example:
+                data:
+                  approvals:
+                    - id: 7a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d
+                      projectId: '{{PROJECT_ID}}'
+                      projectName: 스터디 관리 웹앱 v1
+                      gate: ACTION
+                      taskId: '{{TASK_BE}}'
+                      taskTitle: T-001 참여 신청 API 구현
+                      taskState: AWAITING_APPROVAL
+                      artifactId: 44444444-4444-4444-4444-444444444444
+                      gateMode: HUMAN
+                      payload: { taskTitle: T-001 참여 신청 API 구현, commitSha: a1b2c3d, changedPaths: [migrations/010_x.sql], triggeredActions: ['artifact:submit', 'db:migration'], gateMode: HUMAN, attempt: 1, stages: [{ stage: V3, result: PASS }] }
+                      decision: null
+                      decidedBy: null
+                      reason: null
+                      requestedAt: '2026-10-05T01:00:00.000Z'
+                      decidedAt: null
+  /approvals/{approvalId}/approve:
+    post:
+      tags: [승인]
+      summary: 승인 (대표 전용)
+      description: |
+        태스크가 `DONE`이 된다. 뒤에 걸린 태스크가 풀리면 담당 에이전트에게 바로 간다.
+        대표가 자기 에이전트의 산출물을 승인하면 이벤트에 `selfApproval: true`가 남는다(지금은 대표 말고 승인자가 없어 허용).
+      security: [{ userToken: [] }]
+      parameters:
+        - { name: approvalId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 승인됨(decision=APPROVE, 태스크 DONE)
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/Approval' } } }
+        '404':
+          description: 없는 승인
+          content:
+            application/json:
+              example:
+                error: { code: APPROVAL_NOT_FOUND, message: approval not found }
+        '409':
+          description: 이미 결정됨, 또는 태스크가 더 이상 승인 대기가 아님
+          content:
+            application/json:
+              examples:
+                결정됨:
+                  value: { error: { code: APPROVAL_ALREADY_DECIDED, message: approval was already decided (APPROVE) } }
+                상태바뀜:
+                  value: { error: { code: APPROVAL_STALE, message: the task is no longer awaiting approval (READY) } }
+  /approvals/{approvalId}/reject:
+    post:
+      tags: [승인]
+      summary: 반려 (대표 전용, 사유 필수)
+      description: |
+        태스크가 `READY`로 돌아가고(담당 비움) 재시도 횟수가 1 오른다 — **3회째는 `ESCALATED`**(검증 실패와 같은 횟수를 쓴다).
+        같은 역할의 에이전트가 다시 받아 **같은 태스크 브랜치에서 이어서** 고친다. 사유는 그 시도의 브리핑(`lastRejection`)으로 간다.
+      security: [{ userToken: [] }]
+      parameters:
+        - { name: approvalId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 1, maxLength: 2000 }
+            example:
+              reason: 마이그레이션에 down이 없다. 되돌릴 수 있게 추가해 달라
+      responses:
+        '200':
+          description: 반려됨(decision=REJECT, 태스크 READY 또는 ESCALATED)
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/Approval' } } }
+        '404':
+          description: 없는 승인
+          content:
+            application/json:
+              example:
+                error: { code: APPROVAL_NOT_FOUND, message: approval not found }
+        '409':
+          description: 이미 결정됨, 또는 태스크가 더 이상 승인 대기가 아님
+          content:
+            application/json:
+              examples:
+                결정됨:
+                  value: { error: { code: APPROVAL_ALREADY_DECIDED, message: approval was already decided (APPROVE) } }
+                상태바뀜:
+                  value: { error: { code: APPROVAL_STALE, message: the task is no longer awaiting approval (READY) } }
   /projects/{projectId}/events:
     get:
       tags: [프로젝트]

@@ -244,6 +244,22 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     await call('GET', `/artifacts/${artifactId}/verifications`, agent);
     await call('GET', `/artifacts/${artifactId}/verifications`, rep);
 
+    // 승인 대기열 — L2에서 db:migration은 HUMAN이라 검증을 통과해도 대표 승인을 기다린다. 하나는 승인, 하나는 반려.
+    setCommitInspector({ kind: 'fake', async changedPaths() { return ['migrations/020_x.sql']; } });
+    const approvalIds: string[] = [];
+    for (const title of ['T-2 스키마 추가', 'T-3 인덱스 추가']) {
+      const t = (await call('POST', `/projects/${projectId}/tasks`, rep, { title, teamRole: 'BACKEND', repoId, specId: spec.data.id })).data.id as string;
+      await call('POST', `/tasks/${t}/claim`, agent);
+      const a = await call('POST', `/tasks/${t}/artifacts`, agent, { commitSha: 'b1b2c3d', changedPaths: ['migrations/020_x.sql'] });
+      await call('POST', `/artifacts/${a.data.id as string}/verifications`, agent, { stage: 'V2', result: 'SKIPPED', detail: { reason: '시험 실행기 없음' } });
+      const v = await call('POST', `/artifacts/${a.data.id as string}/verifications`, agent, { stage: 'V4', result: 'PASS' });
+      approvalIds.push(v.data.approvalId as string);
+    }
+    await call('GET', `/orgs/${orgId}/approvals`, rep);
+    await call('POST', `/approvals/${approvalIds[0]!}/approve`, rep);
+    await call('POST', `/approvals/${approvalIds[1]!}/reject`, rep, { reason: 'down 마이그레이션이 없다' });
+    await call('GET', `/projects/${projectId}/approvals?status=all`, rep);
+
     // 인계 노트
     await call('POST', `/tasks/${taskId}/notes`, agent, {
       kind: 'DECIDED', headline: '정원 초과는 409로 통일', keyPoints: ['정원 검사는 트랜잭션 안에서 한다'], affects: [],

@@ -341,7 +341,7 @@ describe('브릿지 단계 보고 (V2·V4)', () => {
     expect(summary).toMatchObject({ outcome: 'DONE', taskState: 'DONE' });
   });
 
-  it('gateMode가 AUTO가 아니면 AWAITING_APPROVAL이고, 나올 경로가 없다는 안내가 함께 남는다', async () => {
+  it('gateMode가 AUTO가 아니면 AWAITING_APPROVAL이고, 같은 트랜잭션에서 승인 카드가 생긴다', async () => {
     const ctx = await setup();
     // L2에서 db:migration은 HUMAN이다. V3가 PASS하려면 실제 diff도 같아야 한다.
     setCommitInspector(fakeInspector(['migrations/013_x.sql']));
@@ -358,17 +358,20 @@ describe('브릿지 단계 보고 (V2·V4)', () => {
       stage: 'V4',
       result: 'PASS',
       detail: { command: 'npm run lint' },
-    })) as unknown as { outcome: string; taskState: string; notice?: string };
+    })) as unknown as { outcome: string; taskState: string; approvalId?: string };
 
     expect(summary).toMatchObject({ outcome: 'AWAITING_APPROVAL', taskState: 'AWAITING_APPROVAL' });
 
-    // 승인 API가 없어서 태스크는 여기서 멈춘다. 조용히 멈추면 로그에서 원인을 찾을 수 없으므로
-    // 제출 응답과 이벤트 payload 양쪽에 같은 안내가 남아야 한다.
-    expect(summary.notice).toContain('승인 경로 미구현');
+    // 대표가 승인·반려할 카드가 있어야 태스크가 여기서 빠져나온다.
+    expect(summary.approvalId).toEqual(expect.any(String));
+    const card = await pool.query(`SELECT subject_id, artifact_id, gate, gate_mode, decision FROM approvals WHERE id = $1`, [
+      summary.approvalId,
+    ]);
+    expect(card.rows[0]).toMatchObject({ subject_id: ctx.taskId, artifact_id: id, gate: 'ACTION', gate_mode: 'HUMAN', decision: null });
     const { rows } = await pool.query(
       `SELECT payload FROM events WHERE type = 'VERIFICATION_COMPLETED' ORDER BY id DESC LIMIT 1`,
     );
-    expect((rows[0]!.payload as { notice?: string }).notice).toContain('승인 경로 미구현');
+    expect(rows[0]!.payload).toMatchObject({ approvalId: summary.approvalId });
   });
 
   it('SKIPPED도 "보고됨"으로 세지만 PASS로 기록되지는 않는다', async () => {
@@ -469,6 +472,10 @@ describe('FAIL 이후 — 재시도와 에스컬레이션', () => {
       [ctx.taskId],
     );
     expect(rows[0]).toMatchObject({ state: 'READY', retry_count: 1, assignee_agent_id: null });
+
+    // 재시도 원인을 이벤트에서 가른다 — 대표 반려(REJECTED)와 섞이지 않게.
+    const ev = await pool.query(`SELECT payload FROM events WHERE type = 'VERIFICATION_COMPLETED' ORDER BY id DESC LIMIT 1`);
+    expect(ev.rows[0]!.payload).toMatchObject({ outcome: 'RETRY', retryCause: 'VERIFICATION_FAILED' });
   });
 
   it('3회째 FAIL이면 ESCALATED로 멈춘다 — 자동 재시도는 없다', async () => {
