@@ -14,7 +14,8 @@ import {
   type Actor,
 } from '../src/domain/project/service.js';
 import { acceptInvite, createInvite } from '../src/domain/invite/service.js';
-import { connectRepos, getRepoPaths, updatePathOwnership } from '../src/domain/repo/service.js';
+import { connectRepos, getRepoPaths, listRepos, updatePathOwnership } from '../src/domain/repo/service.js';
+import { AppError } from '../src/errors.js';
 import { createTestAgent, createTestOrg, createTestUser } from './fixtures.js';
 import { resetSchema, testPool, truncateAll } from './test-db.js';
 
@@ -517,5 +518,49 @@ describe('HTTP — 대표 전용 게이트', () => {
     expect((res.body as unknown as { error: { message: string } }).error.message).toContain(
       `PATCH /api/repos/${repo!.id}/paths/:pathId`,
     );
+  });
+});
+
+describe('레포 사용 중 판정 — 목록과 생성이 같은 판정', () => {
+  const inUse = async (ctx: Ctx) =>
+    Object.fromEntries((await listRepos(ctx.orgId)).map((r) => [r.fullName, r.activeProjectId]));
+  const conflictOf = (ctx: Ctx, repoIds: string[]) =>
+    createProject(ctx.orgId, ctx.userId, input(ctx, { name: 'p-next', repoIds })).then(
+      () => null,
+      (e: unknown) => e as AppError,
+    );
+
+  it('겹치는 레포를 전부 details로 알려주고, 목록의 activeProjectId도 같은 답을 낸다', async () => {
+    const ctx = await setup();
+    const { project } = await createProject(ctx.orgId, ctx.userId, input(ctx, { repoIds: [ctx.repoApi, ctx.repoWeb] }));
+
+    expect(await inUse(ctx)).toEqual({ 'acme/api': project.id, 'acme/web': project.id });
+    const repos = await listRepos(ctx.orgId);
+    expect(repos.map((r) => r.activeProjectName)).toEqual([project.name, project.name]);
+
+    const err = await conflictOf(ctx, [ctx.repoApi, ctx.repoWeb]);
+    expect(err?.code).toBe('REPO_IN_ACTIVE_PROJECT');
+    expect(err?.details).toEqual([
+      { repoId: ctx.repoApi, fullName: 'acme/api', projectId: project.id, projectName: project.name },
+      { repoId: ctx.repoWeb, fullName: 'acme/web', projectId: project.id, projectName: project.name },
+    ]);
+  });
+
+  // 상태별로 목록과 생성이 같은 답을 내는지 — 한쪽만 다르면 "목록에서는 고를 수 있는데 저장할 때 막힌다".
+  it.each([
+    ['planning', true],
+    ['active', true],
+    ['halted', true], // 재개될 수 있다
+    ['completed', false],
+    ['aborted', false],
+  ])('%s 프로젝트의 레포: 사용 중=%s', async (status, held) => {
+    const ctx = await setup();
+    const { project } = await createProject(ctx.orgId, ctx.userId, input(ctx, { repoIds: [ctx.repoApi] }));
+    // 상태 전이 API(정지·완료·중단)가 아직 없어 행만 바꾼다.
+    await pool.query(`UPDATE projects SET status = $2, halt_reason = CASE WHEN $2 = 'halted' THEN 'manual' END WHERE id = $1`, [project.id, status]);
+
+    expect((await inUse(ctx))['acme/api']).toBe(held ? project.id : null);
+    const err = await conflictOf(ctx, [ctx.repoApi]);
+    expect(err?.code ?? null).toBe(held ? 'REPO_IN_ACTIVE_PROJECT' : null);
   });
 });

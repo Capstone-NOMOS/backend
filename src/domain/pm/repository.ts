@@ -92,6 +92,15 @@ export async function listAllPendingPlans(db: Queryable): Promise<PlanRow[]> {
   return rows.map(toPlan);
 }
 
+// 수정 체인에서 이미 받은 수정 요청 수(원본 요청 제외, 실패한 수정 요청도 센다 — 요청마다 PM을 한 번 부른다).
+export async function countChainRevisions(db: Queryable, rootPlanId: string): Promise<number> {
+  const { rows } = await db.query(
+    `SELECT count(*)::int AS n FROM plans WHERE root_plan_id = $1 AND parent_plan_id IS NOT NULL`,
+    [rootPlanId],
+  );
+  return rows[0]!.n as number;
+}
+
 export async function chainHasAppliedPlan(db: Queryable, rootPlanId: string): Promise<boolean> {
   const { rows } = await db.query(`SELECT 1 FROM plans WHERE root_plan_id = $1 AND status = 'applied' LIMIT 1`, [rootPlanId]);
   return rows.length > 0;

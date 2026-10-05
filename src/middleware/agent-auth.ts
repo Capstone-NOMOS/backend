@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from 'express';
 import { pool, withTransaction } from '../config/db.js';
 import { env } from '../config/env.js';
 import { findAgentById } from '../domain/agent/repository.js';
+import { markAgentSeen } from '../domain/agent/presence.js';
 import { appendEvent } from '../domain/events/append.js';
 import type { DenialStage } from '../domain/events/types.js';
 import { findProjectAuthRow } from '../domain/policy/repository.js';
@@ -113,6 +114,8 @@ export async function resolveAgentToken(token: string): Promise<AuthAgent> {
       }
     }
 
+    // 인증을 통과한 요청은 "살아 있다"는 신호다(끊겼을 때의 폴링·pm-worker·MCP 도구) — 온라인 표시(presence.ts).
+    markAgentSeen(agent.id);
     return agent;
   }
 }

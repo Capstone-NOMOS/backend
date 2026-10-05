@@ -2,6 +2,7 @@ import type { IncomingMessage, Server } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 import { logger } from '../config/logger.js';
+import { markAgentSeen, streamClosed, streamOpened } from '../domain/agent/presence.js';
 import { onTasksChanged } from '../domain/dispatch/tasks-changed.js';
 import { listClaimableTasksForAgent, type AgentContext } from '../domain/task/service.js';
 import { AppError } from '../errors.js';
@@ -113,6 +114,7 @@ export function attachAgentStream(server: Server): AgentStream {
         const ctx = agentContextFrom(await resolveAgentToken(token));
         conn = { ws, ctx, alive: true, running: null, dirty: false };
         register(conn);
+        streamOpened(ctx.agentId);
         send(ws, { type: 'ready', agentId: ctx.agentId, projectId: ctx.projectId });
         await pushSnapshot(conn);
       } catch (err) {
@@ -127,11 +129,17 @@ export function attachAgentStream(server: Server): AgentStream {
     });
 
     ws.on('pong', () => {
-      if (conn) conn.alive = true;
+      if (conn) {
+        conn.alive = true;
+        markAgentSeen(conn.ctx.agentId);
+      }
     });
     ws.on('close', () => {
       clearTimeout(authTimer);
-      if (conn) unregister(conn);
+      if (conn) {
+        unregister(conn);
+        streamClosed(conn.ctx.agentId);
+      }
     });
     ws.on('error', () => ws.terminate());
   };

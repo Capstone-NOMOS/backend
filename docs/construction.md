@@ -1038,6 +1038,9 @@ MCP를 껐다고 안심하면 안 됩니다. 나중에 다시 켤 수도 있고 
 | V1A 스펙 대조 | 산출물의 API 정의가 LOCKED yaml과 일치하는가 | 서버 | Spectral 등 | CONTRACT_VIOLATION |
 | V1B 실제 응답 | dev 배포 주소(`repos.dev_base_url`)를 실제로 호출해 계약과 대조 | **서버** | schemathesis 등 | CONTRACT_VIOLATION |
 | V2 테스트 | G1에 잠긴 시험지(`spec_tests`, EARS 수용기준에서 생성) 통과 | 브릿지 | vitest | TEST_FAILED |
+
+> **구현 결정(2026-10): 내장 PM은 시험지를 만들지 않는다.** PM 명세는 `tests: []`이고 버그가 아니다. 그 태스크의 V2는
+> `SKIPPED`("잠긴 spec_tests가 없다")로 기록되어 통과로 세지 않는다. 이유와 되살리는 방법은 CLAUDE.md "내장 PM" 절.
 | V3 권한 | **diff의 모든 경로가 소유 범위 안인가, 비밀 파일이 없는가** | 서버 | `git diff --name-only` + `resolveRule()` | 🔒 scope:violation / secret:touch → 즉시 반려 |
 | V4 품질 | 린트, 타입체크, 포맷 | 브릿지 | eslint / tsc | LINT_FAILED |
 

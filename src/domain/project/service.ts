@@ -16,7 +16,7 @@ import {
   findOrgConstitution,
   findProjectById,
   findReposByIds,
-  findReposInActiveProjects,
+  findRepoUsage,
   findReposWithoutOwnership,
   insertProject,
   insertProjectMember,
@@ -97,14 +97,15 @@ export async function createProject(
       throw new AppError('CROSS_ORG_ACCESS', 'cannot access another organization');
     }
 
-    // 같은 레포를 두 활성 프로젝트가 쓰면 경로 소유권이 두 곳에 걸린다.
+    // 같은 레포를 두 진행 중 프로젝트가 쓰면 경로 소유권이 두 곳에 걸린다.
     // DB 제약으로는 표현할 수 없어(부분 유니크로도 status 조인이 안 된다) 여기서 막는다.
-    const conflicts = await findReposInActiveProjects(tx, repoIds);
-    const clash = conflicts[0];
-    if (clash) {
+    // 겹치는 레포를 **전부** 알려준다(details) — 하나씩 고치고 다시 저장하게 하지 않는다. 판정은 레포 목록의 activeProjectId와 같은 함수다.
+    const conflicts = await findRepoUsage(tx, repoIds);
+    if (conflicts.length > 0) {
       throw new AppError(
         'REPO_IN_ACTIVE_PROJECT',
-        `repository ${clash.repoId} is already used by project ${clash.projectId}`,
+        `repositories already used by an in-progress project: ${conflicts.map((c) => `${c.fullName} (${c.projectName})`).join(', ')}`,
+        conflicts.map((c) => ({ repoId: c.repoId, fullName: c.fullName, projectId: c.projectId, projectName: c.projectName })),
       );
     }
 

@@ -493,3 +493,29 @@ describe('태스크별 담당 에이전트', () => {
     expect((plan as unknown as { assignments: Assignment[] }).assignments).toEqual([]);
   });
 });
+
+describe('수정 요청 한도', () => {
+  type View = { id: string; status: string };
+  const revise = (w: { projectId: string; rep: { token: string } }, planId: string) =>
+    call('POST', `/projects/${w.projectId}/pm/plans/${planId}/revise`, w.rep.token, { feedback: '조금 더' });
+
+  it('한 체인에서 3회까지 받고 4번째는 409 PLAN_REVISION_LIMIT { limit, used } — 새 계획 요청은 0부터', async () => {
+    const w = await world();
+    fakeModel(...Array.from({ length: 6 }, () => () => respond(DRAFT)));
+    let current = await requestAndWait(w); // 원본은 세지 않는다
+    for (let i = 0; i < env.PM_MAX_REVISIONS; i += 1) {
+      const res = await revise(w, current.id);
+      expect(res.status, `수정 ${i + 1}`).toBe(202);
+      await drainPmJobs();
+      current = (await call('GET', `/projects/${w.projectId}/pm/plans/${(res.body.data as unknown as View).id}`, w.rep.token)).body
+        .data as unknown as typeof current;
+    }
+    const over = await revise(w, current.id);
+    expect(over.status).toBe(409);
+    expect(over.body.error).toMatchObject({ code: 'PLAN_REVISION_LIMIT', details: { limit: 3, used: 3 } });
+
+    // 새 계획 요청은 새 체인이다.
+    const fresh = await requestAndWait(w, '다른 기능');
+    expect((await revise(w, fresh.id)).status).toBe(202);
+  });
+});
