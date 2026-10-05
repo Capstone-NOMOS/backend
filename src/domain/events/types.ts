@@ -19,6 +19,8 @@ export type EventType =
   | 'MEMBER_ASSIGNED'
   | 'PROJECT_STARTED'
   | 'NOTES_ACK_REQUIRED'
+  | 'APPROVAL_REQUESTED'
+  | 'APPROVAL_RESULT'
   | 'MEMBER_UNASSIGNED'
   | 'REPO_UPDATED'
   | 'TASKS_IMPORTED'
@@ -162,6 +164,35 @@ export type ArtifactSubmittedPayload = {
 
 // 제출을 반려하고 노트 확인을 요구했다. 정책 거부(TOOL_DENIED)가 아니다 — 새 정보가 생긴 것이라 M5′ 분모에 넣지 않고,
 // 재시도 횟수도 올리지 않는다. 몇 번 반려됐는지는 이 이벤트로 센다.
+// 승인 카드가 생겼다(검증 통과 + 판정이 HUMAN·PM_REVIEW). 책임 주체는 제출한 에이전트의 주인.
+export type ApprovalRequestedPayload = {
+  approvalId: string;
+  gate: string;
+  taskId: string;
+  artifactId: string;
+  gateMode: string;
+  triggeredActions: string[];
+};
+
+// 대표가 승인·반려했다.
+// - reviewer: 'human' | 'human_fallback'(PM_REVIEW를 PM 리뷰가 없어 사람이 대신 처리) — PM 리뷰가 생기면 지표를 나눠 센다.
+// - selfApproval: 승인자가 제출한 에이전트의 주인이다 — "다른 멤버 승인" 규칙을 만들 때의 근거.
+// - retryCause: 반려면 'REJECTED'(검증 실패는 VERIFICATION_COMPLETED의 'VERIFICATION_FAILED'). retry_count를 같이 쓴다.
+export type ApprovalResultPayload = {
+  approvalId: string;
+  gate: string;
+  taskId: string;
+  artifactId: string | null;
+  decision: 'APPROVE' | 'REJECT';
+  reason: string | null;
+  gateMode: string | null;
+  reviewer: 'human' | 'human_fallback';
+  selfApproval: boolean;
+  taskState: string;
+  retryCount?: number;
+  retryCause?: 'REJECTED';
+};
+
 export type NotesAckRequiredPayload = {
   taskId: string;
   noteIds: string[];
@@ -313,6 +344,8 @@ export type EventPayloadMap = {
   MEMBER_ASSIGNED: MemberAssignedPayload;
   PROJECT_STARTED: ProjectStartedPayload;
   NOTES_ACK_REQUIRED: NotesAckRequiredPayload;
+  APPROVAL_REQUESTED: ApprovalRequestedPayload;
+  APPROVAL_RESULT: ApprovalResultPayload;
   MEMBER_UNASSIGNED: MemberUnassignedPayload;
   REPO_UPDATED: RepoUpdatedPayload;
   TASKS_IMPORTED: TasksImportedPayload;

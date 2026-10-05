@@ -823,7 +823,7 @@ flowchart LR
 | VERIFYING | FAIL / FORBIDDEN | IN_PROGRESS | 재시도 카운터 &lt; 3 |
 | VERIFYING | FAIL / FORBIDDEN | ESCALATED | 재시도 카운터 ≥ 3 |
 | AWAITING_APPROVAL | APPROVE | DONE | HUMAN 승인, 또는 PM_REVIEW에서 반려 없음 |
-| AWAITING_APPROVAL | REJECT | IN_PROGRESS | 반려 사유 전달 |
+| AWAITING_APPROVAL | REJECT | READY | 반려 사유는 다음 시도의 브리핑(`lastRejection`)으로. 재시도 +1, 3회째 ESCALATED. IN_PROGRESS가 아닌 이유: 제출 뒤 에이전트 실행은 이미 끝나 있어 IN_PROGRESS를 이어받을 주체가 없다. 다음 시도는 같은 태스크 브랜치에서 이어서 고친다 |
 | IN_PROGRESS | DISPUTE | BLOCKED | evidence 스키마 유효, `blocked_reason=DISPUTE` |
 | IN_PROGRESS | QUESTION | BLOCKED | `ask_principal` 호출, `blocked_reason=QUESTION` |
 | IN_PROGRESS | WAIT_DEPENDENCY | BLOCKED | `blocked_reason=DEPENDENCY` |

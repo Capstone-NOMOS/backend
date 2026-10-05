@@ -398,7 +398,7 @@ stateDiagram-v2
     VERIFYING --> AWAITING_APPROVAL: 통과 + 정책 HUMAN·PM_REVIEW
     VERIFYING --> IN_PROGRESS: 실패 또는 금지 행동 (자동 반려)
     AWAITING_APPROVAL --> DONE: 승인
-    AWAITING_APPROVAL --> IN_PROGRESS: 반려
+    AWAITING_APPROVAL --> READY: 반려 (재시도 +1, 같은 브랜치에서 이어서)
 
     IN_PROGRESS --> BLOCKED: 이의 제기 / 의존성 대기 / 질문
     BLOCKED --> IN_PROGRESS: 원인 해소 (자동 재개)

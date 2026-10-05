@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 프로젝트
 
-NOMOS 서버 — 여러 개발자가 각자 노트북에서 Claude Code 에이전트를 돌릴 때 그 사이의 계약·권한·분쟁을 조율하는 서버. 현재 구현 범위는 조직·레포·경로 소유권·초대, 로컬 계정과 CLI 연결(브라우저 승인 포함), 프로젝트·태스크·산출물·인계 노트·검증, 명세·태스크 작성, 내장 PM의 계획 수립(마이그레이션 014까지), AWS 배포다.
+NOMOS 서버 — 여러 개발자가 각자 노트북에서 Claude Code 에이전트를 돌릴 때 그 사이의 계약·권한·분쟁을 조율하는 서버. 현재 구현 범위는 조직·레포·경로 소유권·초대, 로컬 계정과 CLI 연결(브라우저 승인 포함), 프로젝트·태스크·산출물·인계 노트·검증, 명세·태스크 작성, 내장 PM의 계획 수립, 승인 대기열(ACTION 게이트)(마이그레이션 015까지), AWS 배포다.
 
 설계 원칙(위반 금지): **P1** 상태는 서버가 소유하고 클라이언트는 전이를 요청만 한다. **P3** 모든 행동은 사람에게 귀속된다(`on_behalf_of` 없는 이벤트는 없다). **P5** 모든 상태 변화는 `events`에 append되고 events가 유일한 진실이다.
 
@@ -166,7 +166,7 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
 그래서 **소유 역할이 지정된 경로 규칙이 하나도 없는 레포는 프로젝트에 넣을 수 없다**(`createProject`, 422 `REPO_OWNERSHIP_NOT_SET`, 메시지에 막힌 레포 전부와 부를 API를 함께 적는다). 그대로 두면 아무도 쓸 수 없는 레포라 원인이 제출 시점에야 드러나기 때문이다.
 기준은 "하나라도 지정됐는가"이지 "`**`가 지정됐는가"가 아니다 — 모노레포처럼 `apps/*/**`만 나누고 루트를 비워 두는 설계를 막지 않는다. 그 경우 루트 파일은 기본 거부다(열리지 않는다).
 
-각 규칙의 `action_key`는 **허용 레벨 정책표**(`action_catalog`, 17행)의 "탐지" 열을 경로로 옮긴 것이다. 정책표는 행동마다 누가 승인하는가(AUTO / PM_REVIEW / HUMAN / FORBIDDEN)를 L1~L4 열로 정의하고, `locked_mode`(🔒) 행은 네 레벨이 모두 같아야 한다는 CHECK로 DB가 막는다. **`PM_REVIEW`는 PM이 반려만 할 수 있고 통과는 AUTO 검증이 결정한다** — LLM이 게이트를 열 수 없다. PM이 응답하지 못할 때(타임아웃·예산 소진) AUTO 강등은 **PM_REVIEW 한 칸에만** 적용하고(🔒 행은 원천 제외, HUMAN·FORBIDDEN은 절대 강등 없음) 같은 트랜잭션에 `PM_REVIEW_DEGRADED`(사유·`policy_hash`)를 남긴다(`domain/policy/pm-review-fallback.ts`). `package.json`의 `dep:add`는 경로가 아니라 dependencies/devDependencies diff로 판정하도록 **판정기만 있고 연결되지 않았다**(`domain/policy/dependency-diff.ts`, 읽을 수 없으면 dep:add로 취급) — 지금은 `package.json`을 고쳐도 `dep:add`가 걸리지 않는다. 시드 40번(`requirements.txt`)만 경로로 잡힌다. `package.json`을 경로 행으로 추가해 메우지 말 것: scripts만 고친 변경까지 dep:add가 되고, 승인 API가 없어 `AWAITING_APPROVAL`에서 멈춘다. 제출·V3가 변경 전후 내용을 읽을 때 연결한다. 비밀 파일 행의 `action_key`를 NULL로 두면 `code:own_path`로 해석되므로 반드시 `secret:touch`여야 한다. 시드 목록을 바꾸면 `source='seed'` 행만 골라 기존 레포에도 반영하는 마이그레이션을 같이 쓴다(004·005가 선례).
+각 규칙의 `action_key`는 **허용 레벨 정책표**(`action_catalog`, 17행)의 "탐지" 열을 경로로 옮긴 것이다. 정책표는 행동마다 누가 승인하는가(AUTO / PM_REVIEW / HUMAN / FORBIDDEN)를 L1~L4 열로 정의하고, `locked_mode`(🔒) 행은 네 레벨이 모두 같아야 한다는 CHECK로 DB가 막는다. **`PM_REVIEW`는 PM이 반려만 할 수 있고 통과는 AUTO 검증이 결정한다** — LLM이 게이트를 열 수 없다. PM이 응답하지 못할 때(타임아웃·예산 소진) AUTO 강등은 **PM_REVIEW 한 칸에만** 적용하고(🔒 행은 원천 제외, HUMAN·FORBIDDEN은 절대 강등 없음) 같은 트랜잭션에 `PM_REVIEW_DEGRADED`(사유·`policy_hash`)를 남긴다(`domain/policy/pm-review-fallback.ts`). `package.json`의 `dep:add`는 경로가 아니라 dependencies/devDependencies diff로 판정하도록 **판정기만 있고 연결되지 않았다**(`domain/policy/dependency-diff.ts`, 읽을 수 없으면 dep:add로 취급) — 지금은 `package.json`을 고쳐도 `dep:add`가 걸리지 않는다. 시드 40번(`requirements.txt`)만 경로로 잡힌다. `package.json`을 경로 행으로 추가해 메우지 말 것: scripts만 고친 변경까지 dep:add가 되어 매번 대표 승인 대기열에 쌓인다. 제출·V3가 변경 전후 내용을 읽을 때 연결한다. 비밀 파일 행의 `action_key`를 NULL로 두면 `code:own_path`로 해석되므로 반드시 `secret:touch`여야 한다. 시드 목록을 바꾸면 `source='seed'` 행만 골라 기존 레포에도 반영하는 마이그레이션을 같이 쓴다(004·005가 선례).
 
 - `priority`는 **항상 명시적 정수**이고 **레포 안에서 유일**하다(`uq_repo_paths_priority`). 대역은 `0~99` seed · `100~199` scan · `200~299` manual · `900+` 조직 상한이고 source별 CHECK(`repo_paths_priority_band_chk`)가 강제한다. manual 규칙은 priority를 안 주면 대역의 최댓값 + 1. "더 구체적인 패턴이 이긴다" 같은 규칙 기반 판정은 금지 — 재현 실험이 성립하려면 어느 규칙이 이기는지가 결정적이어야 한다.
 - `resolveRule`은 매칭 규칙 중 priority 최대값을 고르고, 동점이면 `path_pattern` **사전순 오름차순**으로 tie-break한다. priority가 유일하므로 DB 데이터에선 폴백이 발동하지 않지만, 함수 자체의 결정성은 유지한다.
@@ -295,10 +295,9 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
 - FAIL이면 `retry_count`가 오르고 태스크는 `READY`로 돌아가며 **담당을 비운다**(안 비우면 아무도 못 잡는다).
   3회째는 `ESCALATED`. 전부 통과해도 `gate_mode`가 `AUTO`가 아니면 `AWAITING_APPROVAL`이다 —
   검증이 6단계 정책 게이트를 대신 열어주지 않는다. 결론이 난 뒤 늦게 온 보고는 상태를 건드리지 않는다.
-- **`AWAITING_APPROVAL`에서 나올 경로는 아직 없다.** approvals 테이블은 ERD에만 있고 승인·반려 API도 없어서
-  들어가면 사람이 DB를 고치기 전까지 멈춘다. 그래서 그 상태로 보낼 때 경고 로그·이벤트 payload·제출 응답
-  (`verification.notice`) 세 곳에 `APPROVAL_PATH_MISSING`을 남긴다 — 조용히 멈추면 원인을 로그에서 찾을 수 없다.
-  승인 API를 붙일 때 이 상수의 사용처를 지우는 것이 그 작업의 체크리스트다.
+- `AWAITING_APPROVAL`로 보낼 때 **같은 트랜잭션에서 승인 카드를 만든다**(아래 "승인 대기열"). 응답·`VERIFICATION_COMPLETED`에 `approvalId`.
+- 재시도 원인은 이벤트에서 가른다: 검증 실패는 `VERIFICATION_COMPLETED.payload.retryCause = 'VERIFICATION_FAILED'`,
+  대표 반려는 `APPROVAL_RESULT.payload.retryCause = 'REJECTED'`. `retry_count`는 둘이 같이 쓴다(`domain/task/retry.ts`의 `MAX_RETRIES`).
 - V3가 쓰는 bare mirror(`~/.nomos/server-mirrors/{repoId}.git`)는 **서버가** 만드는 것이라 정리도 서버 쪽에 있다.
   `npm run seed`가 TRUNCATE와 같은 자리에서 지운다(레포 행이 사라지면 repoId로 이름 붙은 mirror는 고아다).
   `executor clean`은 팀원 노트북에서 도는 브릿지 명령이므로 서버 산출물을 지우는 자리가 아니다.
@@ -412,6 +411,21 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
     잠금 시각이 산출물보다 늦으면 V2가 FAIL로 뒤집으므로(`locked_at < artifacts.created_at`), 추가는 태스크 시작 전에 해야 의미가 있다.
     그 전에 레포별 시험 하네스(기동·시드·인증)를 헌법에 먼저 정할 것.
 - 모델·노력·한도는 설정값(`PM_MODEL` 기본 `claude-sonnet-5-5`, `PM_EFFORT` 기본 `high`, `PM_MAX_TOKENS`). 생각 토큰도 출력으로 과금되니 실제 비용을 보고 조정한다.
+
+### 승인 대기열 (`domain/approval`, 015) — ACTION 게이트만
+
+검증은 통과했지만 정책 판정이 HUMAN·PM_REVIEW라 `AWAITING_APPROVAL`에 멈춘 산출물을 사람이 결정한다. G1·G2·G3 카드와 PM 예산 초과 승인은 아직 없다.
+
+- **결정은 대표만 한다.** "해당 역할의 사람"은 곧 제출한 에이전트의 주인이라 자기 승인이 된다. 대표가 자기 에이전트의 산출물을
+  승인하는 것은 지금은 허용하되(다른 승인자가 없다) `APPROVAL_RESULT.payload.selfApproval: true`로 남긴다 — 다른 승인자 규칙을 만들 때의 근거.
+- **PM_REVIEW 카드도 대표가 처리한다**(PM 리뷰 미구현). `reviewer: 'human_fallback'`으로 구분한다 — PM 리뷰가 생기면 지표를 나눠 센다.
+- 카드는 settle의 트랜잭션 안에서 만들고 payload는 **그 순간의 스냅샷**(커밋·경로·행동·단계 결과)이다. 대기 중 카드는 태스크당 하나(`uq_approvals_pending_subject`).
+- 결정 순간에도 태스크가 `AWAITING_APPROVAL`이어야 한다(아니면 409 `APPROVAL_STALE`). 결정은 `WHERE decision IS NULL` 조건부라 동시에 눌려도 한쪽만 이긴다.
+- 승인 → `DONE`. **반려 → `READY`**(담당 비움, 재시도 +1, 3회째 `ESCALATED`, 사유 필수). 설계 초안의 IN_PROGRESS가 아닌 이유: 제출 뒤
+  에이전트 실행은 끝나 있어 이어받을 주체가 없다. 사유는 다음 시도의 브리핑 `lastRejection`으로 가고, 프롬프트가 같은 태스크 브랜치에서
+  이어서 고치라고 한다. 다른 노트북이 받으면 Executor가 `origin/<태스크 브랜치>`에서 이어 받는다(`executor/workspace.ts`).
+- 결정 뒤 `tasksChanged` — 승인이면 뒤 태스크가 풀리고 반려면 이 태스크가 다시 READY다.
+- 015는 이미 `AWAITING_APPROVAL`에 멈춰 있던 태스크에 **지금 DB 값으로** 카드를 만든다(`payload.backfilled: true`, 단계 결과 없음).
 
 ### 프로젝트와 멤버
 
@@ -561,7 +575,7 @@ const { repoId } = req.params as z.infer<typeof repoIdParamsSchema>
 
 ### 라우터 마운트
 
-라우터 12개(`auth`, `agents`, `orgs`, `repos`, `repo-paths`, `invites`, `oauth`, `tasks`, `notes`, `projects`, `specs`, `pm`)가 전부 `app.use("/api", ...)`로 마운트되고(`/health`·`/docs`는 `/api` 밖), 각 파일이 `/orgs/:orgId/...` 같은 전체 경로를 직접 선언한다. 그래서 URL 접두사가 아니라 **도메인 기준**으로 파일이 나뉜다 — 예를 들어 `POST /api/orgs/:orgId/repos`는 URL은 orgs 밑이지만 `routes/repos.ts`에 있고, `POST /api/orgs/:orgId/invites`는 `routes/invites.ts`에 있다.
+라우터 13개(`auth`, `agents`, `orgs`, `repos`, `repo-paths`, `invites`, `oauth`, `approvals`, `tasks`, `notes`, `projects`, `specs`, `pm`)가 전부 `app.use("/api", ...)`로 마운트되고(`/health`·`/docs`는 `/api` 밖), 각 파일이 `/orgs/:orgId/...` 같은 전체 경로를 직접 선언한다. 그래서 URL 접두사가 아니라 **도메인 기준**으로 파일이 나뉜다 — 예를 들어 `POST /api/orgs/:orgId/repos`는 URL은 orgs 밑이지만 `routes/repos.ts`에 있고, `POST /api/orgs/:orgId/invites`는 `routes/invites.ts`에 있다.
 
 
 ## 스키마 변경 규칙

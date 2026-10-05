@@ -2,6 +2,7 @@ import { withTransaction } from '../../config/db.js';
 import { AppError, type ErrorCode } from '../../errors.js';
 import { tasksChanged } from '../dispatch/tasks-changed.js';
 import { appendEvent } from '../events/append.js';
+import { findLatestRejection } from '../approval/repository.js';
 import type { DenialStage, PathDenialReason } from '../events/types.js';
 import { settle, type Outcome } from '../outcome.js';
 import { getPolicySnapshot } from '../policy/policy-cache.js';
@@ -386,6 +387,8 @@ export type TaskBriefing = {
   // V2(PM 시험지)가 돌릴 코드. 잠긴 것만 내려간다.
   specTests: SpecTest[];
   policyHash: string;
+  // 직전 제출이 대표에게 반려됐으면 그 사유. 반려되면 태스크가 READY로 돌아오고, 같은 태스크 브랜치에서 이어서 고친다.
+  lastRejection: { approvalId: string; reason: string; decidedAt: string; artifactId: string | null; commitSha: string | null } | null;
 };
 
 export async function getTaskBriefing(ctx: AgentContext, taskId: string): Promise<TaskBriefing> {
@@ -430,6 +433,7 @@ export async function getTaskBriefing(ctx: AgentContext, taskId: string): Promis
       // read_notes 호출에 의존하지 않는다 — 서버가 골라서 넣는다.
       notes,
       notesBlock: buildNotesPromptBlock(notes),
+      lastRejection: await findLatestRejection(tx, taskId),
       writablePaths,
       // 로컬 방어선. 이 결과를 Executor가 worktree의 .claude/settings.json으로 깐다.
       claudeSettings: buildClaudePermissions(rules),
