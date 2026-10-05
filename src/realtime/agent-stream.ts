@@ -7,6 +7,7 @@ import { onTasksChanged } from '../domain/dispatch/tasks-changed.js';
 import { listClaimableTasksForAgent, type AgentContext } from '../domain/task/service.js';
 import { AppError } from '../errors.js';
 import { agentContextFrom, resolveAgentToken } from '../middleware/agent-auth.js';
+import { routeUpgrade } from './upgrade-router.js';
 
 // 에이전트 태스크 스트림 — 프로젝트가 시작되면 서버가 역할별 담당 에이전트에게 "지금 가져갈 수 있는 태스크"를 보낸다.
 //
@@ -144,15 +145,9 @@ export function attachAgentStream(server: Server): AgentStream {
     ws.on('error', () => ws.terminate());
   };
 
-  const onUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer) => {
-    const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
-    if (pathname !== AGENT_STREAM_PATH) {
-      socket.destroy();
-      return;
-    }
-    wss.handleUpgrade(req, socket, head, handle);
-  };
-  server.on('upgrade', onUpgrade);
+  const unroute = routeUpgrade(server, AGENT_STREAM_PATH, (req: IncomingMessage, socket: Duplex, head: Buffer) =>
+    wss.handleUpgrade(req, socket, head, handle),
+  );
 
   // 응답 없는 연결을 정리한다(노트북 절전·네트워크 끊김). 프록시의 유휴 시간 제한도 막는다.
   const ping = setInterval(() => {
@@ -174,7 +169,7 @@ export function attachAgentStream(server: Server): AgentStream {
     close: async () => {
       clearInterval(ping);
       unsubscribe();
-      server.off('upgrade', onUpgrade);
+      unroute();
       for (const ws of wss.clients) ws.terminate();
       await new Promise<void>((resolve) => wss.close(() => resolve()));
     },

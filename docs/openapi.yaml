@@ -27,6 +27,15 @@ info:
 
     **응답 스키마(`schema`)는 일부 엔드포인트에만 있다.** 없는 곳은 `example`이 기준이다.
 
+    **실시간 신호(웹소켓 `/api/stream`, 사람 토큰)** — OpenAPI로 표현할 수 없어 여기 적는다. 데이터가 아니라 "무엇을 다시 읽을지"만 온다.
+    1. 연결 후 첫 메시지 `{ "type": "auth", "token": "<사람 토큰>" }` → `{ "type": "ready", userId, orgId, orgRole }`
+    2. 프로젝트 화면에서 `{ "type": "subscribe", "projectId" }` → `{ "type": "subscribed", projectId }` (볼 수 없으면 `{ "type": "error", code, projectId }`)
+    3. 변화가 커밋되면 `{ "type": "changed", projectId | null, topics: [...], lastEventId }` — topics에 맞는 API를 다시 읽는다
+       - projectId가 있으면 프로젝트 토픽: `project` · `tasks` · `specs` · `plans` · `approvals` · `notes` · `members` · `events`
+       - null이면 조직 토픽: `projects` · `approvals`(대표만) · `agents` · `repos` · `members`
+    4. `{ "type": "resync" }`이면 서버가 신호를 놓쳤을 수 있다 — 화면 전체를 다시 읽는다. `unsubscribed`(배정 해제)도 온다.
+    닫는 코드: 4400 잘못된 첫 메시지 · 4401 인증 실패(다시 로그인) · 4403 조직 없음 · 4408 10초 안에 인증 안 함.
+
 servers:
   # 상대 경로 — Swagger UI가 이 문서를 서빙한 서버(로컬이든 운영이든)로 요청을 보낸다.
   # 절대 주소(http://localhost:3000)로 두면 운영 Swagger의 Try it out이 사용자 노트북의 localhost로 나가 브라우저가 막는다.
