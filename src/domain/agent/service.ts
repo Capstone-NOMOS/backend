@@ -10,6 +10,7 @@ import { appendEvent } from '../events/append.js';
 import { findUserByConnectKeyHash } from '../org/repository.js';
 import {
   findAgentByActiveRefreshToken,
+  findAgentById,
   insertRefreshToken,
   listAgentsByOrg,
   upsertAgent,
@@ -169,4 +170,9 @@ export async function listOrgAgents(orgId: string): Promise<OrgAgentView[]> {
         ? null
         : { projectId: r.activeProjectId, teamRole: r.activeTeamRole },
   }));
+}
+
+// 에이전트가 속한 조직 — 사람용 실시간 스트림이 접속 상태 변화를 어느 조직에 알릴지 정할 때 쓴다. 조직 가입 전이면 null.
+export async function agentOrgId(agentId: string): Promise<string | null> {
+  return (await findAgentById(pool, agentId))?.orgId ?? null;
 }
