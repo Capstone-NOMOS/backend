@@ -451,6 +451,8 @@ $ claude -p "<태스크 프롬프트>" --output-format stream-json --verbose
 [자동 검증 체크리스트]
   □ V1A 계약 대조 — API 정의가 LOCKED yaml과 일치하는가     (서버)
   □ V2  테스트   — G1에 잠긴 시험지(수용 기준에서 생성) 통과  (브릿지)
+                   ※ 구현 결정(2026-10): 내장 PM은 시험지를 만들지 않는다(명세 tests: [] — 버그 아님).
+                     PM 명세의 V2는 SKIPPED("잠긴 spec_tests가 없다")로 남는다. 이유는 CLAUDE.md "내장 PM" 절.
   □ V3  권한     — diff의 모든 경로가 내 소유 범위 안인가     (서버)
   □ V4  품질     — 린트/타입 체크                           (브릿지)
 
