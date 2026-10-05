@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 프로젝트
 
-NOMOS 서버 — 여러 개발자가 각자 노트북에서 Claude Code 에이전트를 돌릴 때 그 사이의 계약·권한·분쟁을 조율하는 서버. 현재 구현 범위는 조직·레포·경로 소유권·초대, 로컬 계정과 CLI 연결(브라우저 승인 포함), 프로젝트·태스크·산출물·인계 노트·검증, 명세·태스크 작성, 내장 PM의 계획 수립, 승인 대기열(ACTION 게이트)(마이그레이션 015까지), AWS 배포다.
+NOMOS 서버 — 여러 개발자가 각자 노트북에서 Claude Code 에이전트를 돌릴 때 그 사이의 계약·권한·분쟁을 조율하는 서버. 현재 구현 범위는 조직·레포·경로 소유권·초대, 로컬 계정과 CLI 연결(브라우저 승인 포함), 프로젝트·태스크·산출물·인계 노트·검증, 명세·태스크 작성, 내장 PM의 계획 수립, 승인 대기열(ACTION 게이트), 화면용 실시간 신호(마이그레이션 016까지), AWS 배포다.
 
 설계 원칙(위반 금지): **P1** 상태는 서버가 소유하고 클라이언트는 전이를 요청만 한다. **P3** 모든 행동은 사람에게 귀속된다(`on_behalf_of` 없는 이벤트는 없다). **P5** 모든 상태 변화는 `events`에 append되고 events가 유일한 진실이다.
 
@@ -457,6 +457,18 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
   - **한 연결의 스냅샷은 차례로 계산·전송한다**(`pushSnapshot`의 running/dirty). 겹쳐 돌리면 먼저 계산한 옛 스냅샷이 나중에 도착해
     클라이언트가 낡은 목록을 들고 있는다 — 연결 직후의 첫 스냅샷과 시작 직후의 푸시가 겹쳐 실제로 그랬다.
   - 메모리 안의 연결 목록이라 서버 1대 전제다. 여러 대로 늘리면 허브를 Postgres LISTEN/NOTIFY 같은 것으로 바꾼다.
+- **사람용 실시간 신호는 `/api/stream`이다**(`realtime/user-stream.ts`). 화면이 폴링 대신 "다시 읽어라" 신호를 받는다.
+  - **신호에는 토픽만 싣고 데이터는 싣지 않는다** — 화면은 기존 API로 다시 읽는다. 권한·응답 모양이 API 한 곳에서 정해지고, 신호를 놓치거나 겹쳐도 결과가 맞다.
+    데이터를 실어 보내기 시작하면 가시성 판정이 두 벌이 된다.
+  - **신호원은 events INSERT 트리거 → NOTIFY다**(016, `realtime/event-feed.ts`가 전용 연결로 LISTEN). 서비스가 알림을 따로 부르지 않는다 —
+    모든 상태 변화는 events에 남으므로 빠지는 경로가 없고, NOTIFY는 커밋할 때만 전달돼 롤백된 변화는 알리지 않는다.
+    에이전트용 `tasksChanged`는 그대로 둔다(스냅샷 계산 시점을 서비스가 정한다). LISTEN이 끊겼다 붙으면 `resync`를 보내 화면이 전부 다시 읽게 한다.
+  - 이벤트 타입 → 토픽은 `realtime/topics.ts`의 `TOPICS_BY_EVENT`(`Record<EventType, …>`) 한 곳이다. 이벤트 타입을 추가하면 컴파일이 여기를 채우라고 한다.
+  - 범위: 조직 토픽은 같은 조직 전부(`approvals`는 대표만 — 조직 대기열 API가 대표 전용), 프로젝트 토픽은 **구독한** 연결만.
+    구독은 `assertProjectVisibleToUser`로 확인하고, `MEMBER_UNASSIGNED`가 오면 다시 확인해 끊는다. 역할은 연결할 때 읽는다.
+  - 인증은 첫 메시지(사람 JWT, `resolveUserToken` — HTTP `authenticate`와 한 벌). Origin은 CORS 허용 목록 + 서버 자신만 받는다(Origin 없음 = 브라우저 아님 → 통과).
+  - 에이전트 접속 상태(`presence.ts`)는 이벤트가 아니라서 `onPresenceChanged`로 따로 받는다. 바뀐 순간에만 알리고, 60초가 지나 offline이 되는 것은 10초마다 훑는다.
+  - 웹소켓 경로는 `realtime/upgrade-router.ts`가 서버당 하나의 upgrade 리스너로 나눈다. 스트림마다 `server.on('upgrade')`를 걸면 서로의 소켓을 끊는다.
 - **G1(`projects.started_at`) 이후에는 멤버를 바꿀 수 없다**(403). 역할 교체는 해제 후 재배정이다 —
   UPDATE 경로를 두면 한 역할에 둘이 잠깐 겹친다.
 - **멤버 배정 뒤 그 에이전트는 토큰을 재발급해야 한다.** 배정 전 토큰에는 `project_id`가 없다.

@@ -4,7 +4,7 @@ import { env } from './config/env.js';
 import { logger } from './config/logger.js';
 import { assertSchemaUpToDate } from './config/migrations.js';
 import { recoverInterruptedPlans } from './domain/pm/service.js';
-import { attachAgentStream } from './realtime/agent-stream.js';
+import { attachRealtime } from './realtime/index.js';
 
 // 서버 기동. 로컬(index.ts, npm run dev)과 운영(boot.ts server)이 같은 경로를 탄다.
 // 스키마가 코드보다 뒤처져 있으면 뜨지 않는다 — assertSchemaUpToDate 주석 참고.
@@ -21,7 +21,7 @@ export async function startServer(): Promise<void> {
       });
       resolve();
     });
-    // 에이전트 태스크 스트림(웹소켓). 같은 포트·같은 HTTP 서버의 upgrade로 받는다 — 운영은 Caddy가 그대로 넘긴다.
-    attachAgentStream(server);
+    // 웹소켓 — 에이전트 태스크 스트림과 사람용 신호 스트림. 같은 포트·같은 HTTP 서버의 upgrade로 받는다 — 운영은 Caddy가 그대로 넘긴다.
+    attachRealtime(server);
   });
 }

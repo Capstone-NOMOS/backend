@@ -28,22 +28,25 @@ export async function authenticate(req: Request, _res: Response, next: NextFunct
     if (!match?.[1]) {
       throw new AppError('UNAUTHENTICATED', 'bearer token required');
     }
-
-    const claims = verifyJwt(match[1], env.JWT_SECRET);
-    // kind 검사가 없으면 에이전트 access token으로 사람 전용 API를 부를 수 있다.
-    if (!claims || claims.kind !== 'user' || typeof claims.sub !== 'string') {
-      throw new AppError('UNAUTHENTICATED', 'invalid or expired token');
-    }
-
-    const user = await findUserById(pool, claims.sub);
-    if (!user) {
-      throw new AppError('UNAUTHENTICATED', 'invalid or expired token');
-    }
-    req.user = { id: user.id, orgId: user.orgId, orgRole: user.orgRole };
+    req.user = await resolveUserToken(match[1]);
     next();
   } catch (err) {
     next(err);
   }
+}
+
+// 사람 토큰 검증. HTTP(authenticate)와 웹소켓(realtime/user-stream)이 같은 검증을 탄다 — 한쪽만 느슨해지지 않게.
+export async function resolveUserToken(token: string): Promise<AuthUser> {
+  const claims = verifyJwt(token, env.JWT_SECRET);
+  // kind 검사가 없으면 에이전트 access token으로 사람 전용 API를 부를 수 있다.
+  if (!claims || claims.kind !== 'user' || typeof claims.sub !== 'string') {
+    throw new AppError('UNAUTHENTICATED', 'invalid or expired token');
+  }
+  const user = await findUserById(pool, claims.sub);
+  if (!user) {
+    throw new AppError('UNAUTHENTICATED', 'invalid or expired token');
+  }
+  return { id: user.id, orgId: user.orgId, orgRole: user.orgRole };
 }
 
 // 요청자의 조직 id. 아직 조직이 없으면 NOT_IN_ORG(403).

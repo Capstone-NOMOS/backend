@@ -48,6 +48,7 @@ export async function dropSchema(): Promise<void> {
     DROP TABLE IF EXISTS approvals;
     DROP TABLE IF EXISTS agent_device_requests;
     DROP TABLE IF EXISTS events;
+    DROP FUNCTION IF EXISTS nomos_notify_event();
     DROP TABLE IF EXISTS oauth_sessions;
     DROP TABLE IF EXISTS spec_tests;
     DROP TABLE IF EXISTS project_policies;

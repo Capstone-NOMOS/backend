@@ -680,6 +680,11 @@ Table events {
     거부       TOOL_DENIED (payload.stage로 어느 단계인지 구분)
   ⚠️ 실험 컬럼 7개는 Phase 1에서 안 써도 컬럼은 있어야 함
      나중에 추가하면 그때까지 쌓인 이벤트가 전부 NULL
+
+  ★ 016 트리거: 사람용 실시간 스트림(/api/stream)의 신호원. 커밋될 때만 전달된다(롤백이면 버려짐)
+    CREATE TRIGGER trg_events_notify AFTER INSERT ON events
+      FOR EACH ROW EXECUTE FUNCTION nomos_notify_event();
+    -- pg_notify('nomos_events', {id, orgId, projectId, type}) — payload는 싣지 않는다
   '''
 }
 
