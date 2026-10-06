@@ -181,6 +181,41 @@ components:
         reason: { type: string, nullable: true, description: '반려 사유(반려는 필수)' }
         requestedAt: { type: string, format: date-time }
         decidedAt: { type: string, format: date-time, nullable: true }
+    AgentQuestion:
+      type: object
+      required: [id, projectId, taskId, askedByAgentId, askerRole, targetRole, routedBy, questions, status, answers, answeredBy, answeredAt, expiresAt, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        projectId: { type: string, format: uuid }
+        taskId: { type: string, format: uuid }
+        askedByAgentId: { type: string, format: uuid }
+        askerRole: { type: string, enum: [FRONTEND, BACKEND] }
+        targetRole: { type: string, enum: [FRONTEND, BACKEND], description: '답할 역할. 서버가 정한다(routedBy에 근거)' }
+        routedBy: { type: string, description: "대상 역할을 정한 규칙. 지금은 'role_rule:opposite'(묻는 쪽의 반대 역할)" }
+        questions:
+          type: array
+          description: Claude Code AskUserQuestion 형식 그대로
+          items:
+            type: object
+            additionalProperties: true
+            required: [question, options]
+            properties:
+              question: { type: string }
+              header: { type: string }
+              multiSelect: { type: boolean }
+              options:
+                type: array
+                items: { type: object, additionalProperties: true, required: [label], properties: { label: { type: string }, description: { type: string } } }
+        status: { type: string, enum: [pending, answered, expired] }
+        answers:
+          type: object
+          nullable: true
+          additionalProperties: { type: string }
+          description: '키는 질문 문장 그대로. 값은 선택지 label이거나 자유 문장(근거를 덧붙여도 된다)'
+        answeredBy: { type: string, format: uuid, nullable: true }
+        answeredAt: { type: string, format: date-time, nullable: true }
+        expiresAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
     ProjectEvent:
       type: object
       required: [id, type, ts, onBehalfOf, actorAgentId, payload, tokenCost, pathViolation]
@@ -804,6 +839,7 @@ tags:
   - name: 태스크·노트
   - name: 검증
   - name: 승인
+  - name: 질문
 
 paths:
   /auth/signup:
@@ -2381,6 +2417,112 @@ paths:
                   value: { error: { code: APPROVAL_ALREADY_DECIDED, message: approval was already decided (APPROVE) } }
                 상태바뀜:
                   value: { error: { code: APPROVAL_STALE, message: the task is no longer awaiting approval (READY) } }
+  /tasks/{taskId}/questions:
+    post:
+      tags: [질문]
+      summary: 질문 올리기 (에이전트 — 브릿지가 대신 부른다, 실험)
+      description: |
+        실행 중인 에이전트가 AskUserQuestion으로 물으면 브릿지의 권한 도구가 여기에 올리고, 답이 오거나 만료될 때까지 기다린다.
+        대상 역할은 서버가 정한다(지금은 묻는 쪽의 반대 역할). 그 태스크의 담당 에이전트만 물을 수 있다.
+      security: [{ agentToken: [] }]
+      parameters:
+        - { name: taskId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [questions]
+              properties:
+                questions: { type: array, items: { type: object, additionalProperties: true } }
+            example:
+              questions:
+                - question: GET /api/studies/:id/members 의 응답 본문 형태는 무엇인가요?
+                  header: 응답 형태
+                  multiSelect: false
+                  options: [{ label: '{ members: [...] }' }, { label: '배열 그대로' }]
+      responses:
+        '201':
+          description: 올라감(status=pending)
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/AgentQuestion' } } }
+        '422':
+          description: 질문 형식 위반(개수·길이·중복 질문) — error.details에 전부
+  /tasks/{taskId}/questions/{questionId}:
+    get:
+      tags: [질문]
+      summary: 질문 상태 (묻은 에이전트 — 브릿지가 답을 기다리며 읽는다, 실험)
+      description: 만료 시각이 지났으면 이 조회에서 expired로 바뀐다.
+      security: [{ agentToken: [] }]
+      parameters:
+        - { name: taskId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: questionId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 질문
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/AgentQuestion' } } }
+  /projects/{projectId}/questions:
+    get:
+      tags: [질문]
+      summary: 프로젝트의 에이전트 질문 (실험)
+      description: 답할 사람이 보는 목록. 볼 수 있는 범위는 태스크와 같다. 실시간 신호 토픽은 questions.
+      security: [{ userToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - { name: status, in: query, required: false, schema: { type: string, enum: [pending, answered, expired, all], default: pending } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+      responses:
+        '200':
+          description: 최신순
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [questions]
+                    properties:
+                      questions: { type: array, items: { $ref: '#/components/schemas/AgentQuestion' } }
+  /questions/{questionId}/answer:
+    post:
+      tags: [질문]
+      summary: 질문에 답하기 (대상 역할 담당 또는 대표, 실험)
+      description: |
+        키는 질문 문장 **그대로**여야 한다(다르면 에이전트가 "답하지 않음"으로 받는다 — 그래서 422로 막는다).
+        값은 선택지 label이거나 자유 문장. 근거를 덧붙이면 에이전트가 그것까지 따른다.
+      security: [{ userToken: [] }]
+      parameters:
+        - { name: questionId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [answers]
+              properties:
+                answers: { type: object, additionalProperties: { type: string } }
+            example:
+              answers:
+                'GET /api/studies/:id/members 의 응답 본문 형태는 무엇인가요?': '{ members: [...] } — 백엔드 공통 목록 형식'
+      responses:
+        '200':
+          description: 답함(status=answered). 기다리던 에이전트가 바로 이어서 작업한다
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/AgentQuestion' } } }
+        '403':
+          description: 대상 역할 담당도 대표도 아님(NOT_QUESTION_TARGET)
+        '409':
+          description: 이미 답했거나 만료됨(QUESTION_CLOSED)
+        '422':
+          description: 키가 질문과 다르거나 답이 비었음(QUESTION_INVALID) — error.details에 전부
   /projects/{projectId}/events:
     get:
       tags: [프로젝트]

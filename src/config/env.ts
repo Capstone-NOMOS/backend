@@ -70,6 +70,9 @@ const envSchema = z
     PM_TIMEOUT_MS: z.coerce.number().int().positive().default(600_000),
     // 한 수정 체인에서 받을 수 있는 수정 요청 수(원본 요청은 세지 않는다). 중계 모드에서는 API 예산이 상한 역할을 못 하므로 서버가 센다.
     PM_MAX_REVISIONS: z.coerce.number().int().min(0).max(20).default(3),
+    // 에이전트 질문(AskUserQuestion)에 답을 기다리는 시간. 지나면 질문이 만료되고 에이전트는 커밋하지 않고 멈춘다.
+    // 브릿지는 기다리는 동안 MCP 진행 알림을 보내므로 Claude Code의 30분 무응답 한도에 걸리지 않는다(실험 E1b).
+    QUESTION_TIMEOUT_MS: z.coerce.number().int().min(10_000).max(86_400_000).default(600_000),
   })
   .superRefine((v, ctx) => {
     if (v.APP_BASE_URL !== undefined) {

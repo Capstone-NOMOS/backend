@@ -7,7 +7,9 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { readCredentials, updateAccessToken } from './credentials.js';
 import { NomosClient, PolicyStaleLoopError } from './nomos-client.js';
-import { mergeAcknowledged, readBriefingNoteIds } from './briefing-notes.js';
+import { mergeAcknowledged, readBriefingNoteIds, readBriefingTaskId } from './briefing-notes.js';
+import { PERMISSION_TOOL } from './claude-args.js';
+import { DENY_OTHER, denyUnanswered, handleAskUserQuestion, isHandled, type PermissionResult } from './permission.js';
 import { pushTaskBranch } from './push.js';
 
 // 자격 증명은 ~/.nomos/credentials가 정본이다(0600). 환경변수는 파일이 없을 때만 쓴다
@@ -184,6 +186,52 @@ server.registerTool(
         }),
       'read_notes',
     ),
+);
+
+// 권한 도구 — Claude Code가 --permission-prompt-tool로 부른다(모델에게는 보이지 않는다 — 실험 E5).
+// AskUserQuestion만 처리하고 나머지는 전부 거부한다. 이유는 bridge/permission.ts.
+// 답을 기다리는 동안 진행 알림을 보낸다 — 없으면 Claude Code가 30분 무응답에서 끊는다(실험 E1·E1b).
+const QUESTION_MAX_WAIT_MS = Number(process.env.NOMOS_QUESTION_MAX_WAIT_MS ?? 15 * 60_000);
+
+server.registerTool(
+  PERMISSION_TOOL,
+  {
+    title: 'NOMOS permission prompt',
+    description: 'Internal: permission decisions for the headless run. Not for direct use.',
+    inputSchema: {
+      tool_name: z.string(),
+      input: z.record(z.unknown()),
+      tool_use_id: z.string().optional(),
+    },
+  },
+  async ({ tool_name, input }, extra) => {
+    const respond = (result: PermissionResult) => ok(JSON.stringify(result));
+    if (!isHandled(tool_name)) {
+      process.stderr.write(`[nomos-mcp] permission denied: ${tool_name}\n`);
+      return respond(DENY_OTHER);
+    }
+    const taskId = readBriefingTaskId(workspaceDir);
+    if (!taskId) return respond(denyUnanswered('No task is active in this workspace.', []));
+
+    const progressToken = extra._meta?.progressToken;
+    let tick = 0;
+    const result = await handleAskUserQuestion(input, {
+      ask: (questions) => client.askQuestions(taskId, questions),
+      get: (questionId) => client.getQuestion(taskId, questionId),
+      sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+      maxWaitMs: QUESTION_MAX_WAIT_MS,
+      onWaiting: async () => {
+        tick += 1;
+        if (progressToken === undefined || tick % 15 !== 0) return; // 약 30초마다
+        await extra.sendNotification({
+          method: 'notifications/progress',
+          params: { progressToken, progress: tick, message: 'waiting for an answer from another role' },
+        });
+      },
+    });
+    process.stderr.write(`[nomos-mcp] AskUserQuestion → ${result.behavior}\n`);
+    return respond(result);
+  },
 );
 
 await server.connect(new StdioServerTransport());

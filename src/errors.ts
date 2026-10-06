@@ -53,6 +53,10 @@ export type ErrorCode =
   | 'APPROVAL_NOT_FOUND'
   | 'APPROVAL_ALREADY_DECIDED'
   | 'APPROVAL_STALE'
+  | 'QUESTION_NOT_FOUND'
+  | 'QUESTION_CLOSED'
+  | 'QUESTION_INVALID'
+  | 'NOT_QUESTION_TARGET'
   | 'PM_JOB_NOT_FOUND'
   | 'PM_RELAY_DISABLED'
   | 'PROJECT_NOT_FOUND'
@@ -142,6 +146,10 @@ const STATUS_BY_CODE: Record<ErrorCode, number> = {
   APPROVAL_ALREADY_DECIDED: 409,
   // 409 — 결정하려는 순간 태스크가 더 이상 승인 대기가 아니다(정지·수동 변경 등).
   APPROVAL_STALE: 409,
+  QUESTION_NOT_FOUND: 404,
+  QUESTION_CLOSED: 409,
+  QUESTION_INVALID: 422,
+  NOT_QUESTION_TARGET: 403,
   // 중계 모드의 작업. 끝났거나 시간 제한에 걸렸거나 서버가 재시작돼 사라졌다.
   PM_JOB_NOT_FOUND: 404,
   // 서버가 중계 모드가 아니다(PM_PROVIDER=api) — pm-worker가 할 일이 없다.

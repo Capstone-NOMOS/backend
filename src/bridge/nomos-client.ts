@@ -6,6 +6,14 @@
 
 export type Tokens = { accessToken: string; refreshToken: string };
 
+export type QuestionState = {
+  id: string;
+  status: 'pending' | 'answered' | 'expired';
+  targetRole: string;
+  answers: Record<string, string> | null;
+  expiresAt: string;
+};
+
 export type NomosClientOptions = {
   baseUrl: string;
   tokens: Tokens;
@@ -120,6 +128,15 @@ export class NomosClient {
     const path = `/api/projects/${projectId}/notes${query ? `?${query}` : ''}`;
     const data = (await this.request('GET', path)) as { notes: Record<string, unknown>[] };
     return data.notes;
+  }
+
+  // 권한 도구(permission_prompt)가 AskUserQuestion을 올리고, 답을 기다리며 상태를 읽는다.
+  async askQuestions(taskId: string, questions: unknown[]): Promise<QuestionState> {
+    return (await this.request('POST', `/api/tasks/${taskId}/questions`, { questions })) as QuestionState;
+  }
+
+  async getQuestion(taskId: string, questionId: string): Promise<QuestionState> {
+    return (await this.request('GET', `/api/tasks/${taskId}/questions/${questionId}`)) as QuestionState;
   }
 
   // Executor 폴링용. 에이전트 토큰이면 서버가 자기 역할로 강제 필터한다.

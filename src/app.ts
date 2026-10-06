@@ -5,6 +5,7 @@ import { compileOriginRules, cors, type OriginRule } from './middleware/cors.js'
 import { errorHandler } from './middleware/error-handler.js';
 import { agentsRouter } from './routes/agents.js';
 import { approvalsRouter } from './routes/approvals.js';
+import { questionsRouter } from './routes/questions.js';
 import { authRouter } from './routes/auth.js';
 import { docsRouter, type DocsOptions } from './routes/docs.js';
 import { invitesRouter } from './routes/invites.js';
@@ -68,6 +69,7 @@ export function createApp(options: AppOptions = appOptionsFromEnv()): Express {
   app.use('/api', invitesRouter);
   app.use('/api', oauthRouter);
   app.use('/api', approvalsRouter);
+  app.use('/api', questionsRouter);
   app.use('/api', tasksRouter);
   app.use('/api', notesRouter);
   app.use('/api', projectsRouter);

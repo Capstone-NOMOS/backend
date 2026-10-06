@@ -7,8 +7,8 @@ import type { EventType } from '../domain/events/types.js';
 // 프로젝트가 있는 이벤트는 전부 'events'(활동 로그)를 함께 받는다 — 여기 매핑이 없는 새 타입도 활동 로그로는 빠지지 않는다.
 // Record<EventType, …>라서 이벤트 타입을 추가하면 여기를 채우기 전에는 컴파일이 안 된다.
 
-export const PROJECT_TOPICS = ['project', 'tasks', 'specs', 'plans', 'approvals', 'notes', 'members', 'events'] as const;
-export const ORG_TOPICS = ['projects', 'approvals', 'agents', 'repos', 'members'] as const;
+export const PROJECT_TOPICS = ['project', 'tasks', 'specs', 'plans', 'approvals', 'notes', 'members', 'questions', 'events'] as const;
+export const ORG_TOPICS = ['projects', 'approvals', 'agents', 'repos', 'members', 'questions'] as const;
 
 export type ProjectTopic = (typeof PROJECT_TOPICS)[number];
 export type OrgTopic = (typeof ORG_TOPICS)[number];
@@ -50,6 +50,9 @@ export const TOPICS_BY_EVENT: Record<EventType, Mapping> = {
 
   APPROVAL_REQUESTED: { project: ['approvals', 'tasks'], org: ['approvals'] },
   APPROVAL_RESULT: { project: ['approvals', 'tasks'], org: ['approvals'] },
+  QUESTION_ASKED: { project: ['questions'], org: ['questions'] },
+  QUESTION_ANSWERED: { project: ['questions'], org: ['questions'] },
+  QUESTION_EXPIRED: { project: ['questions'], org: ['questions'] },
 
   PM_PLAN_REQUESTED: { project: ['plans'] },
   PM_CALL: { project: ['plans'] },

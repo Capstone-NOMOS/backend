@@ -21,6 +21,9 @@ export type EventType =
   | 'NOTES_ACK_REQUIRED'
   | 'APPROVAL_REQUESTED'
   | 'APPROVAL_RESULT'
+  | 'QUESTION_ASKED'
+  | 'QUESTION_ANSWERED'
+  | 'QUESTION_EXPIRED'
   | 'MEMBER_UNASSIGNED'
   | 'REPO_UPDATED'
   | 'TASKS_IMPORTED'
@@ -172,6 +175,32 @@ export type ApprovalRequestedPayload = {
   artifactId: string;
   gateMode: string;
   triggeredActions: string[];
+};
+
+// 실행 중인 에이전트가 다른 역할 소관의 결정을 물었다(AskUserQuestion → 브릿지 → 서버). 질문 문장은 행에 있다.
+export type QuestionAskedPayload = {
+  questionId: string;
+  taskId: string;
+  askerRole: string;
+  targetRole: string;
+  routedBy: string;
+  questionCount: number;
+};
+
+// 대상 역할의 사람이 답했다. answeredByRole: 답한 사람이 대상 역할 담당인지 대표인지(대표는 어느 역할이든 답할 수 있다).
+export type QuestionAnsweredPayload = {
+  questionId: string;
+  taskId: string;
+  targetRole: string;
+  answeredByRole: 'TARGET_OWNER' | 'REPRESENTATIVE';
+  waitedMs: number;
+};
+
+// 시간 안에 답이 오지 않았다 — 에이전트는 멈추고(E4) 태스크는 사람이 다시 움직여야 한다.
+export type QuestionExpiredPayload = {
+  questionId: string;
+  taskId: string;
+  targetRole: string;
 };
 
 // 대표가 승인·반려했다.
@@ -346,6 +375,9 @@ export type EventPayloadMap = {
   NOTES_ACK_REQUIRED: NotesAckRequiredPayload;
   APPROVAL_REQUESTED: ApprovalRequestedPayload;
   APPROVAL_RESULT: ApprovalResultPayload;
+  QUESTION_ASKED: QuestionAskedPayload;
+  QUESTION_ANSWERED: QuestionAnsweredPayload;
+  QUESTION_EXPIRED: QuestionExpiredPayload;
   MEMBER_UNASSIGNED: MemberUnassignedPayload;
   REPO_UPDATED: RepoUpdatedPayload;
   TASKS_IMPORTED: TasksImportedPayload;

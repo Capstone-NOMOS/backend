@@ -43,6 +43,13 @@ describe('MCP 격리', () => {
     for (const rule of bash) expect(rule, rule).toMatch(/^Bash\([a-z][a-z -]+:\*\)$/);
   });
 
+  it('권한 도구는 nomos 서버의 permission_prompt이고, 모델이 부르는 허용 목록에는 없다', () => {
+    const args = buildClaudeArgs(OPTIONS);
+    expect(args[args.indexOf('--permission-prompt-tool') + 1]).toBe('mcp__nomos__permission_prompt');
+    // 허용 목록에 넣으면 모델이 직접 불러 스스로 승인을 만들어 낼 수 있다.
+    expect(args[args.indexOf('--allowedTools') + 1]).not.toContain('permission_prompt');
+  });
+
   it('도구 이름은 설정의 서버 이름에서 파생된다', () => {
     const serverName = Object.keys(
       JSON.parse(buildMcpConfig({ serverPath: 's.js' })).mcpServers,

@@ -30,7 +30,7 @@ export async function runMigrations(): Promise<void> {
 
 export async function truncateAll(): Promise<void> {
   await testPool.query(
-    `TRUNCATE TABLE approvals, notes, verifications, artifacts, task_deps, tasks, plans, spec_tests, specs, project_policies, oauth_sessions, project_members, project_repos, projects,
+    `TRUNCATE TABLE agent_questions, approvals, notes, verifications, artifacts, task_deps, tasks, plans, spec_tests, specs, project_policies, oauth_sessions, project_members, project_repos, projects,
        agent_device_requests, agent_tokens, agents, events, invites, repo_paths, repos, users, organizations
      RESTART IDENTITY CASCADE`,
   );
@@ -45,6 +45,7 @@ export async function resetSchema(): Promise<void> {
 
 export async function dropSchema(): Promise<void> {
   await testPool.query(`
+    DROP TABLE IF EXISTS agent_questions;
     DROP TABLE IF EXISTS approvals;
     DROP TABLE IF EXISTS agent_device_requests;
     DROP TABLE IF EXISTS events;

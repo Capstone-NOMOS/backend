@@ -28,3 +28,15 @@ export function readBriefingNoteIds(workspaceDir: string, taskId: string): strin
 export function mergeAcknowledged(briefed: string[], fromModel: string[] | undefined): string[] {
   return [...new Set([...briefed, ...(fromModel ?? [])])].sort();
 }
+
+// 지금 작업공간의 태스크 id — 권한 도구가 AskUserQuestion을 어느 태스크의 질문으로 올릴지 정한다. 없으면 null.
+export function readBriefingTaskId(workspaceDir: string): string | null {
+  const file = path.join(workspaceDir, BRIEFING_NOTES_FILE);
+  if (!existsSync(file)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf-8')) as { taskId?: unknown };
+    return typeof parsed.taskId === 'string' ? parsed.taskId : null;
+  } catch {
+    return null;
+  }
+}

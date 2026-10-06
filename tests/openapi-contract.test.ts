@@ -232,6 +232,16 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     await call('GET', '/agents/me/tasks', agent);
     await call('POST', `/tasks/${taskId}/claim`, agent);
 
+    // 에이전트 질문(실험) — 브릿지가 AskUserQuestion을 올리고, 대표가 답하고, 브릿지가 답을 읽는다.
+    const question = 'GET /api/studies/:id/members 의 응답 본문 형태는?';
+    const asked = await call('POST', `/tasks/${taskId}/questions`, agent, {
+      questions: [{ question, header: '응답 형태', multiSelect: false, options: [{ label: '{ members: [...] }' }, { label: '배열' }] }],
+    });
+    const questionId = asked.data.id as string;
+    await call('GET', `/projects/${projectId}/questions`, rep);
+    await call('POST', `/questions/${questionId}/answer`, rep, { answers: { [question]: '{ members: [...] }' } });
+    await call('GET', `/tasks/${taskId}/questions/${questionId}`, agent);
+
     // 제출 — 커밋 diff는 가짜 검사기로. 신고와 같게 두면 V3는 PASS다.
     setCommitInspector({ kind: 'fake', async changedPaths() { return ['src/api/join.ts']; } });
     const submitted = await call('POST', `/tasks/${taskId}/artifacts`, agent, {

@@ -8,7 +8,7 @@ import { AppError } from '../errors.js';
 // NOTE_INVALID가 여기 있어야 하는 이유: 위반 목록(어느 필드의 몇 번째가 몇 자인지)이 빠지면
 // 에이전트는 "note validation failed"만 보고 무엇을 줄여야 할지 모른 채 같은 요청을 반복한다.
 // 자르지 않고 전부 되돌려주는 것이 노트 검증의 설계 의도다(domain/note/validate.ts).
-const PUBLIC_DETAIL_CODES = new Set(['POLICY_STALE', 'NOTE_INVALID', 'PLAN_INVALID', 'PROJECT_START_INVALID', 'NOTES_UNACKNOWLEDGED', 'REPO_IN_ACTIVE_PROJECT', 'PLAN_REVISION_LIMIT']);
+const PUBLIC_DETAIL_CODES = new Set(['POLICY_STALE', 'NOTE_INVALID', 'PLAN_INVALID', 'PROJECT_START_INVALID', 'NOTES_UNACKNOWLEDGED', 'REPO_IN_ACTIVE_PROJECT', 'PLAN_REVISION_LIMIT', 'QUESTION_INVALID']);
 
 // 상세는 details 키에 담는다(배열이든 객체든). 클라이언트는 error.details 한 곳만 보면 된다.
 // 예외는 POLICY_STALE 하나 — 이 코드만 예전부터 상세를 error 안으로 펼쳐(error.reason) 왔고, 배포된 브릿지가 그 모양을 읽는다.
