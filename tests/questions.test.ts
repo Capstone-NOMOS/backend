@@ -67,13 +67,16 @@ async function world() {
   await assignMember(repActor, project.id, feAgent.agentId, 'FRONTEND');
   await assignMember(repActor, project.id, beAgent.agentId, 'BACKEND');
   const task = await createTask(rep.userId, project.id, { title: 'T-1 멤버 목록 화면', teamRole: 'FRONTEND', kind: 'INTEGRATION', repoId: web!.id, specId: null, dependsOn: [] });
+  const beTask = await createTask(rep.userId, project.id, { title: 'T-2 멤버 목록 API', teamRole: 'BACKEND', kind: 'INTEGRATION', repoId: api!.id, specId: null, dependsOn: [] });
   await startProject(repActor, project.id);
 
   const agentClient = async (refreshToken: string) =>
     new NomosClient({ baseUrl, tokens: { accessToken: (await refreshAgentToken(refreshToken)).accessToken, refreshToken } });
   const feClient = await agentClient(feAgent.refreshToken);
   await feClient.claimTask(task.id);
-  return { orgId, projectId: project.id, taskId: task.id, rep, fe, be, feClient, beClient: await agentClient(beAgent.refreshToken) };
+  const beClient = await agentClient(beAgent.refreshToken);
+  await beClient.claimTask(beTask.id);
+  return { orgId, projectId: project.id, taskId: task.id, beTaskId: beTask.id, rep, fe, be, feClient, beClient };
 }
 
 const Q1 = { question: 'GET /api/studies/:id/members 의 응답 본문 형태는?', header: '응답 형태', multiSelect: false, options: [{ label: '{ members: [...] }' }, { label: '배열' }] };
@@ -157,6 +160,26 @@ describe('답하기', () => {
     const again = await http('POST', `/questions/${asked.id}/answer`, token, { answers: { [Q1.question]: '{ members }' } });
     expect(again.status).toBe(409);
     expect(again.json.error!.code).toBe('QUESTION_CLOSED');
+  });
+});
+
+describe('BE → FE (반대 방향)', () => {
+  // 라우팅은 "묻는 쪽의 반대 역할"이라 대칭이어야 한다 — BE가 화면 요구사항을 물으면 FE 담당이 답한다.
+  it('BE 에이전트가 물으면 대상은 FRONTEND이고, FE 담당이 답하며 BE 담당은 답할 수 없다', async () => {
+    const w = await world();
+    const ask = { question: '멤버 목록 화면에 어떤 필드가 필요한가요?', header: '필드', multiSelect: true, options: [{ label: 'nickname' }, { label: 'avatarUrl' }, { label: 'joinedAt' }] };
+    const asked = await w.beClient.askQuestions(w.beTaskId, [ask]);
+    expect(asked).toMatchObject({ status: 'pending', targetRole: 'FRONTEND' });
+
+    const be = await http('POST', `/questions/${asked.id}/answer`, await w.be.token(), { answers: { [ask.question]: 'nickname, joinedAt' } });
+    expect(be.status).toBe(403);
+    expect(be.json.error!.code).toBe('NOT_QUESTION_TARGET');
+
+    const fe = await http('POST', `/questions/${asked.id}/answer`, await w.fe.token(), { answers: { [ask.question]: 'nickname, avatarUrl, joinedAt' } });
+    expect(fe.status).toBe(200);
+    expect(await w.beClient.getQuestion(w.beTaskId, asked.id)).toMatchObject({ status: 'answered', answers: { [ask.question]: 'nickname, avatarUrl, joinedAt' } });
+    const { rows } = await pool.query(`SELECT payload, on_behalf_of FROM events WHERE type = 'QUESTION_ANSWERED'`);
+    expect(rows[0]).toMatchObject({ on_behalf_of: w.fe.userId, payload: { targetRole: 'FRONTEND', answeredByRole: 'TARGET_OWNER' } });
   });
 });
 
