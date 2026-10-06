@@ -925,9 +925,10 @@ Table agent_questions {
   asked_by_agent uuid [not null, ref: > agents.id]
   asker_role text [not null, note: 'FRONTEND | BACKEND']
   target_role text [not null, note: '답할 역할 — 서버가 정한다']
-  routed_by text [not null, note: "대상 역할을 정한 규칙. 지금은 'role_rule:opposite'"]
+  routed_by text [not null, note: "대상 역할을 정한 라우터 구현(domain/question/router.ts). 기본 'role_rule:opposite'"]
+  routing jsonb [not null, default: '{}', note: '라우터 판정 상세 {confidence, reason, latencyMs, fallback}']
   questions jsonb [not null, note: 'Claude Code AskUserQuestion 형식 그대로(1~4개)']
-  status text [not null, default: 'pending', note: 'pending | answered | expired']
+  status text [not null, default: 'pending', note: "pending | answered | expired | self_owned(라우터가 묻는 쪽 자기 소관으로 판정)"]
   answers jsonb [note: '키 = 질문 문장 그대로']
   answered_by uuid [ref: > users.id]
   answered_at timestamptz
@@ -936,7 +937,7 @@ Table agent_questions {
 
   Note: '''
   실행 중인 에이전트가 다른 역할 소관 결정을 AskUserQuestion으로 물으면 브릿지 권한 도구가 올리고, 대상 역할 담당(또는 대표)이 답한다.
-  CHECK agent_questions_status_chk: status IN ('pending','answered','expired')
+  CHECK agent_questions_status_chk: status IN ('pending','answered','expired','self_owned')
   CHECK agent_questions_roles_chk: asker_role·target_role IN ('FRONTEND','BACKEND')
   CHECK agent_questions_questions_chk: jsonb_typeof(questions)='array' AND 길이 1~4
   CHECK agent_questions_answered_chk: (status='answered') = (answers·answered_by·answered_at 모두 NOT NULL)

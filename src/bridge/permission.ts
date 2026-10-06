@@ -31,7 +31,15 @@ export function denyUnanswered(reason: string, questions: string[]): PermissionR
   };
 }
 
-export type QuestionLike = { status: 'pending' | 'answered' | 'expired'; answers: Record<string, string> | null };
+export type QuestionLike = { status: 'pending' | 'answered' | 'expired' | 'self_owned'; answers: Record<string, string> | null };
+
+// 라우터가 "묻는 쪽 자기 소관"이라고 판정했다 — 남에게 넘기지 않고 스스로 정하게 한다. 정한 것은 다른 사람이 따라야 하므로 DECIDED로 남긴다.
+export const DENY_SELF_OWNED: PermissionResult = {
+  behavior: 'deny',
+  message:
+    'NOMOS: this decision belongs to your own role, so it was not sent to anyone. Decide it yourself based on the spec and existing code, ' +
+    'continue the task, and record the decision with publish_note (kind DECIDED) so others follow it.',
+};
 
 export type WaitDeps = {
   ask: (questions: unknown[]) => Promise<{ id: string } & QuestionLike>;
@@ -61,6 +69,7 @@ export async function handleAskUserQuestion(input: Record<string, unknown>, deps
       state = await deps.get(asked.id);
     }
     if (state.status === 'answered' && state.answers) return { behavior: 'allow', updatedInput: { ...input, answers: state.answers } };
+    if (state.status === 'self_owned') return DENY_SELF_OWNED;
     return denyUnanswered('No answer arrived in time.', texts);
   } catch (err) {
     return denyUnanswered(`The question could not be delivered (${err instanceof Error ? err.message : String(err)}).`, texts);

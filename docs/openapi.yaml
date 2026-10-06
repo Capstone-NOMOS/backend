@@ -183,7 +183,7 @@ components:
         decidedAt: { type: string, format: date-time, nullable: true }
     AgentQuestion:
       type: object
-      required: [id, projectId, taskId, askedByAgentId, askerRole, targetRole, routedBy, questions, status, answers, answeredBy, answeredAt, expiresAt, createdAt]
+      required: [id, projectId, taskId, askedByAgentId, askerRole, targetRole, routedBy, routing, questions, status, answers, answeredBy, answeredAt, expiresAt, createdAt]
       properties:
         id: { type: string, format: uuid }
         projectId: { type: string, format: uuid }
@@ -191,7 +191,16 @@ components:
         askedByAgentId: { type: string, format: uuid }
         askerRole: { type: string, enum: [FRONTEND, BACKEND] }
         targetRole: { type: string, enum: [FRONTEND, BACKEND], description: '답할 역할. 서버가 정한다(routedBy에 근거)' }
-        routedBy: { type: string, description: "대상 역할을 정한 규칙. 지금은 'role_rule:opposite'(묻는 쪽의 반대 역할)" }
+        routedBy: { type: string, description: "대상 역할을 정한 라우터 구현(이름·버전). 기본 'role_rule:opposite'(묻는 쪽의 반대 역할)" }
+        routing:
+          type: object
+          description: 라우터 판정 상세 — 라우터 구현을 바꿔 가며 비교하는 근거
+          required: [confidence, reason, latencyMs, fallback]
+          properties:
+            confidence: { type: number, nullable: true, description: '0~1. 규칙 라우터는 null' }
+            reason: { type: string, nullable: true }
+            latencyMs: { type: integer }
+            fallback: { type: string, nullable: true, description: '라우터가 실패·시간 초과로 규칙 라우터로 대체됐으면 그 사유' }
         questions:
           type: array
           description: Claude Code AskUserQuestion 형식 그대로
@@ -206,7 +215,7 @@ components:
               options:
                 type: array
                 items: { type: object, additionalProperties: true, required: [label], properties: { label: { type: string }, description: { type: string } } }
-        status: { type: string, enum: [pending, answered, expired] }
+        status: { type: string, enum: [pending, answered, expired, self_owned], description: 'self_owned — 라우터가 묻는 쪽 자기 소관이라고 판정해 넘기지 않음(targetRole = askerRole)' }
         answers:
           type: object
           nullable: true
@@ -2473,7 +2482,7 @@ paths:
       security: [{ userToken: [] }]
       parameters:
         - $ref: '#/components/parameters/ProjectId'
-        - { name: status, in: query, required: false, schema: { type: string, enum: [pending, answered, expired, all], default: pending } }
+        - { name: status, in: query, required: false, schema: { type: string, enum: [pending, answered, expired, self_owned, all], default: pending } }
         - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
       responses:
         '200':

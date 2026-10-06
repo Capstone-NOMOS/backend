@@ -82,3 +82,19 @@ describe('권한 도구 — AskUserQuestion 중계', () => {
     expect(waits.length).toBe(2);
   });
 });
+
+describe('권한 도구 — 라우터가 자기 소관이라고 판정한 질문', () => {
+  it('self_owned면 기다리지 않고 "스스로 정하고 DECIDED로 남겨라"로 돌려준다', async () => {
+    let polled = 0;
+    const result = await handleAskUserQuestion({ questions: [QUESTION] }, {
+      ...deps([{ status: 'self_owned', answers: null }]),
+      get: async () => {
+        polled += 1;
+        return { status: 'self_owned', answers: null };
+      },
+    });
+    expect(polled).toBe(0);
+    expect(result).toMatchObject({ behavior: 'deny', message: expect.stringContaining('your own role') });
+    expect(result).toMatchObject({ message: expect.stringContaining('DECIDED') });
+  });
+});

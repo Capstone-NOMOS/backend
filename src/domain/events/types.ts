@@ -178,12 +178,16 @@ export type ApprovalRequestedPayload = {
 };
 
 // 실행 중인 에이전트가 다른 역할 소관의 결정을 물었다(AskUserQuestion → 브릿지 → 서버). 질문 문장은 행에 있다.
+// targetRole 'SELF'는 라우터가 "묻는 쪽 자기 소관"으로 판정해 돌려보낸 것. confidence·latencyMs·fallback은 라우터 비교 지표다.
 export type QuestionAskedPayload = {
   questionId: string;
   taskId: string;
   askerRole: string;
   targetRole: string;
   routedBy: string;
+  confidence: number | null;
+  latencyMs: number;
+  fallback: string | null;
   questionCount: number;
 };
 

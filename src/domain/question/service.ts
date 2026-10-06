@@ -1,4 +1,4 @@
-import { pool, withTransaction } from '../../config/db.js';
+import { pool, withTransaction, type Queryable } from '../../config/db.js';
 import { env } from '../../config/env.js';
 import { AppError } from '../../errors.js';
 import { appendEvent } from '../events/append.js';
@@ -6,7 +6,9 @@ import { findAgentMembership } from '../policy/repository.js';
 import { findProjectById, listProjectMembers } from '../project/repository.js';
 import { assertProjectVisibleToUser, type UserContext } from '../project/visibility.js';
 import type { TeamRole } from '../roles.js';
-import { findTaskById } from '../task/repository.js';
+import { findRepoById } from '../repo/repository.js';
+import { findSpecForTask, findTaskById } from '../task/repository.js';
+import { routeQuestion } from './router-registry.js';
 import type { AgentContext } from '../task/service.js';
 import {
   expireIfDue,
@@ -25,17 +27,14 @@ import {
 // 답이 오거나 만료될 때까지 기다린다(그동안 에이전트 실행은 멈춰 있다). 답은 대상 역할의 사람이 한다 —
 // 그 역할의 개발자가 결정을 알아야 하기 때문이다. 대표도 답할 수 있다.
 //
-// - 대상 역할은 서버가 정한다. 지금은 "묻는 쪽의 반대 역할"(역할이 둘뿐이다) — 결정 모델로 바꿀 자리이고, routed_by에 근거를 남긴다.
+// - 대상 역할은 질문 라우터가 정한다(router.ts — 반대 역할 규칙·LLM·결정 모델을 바꿔 끼운다). routed_by·routing에 판정과 근거를 남긴다.
+//   "묻는 쪽 자기 소관"(SELF)이면 넘기지 않고 self_owned로 돌려보낸다 — 브릿지가 "스스로 정하라"로 답한다.
+//   라우터는 트랜잭션 밖에서 부른다(LLM이면 수 초가 걸린다 — 그동안 잠금을 쥐지 않는다).
 // - 답의 키는 질문 문장과 정확히 같아야 한다. 다르면 Claude Code가 "답하지 않음"으로 처리한다(실험 E3) — 그래서 여기서 막는다.
 // - 만료는 읽을 때 판정한다. 만료되면 브릿지가 "커밋하지 말고 멈춰라"로 거부한다(실험 E4: 지시가 없으면 모델이 스스로 추측해 커밋했다).
 
-const ROUTED_BY = 'role_rule:opposite';
 const MAX_QUESTION_CHARS = 500;
 const MAX_ANSWER_CHARS = 2000;
-
-function oppositeRole(role: TeamRole): TeamRole {
-  return role === 'FRONTEND' ? 'BACKEND' : 'FRONTEND';
-}
 
 type Violation = { where: string; message: string };
 
@@ -71,23 +70,46 @@ export async function askQuestion(ctx: AgentContext, taskId: string, questions: 
   const violations = validateQuestions(questions);
   if (violations.length > 0) throw new AppError('QUESTION_INVALID', 'invalid questions', violations);
 
-  return withTransaction(async (tx) => {
-    const membership = await findAgentMembership(tx, ctx.agentId);
+  // 권한 확인과 라우팅 맥락 — 라우터를 부르기 전에 막을 것은 막는다(남의 태스크로 라우터 비용을 쓰지 않게).
+  const assertAsker = async (db: Queryable) => {
+    const membership = await findAgentMembership(db, ctx.agentId);
     if (!membership || membership.projectId !== ctx.projectId) {
       throw new AppError('NOT_PROJECT_MEMBER', 'agent is not a member of this project');
     }
-    const task = await findTaskById(tx, taskId);
+    const task = await findTaskById(db, taskId);
     if (!task || task.projectId !== ctx.projectId) throw new AppError('TASK_NOT_FOUND', `task ${taskId} not found`);
     if (task.assigneeAgentId !== ctx.agentId) throw new AppError('NOT_TASK_ASSIGNEE', 'task is assigned to another agent');
+    return { membership, task };
+  };
+  const { membership, task } = await assertAsker(pool);
+  const [spec, repo, members] = await Promise.all([
+    task.specId ? findSpecForTask(pool, task.specId) : Promise.resolve(null),
+    findRepoById(pool, task.repoId),
+    listProjectMembers(pool, ctx.projectId),
+  ]);
+  const routed = await routeQuestion({
+    askerRole: membership.teamRole,
+    roles: [...new Set<TeamRole>([membership.teamRole, ...members.map((m) => m.teamRole)])],
+    task: { title: task.title, kind: task.kind },
+    spec: spec ? { featureKey: spec.featureKey, title: spec.title, content: spec.content } : null,
+    repo: repo ? { fullName: repo.fullName } : null,
+    questions,
+  });
+  const selfOwned = routed.target === 'SELF';
+  const targetRole: TeamRole = selfOwned ? membership.teamRole : (routed.target as TeamRole);
+  const routing = { confidence: routed.confidence, reason: routed.reason, latencyMs: routed.latencyMs, fallback: routed.fallback };
 
-    const targetRole = oppositeRole(membership.teamRole);
+  return withTransaction(async (tx) => {
+    await assertAsker(tx);
     const question = await insertQuestion(tx, {
       projectId: ctx.projectId,
       taskId,
       askedByAgentId: ctx.agentId,
       askerRole: membership.teamRole,
       targetRole,
-      routedBy: ROUTED_BY,
+      routedBy: routed.routedBy,
+      routing,
+      status: selfOwned ? 'self_owned' : 'pending',
       questions,
       timeoutMs: env.QUESTION_TIMEOUT_MS,
     });
@@ -102,8 +124,11 @@ export async function askQuestion(ctx: AgentContext, taskId: string, questions: 
         questionId: question.id,
         taskId,
         askerRole: membership.teamRole,
-        targetRole,
-        routedBy: ROUTED_BY,
+        targetRole: selfOwned ? 'SELF' : targetRole,
+        routedBy: routed.routedBy,
+        confidence: routed.confidence,
+        latencyMs: routed.latencyMs,
+        fallback: routed.fallback,
         questionCount: questions.length,
       },
     });

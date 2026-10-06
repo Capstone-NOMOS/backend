@@ -5,7 +5,8 @@
 --
 -- questions·answers는 Claude Code의 AskUserQuestion 형식을 그대로 담는다 — answers의 키는 질문 문장과 정확히 같아야
 -- 모델이 답으로 받아들인다(실험 E3: 키가 다르면 "답하지 않음"으로 처리됐다).
--- 대상 역할(target_role)은 서버가 정한다(지금은 "묻는 쪽의 반대 역할" 규칙, 나중에 결정 모델로 대체) — routed_by에 근거를 남긴다.
+-- 대상 역할(target_role)은 서버의 질문 라우터가 정한다(domain/question/router.ts — 구현을 바꿔 끼운다). routed_by에 구현 이름을 남긴다.
+-- self_owned: 라우터가 "묻는 쪽 자기 소관"이라고 판정해 넘기지 않고 돌려보낸 질문(target_role = asker_role).
 CREATE TABLE agent_questions (
   id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id       uuid NOT NULL REFERENCES projects(id),
@@ -14,6 +15,8 @@ CREATE TABLE agent_questions (
   asker_role       text NOT NULL,
   target_role      text NOT NULL,
   routed_by        text NOT NULL,
+  -- 라우터 판정 상세 — {confidence, reason, latencyMs, fallback}. 라우터 구현을 바꿔 가며 비교하는 근거다.
+  routing          jsonb NOT NULL DEFAULT '{}',
   questions        jsonb NOT NULL,
   status           text NOT NULL DEFAULT 'pending',
   answers          jsonb,
@@ -21,7 +24,7 @@ CREATE TABLE agent_questions (
   answered_at      timestamptz,
   expires_at       timestamptz NOT NULL,
   created_at       timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT agent_questions_status_chk CHECK (status IN ('pending', 'answered', 'expired')),
+  CONSTRAINT agent_questions_status_chk CHECK (status IN ('pending', 'answered', 'expired', 'self_owned')),
   CONSTRAINT agent_questions_roles_chk CHECK (asker_role IN ('FRONTEND', 'BACKEND') AND target_role IN ('FRONTEND', 'BACKEND')),
   CONSTRAINT agent_questions_questions_chk CHECK (jsonb_typeof(questions) = 'array' AND jsonb_array_length(questions) BETWEEN 1 AND 4),
   -- 답이 있으면 답한 사람과 시각도 있다. 없으면 셋 다 없다.

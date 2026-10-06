@@ -52,7 +52,7 @@ questionsRouter.get(
 );
 
 const listQuery = z.object({
-  status: z.enum(['pending', 'answered', 'expired', 'all']).default('pending'),
+  status: z.enum(['pending', 'answered', 'expired', 'self_owned', 'all']).default('pending'),
   limit: z.coerce.number().int().min(1).max(200).default(50),
 });
 

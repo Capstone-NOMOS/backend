@@ -8,7 +8,7 @@ export type Tokens = { accessToken: string; refreshToken: string };
 
 export type QuestionState = {
   id: string;
-  status: 'pending' | 'answered' | 'expired';
+  status: 'pending' | 'answered' | 'expired' | 'self_owned';
   targetRole: string;
   answers: Record<string, string> | null;
   expiresAt: string;

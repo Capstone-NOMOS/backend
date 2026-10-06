@@ -8,7 +8,9 @@ import type { TeamRole } from '../roles.js';
 export type QuestionOption = { label: string; description?: string };
 export type AskedQuestion = { question: string; header?: string; options: QuestionOption[]; multiSelect?: boolean };
 
-export type QuestionStatus = 'pending' | 'answered' | 'expired';
+export type QuestionStatus = 'pending' | 'answered' | 'expired' | 'self_owned';
+
+export type RoutingDetail = { confidence: number | null; reason: string | null; latencyMs: number; fallback: string | null };
 
 export type AgentQuestion = {
   id: string;
@@ -18,6 +20,7 @@ export type AgentQuestion = {
   askerRole: TeamRole;
   targetRole: TeamRole;
   routedBy: string;
+  routing: RoutingDetail;
   questions: AskedQuestion[];
   status: QuestionStatus;
   answers: Record<string, string> | null;
@@ -38,6 +41,7 @@ function toQuestion(row: QueryResultRow): AgentQuestion {
     askerRole: row.asker_role,
     targetRole: row.target_role,
     routedBy: row.routed_by,
+    routing: row.routing,
     questions: row.questions,
     status: row.status,
     answers: row.answers ?? null,
@@ -57,15 +61,17 @@ export async function insertQuestion(
     askerRole: TeamRole;
     targetRole: TeamRole;
     routedBy: string;
+    routing: RoutingDetail;
+    status: 'pending' | 'self_owned';
     questions: AskedQuestion[];
     timeoutMs: number;
   },
 ): Promise<AgentQuestion> {
   const { rows } = await db.query(
-    `INSERT INTO agent_questions (project_id, task_id, asked_by_agent, asker_role, target_role, routed_by, questions, expires_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8::double precision / 1000))
+    `INSERT INTO agent_questions (project_id, task_id, asked_by_agent, asker_role, target_role, routed_by, routing, status, questions, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now() + make_interval(secs => $10::double precision / 1000))
      RETURNING *`,
-    [input.projectId, input.taskId, input.askedByAgentId, input.askerRole, input.targetRole, input.routedBy, JSON.stringify(input.questions), input.timeoutMs],
+    [input.projectId, input.taskId, input.askedByAgentId, input.askerRole, input.targetRole, input.routedBy, JSON.stringify(input.routing), input.status, JSON.stringify(input.questions), input.timeoutMs],
   );
   return toQuestion(rows[0]!);
 }
