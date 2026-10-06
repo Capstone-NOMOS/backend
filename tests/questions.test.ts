@@ -80,6 +80,9 @@ async function world() {
   return { orgId, projectId: project.id, taskId: task.id, beTaskId: beTask.id, rep, fe, be, feClient, beClient };
 }
 
+// NomosClient가 들고 있는 access token(직접 HTTP로 부를 때)
+const agentToken = async (client: NomosClient) => (client as unknown as { tokens: { accessToken: string } }).tokens.accessToken;
+
 const Q1 = { question: 'GET /api/studies/:id/members 의 응답 본문 형태는?', header: '응답 형태', multiSelect: false, options: [{ label: '{ members: [...] }' }, { label: '배열' }] };
 const Q2 = { question: '가입일 필드 이름은?', header: '필드', multiSelect: false, options: [{ label: 'joinedAt' }, { label: 'joined_at' }] };
 
@@ -214,6 +217,120 @@ describe('질문 라우터 교체', () => {
     setQuestionRouter({ name: 'broken', route: async () => { throw new Error('model unavailable'); } });
     const asked = await w.feClient.askQuestions(w.taskId, [Q1]);
     expect(asked).toMatchObject({ status: 'pending', targetRole: 'BACKEND', routedBy: 'role_rule:opposite', routing: { fallback: 'broken: model unavailable' } });
+  });
+});
+
+describe('C안 — 상담 초안·멈춤·재개', () => {
+  const draftOf = (answers: Record<string, string>, decided: Record<string, boolean>) => ({ answers, decided, basis: {} });
+
+  it('BE 에이전트는 상담할 질문과 읽을 레포를 받는다', async () => {
+    const w = await world();
+    const asked = await w.feClient.askQuestions(w.taskId, [Q1]);
+    const jobs = await http('GET', '/agents/me/questions', await agentToken(w.beClient));
+    expect(jobs.status).toBe(200);
+    const data = jobs.json.data as unknown as { questions: { id: string }[]; repos: { fullName: string }[] };
+    expect(data.questions.map((x) => x.id)).toEqual([asked.id]);
+    expect(data.repos.map((r) => r.fullName)).toEqual(['acme/api']);
+  });
+
+  it('초안이 전부 decided면 곧 답이다(agent_answered) — 묻는 쪽이 바로 읽는다', async () => {
+    const w = await world();
+    const asked = await w.feClient.askQuestions(w.taskId, [Q1, Q2]);
+    const drafted = await http('POST', `/questions/${asked.id}/draft`, await agentToken(w.beClient), draftOf({ [Q1.question]: '{ members }', [Q2.question]: 'joinedAt' }, { [Q1.question]: true, [Q2.question]: true }));
+    expect(drafted.status).toBe(200);
+    expect(await w.feClient.getQuestion(w.taskId, asked.id)).toMatchObject({ status: 'agent_answered', answers: { [Q1.question]: '{ members }', [Q2.question]: 'joinedAt' } });
+    const { rows } = await pool.query(`SELECT payload FROM events WHERE type = 'QUESTION_DRAFTED'`);
+    expect(rows[0]!.payload).toMatchObject({ decidedCount: 2, questionCount: 2, autoAnswered: true });
+    // BE 목록에서도 사라진다(초안이 있으니)
+    expect(((await http('GET', '/agents/me/questions', await agentToken(w.beClient))).json.data as unknown as { questions: unknown[] }).questions).toEqual([]);
+  });
+
+  it('하나라도 decided가 아니면 초안은 참고로 남고 사람이 답한다', async () => {
+    const w = await world();
+    const asked = await w.feClient.askQuestions(w.taskId, [Q1, Q2]);
+    await http('POST', `/questions/${asked.id}/draft`, await agentToken(w.beClient), draftOf({ [Q1.question]: '{ members }', [Q2.question]: '제안: joinedAt' }, { [Q1.question]: true, [Q2.question]: false }));
+    const pending = await w.feClient.getQuestion(w.taskId, asked.id);
+    expect(pending).toMatchObject({ status: 'pending', answers: null });
+    const res = await http('POST', `/questions/${asked.id}/answer`, await w.be.token(), { answers: { [Q1.question]: '{ members }', [Q2.question]: 'joinedAt' } });
+    expect(res.json.data).toMatchObject({ status: 'answered' });
+    expect(await w.feClient.getQuestion(w.taskId, asked.id)).toMatchObject({ status: 'answered' });
+  });
+
+  it('질문의 대상 역할 에이전트만 초안을 올린다', async () => {
+    const w = await world();
+    const asked = await w.feClient.askQuestions(w.taskId, [Q1]);
+    const res = await http('POST', `/questions/${asked.id}/draft`, await agentToken(w.feClient), draftOf({ [Q1.question]: 'x' }, { [Q1.question]: true }));
+    expect(res.status).toBe(403);
+    expect(res.json.error!.code).toBe('NOT_QUESTION_TARGET');
+  });
+
+  it('사람은 에이전트 답을 확인(같은 답)하거나 뒤집는다(다른 답 — 고치는 태스크는 미구현으로 남긴다)', async () => {
+    const w = await world();
+    const beToken = await agentToken(w.beClient);
+    const a1 = await w.feClient.askQuestions(w.taskId, [Q1]);
+    await http('POST', `/questions/${a1.id}/draft`, beToken, draftOf({ [Q1.question]: '{ members }' }, { [Q1.question]: true }));
+    const confirm = await http('POST', `/questions/${a1.id}/answer`, await w.be.token(), { answers: { [Q1.question]: '{ members }' } });
+    expect(confirm.json.data).toMatchObject({ status: 'answered', answerSource: 'agent_confirmed' });
+
+    const a2 = await w.feClient.askQuestions(w.taskId, [Q2]);
+    await http('POST', `/questions/${a2.id}/draft`, beToken, draftOf({ [Q2.question]: 'joined_at' }, { [Q2.question]: true }));
+    const override = await http('POST', `/questions/${a2.id}/answer`, await w.be.token(), { answers: { [Q2.question]: 'joinedAt' } });
+    expect(override.json.data).toMatchObject({ status: 'answered', answerSource: 'human_override' });
+    const { rows } = await pool.query(`SELECT payload FROM events WHERE type = 'QUESTION_ANSWERED' ORDER BY id`);
+    expect(rows.map((r) => r.payload.source)).toEqual(['agent_confirmed', 'human_override']);
+    expect(rows[1]!.payload).toMatchObject({ notice: 'REWORK_NOT_IMPLEMENTED' });
+  });
+
+  it('기다림을 포기하면 태스크가 BLOCKED(QUESTION)로 내려가고, 답이 오면 READY로 돌아가 브리핑에 받은 답이 실린다', async () => {
+    const w = await world();
+    const asked = await w.feClient.askQuestions(w.taskId, [Q1]);
+    const detached = await http('POST', `/tasks/${w.taskId}/questions/${asked.id}/detach`, await agentToken(w.feClient));
+    expect(detached.json.data).toMatchObject({ status: 'pending' });
+    const blocked = await pool.query(`SELECT state, blocked_reason, assignee_agent_id FROM tasks WHERE id = $1`, [w.taskId]);
+    expect(blocked.rows[0]).toEqual({ state: 'BLOCKED', blocked_reason: 'QUESTION', assignee_agent_id: null });
+
+    const answered = await http('POST', `/questions/${asked.id}/answer`, await w.be.token(), { answers: { [Q1.question]: '{ members } — 공통 목록 형식' } });
+    expect(answered.status).toBe(200);
+    const ready = await pool.query(`SELECT state, blocked_reason FROM tasks WHERE id = $1`, [w.taskId]);
+    expect(ready.rows[0]).toEqual({ state: 'READY', blocked_reason: null });
+    const { rows } = await pool.query(`SELECT payload FROM events WHERE type = 'QUESTION_ANSWERED'`);
+    expect(rows[0]!.payload).toMatchObject({ resumedTask: true, source: 'human' });
+
+    // 같은 역할 에이전트가 다시 잡으면 브리핑에 받은 답이 있다.
+    await w.feClient.claimTask(w.taskId);
+    const briefing = (await w.feClient.getBriefing(w.taskId)) as { answeredQuestions: { question: string; answer: string; source: string }[] };
+    expect(briefing.answeredQuestions).toEqual([{ question: Q1.question, answer: '{ members } — 공통 목록 형식', source: 'human' }]);
+  });
+
+  it('질문이 둘이면 둘 다 답이 와야 재개된다', async () => {
+    const w = await world();
+    const a1 = await w.feClient.askQuestions(w.taskId, [Q1]);
+    const a2 = await w.feClient.askQuestions(w.taskId, [Q2]);
+    await http('POST', `/tasks/${w.taskId}/questions/${a2.id}/detach`, await agentToken(w.feClient));
+    const beToken = await w.be.token();
+    await http('POST', `/questions/${a1.id}/answer`, beToken, { answers: { [Q1.question]: 'x' } });
+    expect((await pool.query(`SELECT state FROM tasks WHERE id = $1`, [w.taskId])).rows[0]!.state).toBe('BLOCKED');
+    await http('POST', `/questions/${a2.id}/answer`, beToken, { answers: { [Q2.question]: 'y' } });
+    expect((await pool.query(`SELECT state FROM tasks WHERE id = $1`, [w.taskId])).rows[0]!.state).toBe('READY');
+  });
+
+  it('그 사이 답이 왔으면 포기해도 아무것도 바뀌지 않는다', async () => {
+    const w = await world();
+    const asked = await w.feClient.askQuestions(w.taskId, [Q1]);
+    await http('POST', `/questions/${asked.id}/answer`, await w.be.token(), { answers: { [Q1.question]: 'x' } });
+    const detached = await http('POST', `/tasks/${w.taskId}/questions/${asked.id}/detach`, await agentToken(w.feClient));
+    expect(detached.json.data).toMatchObject({ status: 'answered' });
+    expect((await pool.query(`SELECT state FROM tasks WHERE id = $1`, [w.taskId])).rows[0]!.state).toBe('CLAIMED');
+  });
+
+  it('멈춘 채 기간이 지나면 질문은 만료되고 태스크는 ESCALATED', async () => {
+    const w = await world();
+    const asked = await w.feClient.askQuestions(w.taskId, [Q1]);
+    await http('POST', `/tasks/${w.taskId}/questions/${asked.id}/detach`, await agentToken(w.feClient));
+    await pool.query(`UPDATE agent_questions SET expires_at = now() - interval '1 second' WHERE id = $1`, [asked.id]);
+    const list = await http('GET', `/projects/${w.projectId}/questions?status=all`, await w.be.token());
+    expect(list.json.data!.questions[0]).toMatchObject({ status: 'expired' });
+    expect((await pool.query(`SELECT state, blocked_reason FROM tasks WHERE id = $1`, [w.taskId])).rows[0]).toEqual({ state: 'ESCALATED', blocked_reason: null });
   });
 });
 

@@ -1,6 +1,6 @@
 import { Router, type Request } from 'express';
 import { z } from 'zod';
-import { answerQuestion, askQuestion, getQuestionForAgent, listProjectQuestions } from '../domain/question/service.js';
+import { answerQuestion, askQuestion, detachFromQuestion, getQuestionForAgent, listConsultJobs, listProjectQuestions, submitDraft } from '../domain/question/service.js';
 import type { UserContext } from '../domain/project/visibility.js';
 import { agentContextOf, authenticateAgent } from '../middleware/agent-auth.js';
 import { authenticate, orgIdOf } from '../middleware/auth.js';
@@ -51,8 +51,43 @@ questionsRouter.get(
   },
 );
 
+// POST /api/tasks/:taskId/questions/:questionId/detach — 브릿지가 정한 시간만 기다렸는데 답이 없다.
+// 태스크를 BLOCKED(QUESTION)로 내려놓고 질문을 돌려준다. 그 사이 답이 왔으면 아무것도 바꾸지 않고 답을 돌려준다.
+questionsRouter.post(
+  '/tasks/:taskId/questions/:questionId/detach',
+  authenticateAgent,
+  validate({ params: taskQuestionParams }),
+  async (req, res) => {
+    const { taskId, questionId } = req.params as z.infer<typeof taskQuestionParams>;
+    res.status(200).json({ data: await detachFromQuestion(agentContextOf(req), taskId, questionId) });
+  },
+);
+
+// GET /api/agents/me/questions — 대상 역할 에이전트의 Executor가 상담 실행으로 맡을 질문과 읽을 레포.
+questionsRouter.get('/agents/me/questions', authenticateAgent, async (req, res) => {
+  res.status(200).json({ data: await listConsultJobs(agentContextOf(req)) });
+});
+
+// POST /api/questions/:questionId/draft — 상담 실행의 초안. 전부 decided면 곧 답이다(사람 미확인).
+const draftBody = z
+  .object({
+    answers: z.record(z.string()),
+    decided: z.record(z.boolean()),
+    basis: z.record(z.array(z.string())).default({}),
+  })
+  .strict();
+questionsRouter.post(
+  '/questions/:questionId/draft',
+  authenticateAgent,
+  validate({ params: z.object({ questionId: z.string().uuid() }), body: draftBody }),
+  async (req, res) => {
+    const { questionId } = req.params as { questionId: string };
+    res.status(200).json({ data: await submitDraft(agentContextOf(req), questionId, req.body as z.infer<typeof draftBody>) });
+  },
+);
+
 const listQuery = z.object({
-  status: z.enum(['pending', 'answered', 'expired', 'self_owned', 'all']).default('pending'),
+  status: z.enum(['pending', 'agent_answered', 'answered', 'expired', 'self_owned', 'all']).default('pending'),
   limit: z.coerce.number().int().min(1).max(200).default(50),
 });
 

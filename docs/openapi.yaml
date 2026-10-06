@@ -183,7 +183,7 @@ components:
         decidedAt: { type: string, format: date-time, nullable: true }
     AgentQuestion:
       type: object
-      required: [id, projectId, taskId, askedByAgentId, askerRole, targetRole, routedBy, routing, questions, status, answers, answeredBy, answeredAt, expiresAt, createdAt]
+      required: [id, projectId, taskId, askedByAgentId, askerRole, targetRole, routedBy, routing, questions, status, draft, draftedByAgentId, draftedAt, answers, answerSource, answeredBy, answeredAt, expiresAt, createdAt]
       properties:
         id: { type: string, format: uuid }
         projectId: { type: string, format: uuid }
@@ -215,7 +215,29 @@ components:
               options:
                 type: array
                 items: { type: object, additionalProperties: true, required: [label], properties: { label: { type: string }, description: { type: string } } }
-        status: { type: string, enum: [pending, answered, expired, self_owned], description: 'self_owned — 라우터가 묻는 쪽 자기 소관이라고 판정해 넘기지 않음(targetRole = askerRole)' }
+        status:
+          type: string
+          enum: [pending, agent_answered, answered, expired, self_owned]
+          description: |
+            pending — 답을 기다림 · agent_answered — 대상 역할 에이전트의 상담 실행이 코드·명세에서 찾은 답(사람 미확인, 묻는 쪽에 이미 감)
+            answered — 사람이 답함(직접·확인·뒤집기) · expired — 기간 안에 답이 없음(그 질문으로 멈춘 태스크는 ESCALATED)
+            self_owned — 라우터가 묻는 쪽 자기 소관이라고 판정해 넘기지 않음(targetRole = askerRole)
+        draft:
+          type: object
+          nullable: true
+          description: '상담 실행의 초안. decided[질문]이 false인 것은 코드에 없는 결정 — 사람이 정해야 한다(화면에서 강조)'
+          required: [answers, decided, basis]
+          properties:
+            answers: { type: object, additionalProperties: { type: string } }
+            decided: { type: object, additionalProperties: { type: boolean } }
+            basis: { type: object, additionalProperties: { type: array, items: { type: string } } }
+        draftedByAgentId: { type: string, format: uuid, nullable: true }
+        draftedAt: { type: string, format: date-time, nullable: true }
+        answerSource:
+          type: string
+          nullable: true
+          enum: [agent, human, agent_confirmed, human_override, null]
+          description: 'agent(에이전트가 찾음, 사람 미확인) · human · agent_confirmed(같은 답으로 확인) · human_override(다른 답으로 뒤집음 — 고치는 태스크 자동 생성은 미구현)'
         answers:
           type: object
           nullable: true
@@ -705,7 +727,7 @@ components:
         ownerRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true }
     TaskBriefing:
       type: object
-      required: [task, repo, spec, notes, notesBlock, writablePaths, claudeSettings, specTests, policyHash, lastRejection]
+      required: [task, repo, spec, notes, notesBlock, writablePaths, claudeSettings, specTests, policyHash, lastRejection, answeredQuestions]
       properties:
         task: { $ref: '#/components/schemas/Task' }
         repo:
@@ -732,6 +754,16 @@ components:
                 deny: { type: array, items: { type: string } }
         specTests: { type: array, items: { $ref: '#/components/schemas/SpecTest' } }
         policyHash: { type: string }
+        answeredQuestions:
+          type: array
+          description: '이 태스크에서 물어 받은 답 — 질문 때문에 멈췄다 재개한 실행이 읽는다. source=agent는 상대 에이전트가 코드에서 찾은 답(사람 미확인)'
+          items:
+            type: object
+            required: [question, answer, source]
+            properties:
+              question: { type: string }
+              answer: { type: string }
+              source: { type: string }
         lastRejection:
           type: object
           nullable: true
@@ -2474,6 +2506,81 @@ paths:
           content:
             application/json:
               schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/AgentQuestion' } } }
+  /tasks/{taskId}/questions/{questionId}/detach:
+    post:
+      tags: [질문]
+      summary: 기다림 포기 — 태스크를 내려놓는다 (에이전트 — 브릿지가 부른다, 실험)
+      description: |
+        브릿지가 정한 시간(기본 3분)만 기다렸는데 답이 없으면 부른다. 태스크가 BLOCKED(QUESTION)가 되고 담당이 비워진다 —
+        에이전트 실행은 커밋 없이 끝나고 노트북은 다른 태스크로 간다. 답이 오면 READY로 돌아가 같은 브랜치에서 이어 간다.
+        그 사이 답이 왔으면 아무것도 바꾸지 않고 질문을 돌려준다(status로 판단).
+      security: [{ agentToken: [] }]
+      parameters:
+        - { name: taskId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: questionId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 질문(지금 상태)
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/AgentQuestion' } } }
+  /agents/me/questions:
+    get:
+      tags: [질문]
+      summary: 상담할 질문 (대상 역할 에이전트의 Executor, 실험)
+      description: 이 에이전트의 역할을 대상으로 한, 아직 초안이 없는 대기 질문과 상담 실행이 읽을 레포(이 역할이 소유한 경로가 있는 레포).
+      security: [{ agentToken: [] }]
+      responses:
+        '200':
+          description: 질문·레포
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [questions, repos]
+                    properties:
+                      questions: { type: array, items: { $ref: '#/components/schemas/AgentQuestion' } }
+                      repos:
+                        type: array
+                        items:
+                          type: object
+                          required: [id, fullName, cloneUrl, defaultBranch]
+                          properties:
+                            id: { type: string, format: uuid }
+                            fullName: { type: string }
+                            cloneUrl: { type: string, nullable: true }
+                            defaultBranch: { type: string }
+  /questions/{questionId}/draft:
+    post:
+      tags: [질문]
+      summary: 상담 초안 올리기 (대상 역할 에이전트, 실험)
+      description: |
+        읽기 전용 상담 실행이 코드·명세를 보고 만든 답. **질문 전부가 decided=true면 초안이 곧 답이다**(agent_answered — 묻는 쪽에 바로 간다,
+        사람은 나중에 확인하거나 뒤집는다). 하나라도 false면 초안은 참고로만 남고 대상 역할의 사람이 답한다. 초안은 한 번만 받는다.
+      security: [{ agentToken: [] }]
+      parameters:
+        - { name: questionId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [answers, decided]
+              properties:
+                answers: { type: object, additionalProperties: { type: string } }
+                decided: { type: object, additionalProperties: { type: boolean } }
+                basis: { type: object, additionalProperties: { type: array, items: { type: string } } }
+      responses:
+        '200':
+          description: 저장됨(전부 decided면 status=agent_answered)
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/AgentQuestion' } } }
   /projects/{projectId}/questions:
     get:
       tags: [질문]
@@ -2482,7 +2589,7 @@ paths:
       security: [{ userToken: [] }]
       parameters:
         - $ref: '#/components/parameters/ProjectId'
-        - { name: status, in: query, required: false, schema: { type: string, enum: [pending, answered, expired, self_owned, all], default: pending } }
+        - { name: status, in: query, required: false, schema: { type: string, enum: [pending, agent_answered, answered, expired, self_owned, all], default: pending } }
         - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
       responses:
         '200':
@@ -2501,8 +2608,10 @@ paths:
   /questions/{questionId}/answer:
     post:
       tags: [질문]
-      summary: 질문에 답하기 (대상 역할 담당 또는 대표, 실험)
+      summary: 질문에 답하기·확인·뒤집기 (대상 역할 담당 또는 대표, 실험)
       description: |
+        대기 중(pending)이면 직접 답한다. 에이전트가 이미 답했으면(agent_answered) 같은 답을 보내면 확인, 다른 답이면 뒤집기다
+        (뒤집으면 묻는 쪽이 이미 그 답으로 구현했을 수 있다 — 고치는 태스크 자동 생성은 아직 없다).
         키는 질문 문장 **그대로**여야 한다(다르면 에이전트가 "답하지 않음"으로 받는다 — 그래서 422로 막는다).
         값은 선택지 label이거나 자유 문장. 근거를 덧붙이면 에이전트가 그것까지 따른다.
       security: [{ userToken: [] }]

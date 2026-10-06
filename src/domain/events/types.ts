@@ -24,6 +24,8 @@ export type EventType =
   | 'QUESTION_ASKED'
   | 'QUESTION_ANSWERED'
   | 'QUESTION_EXPIRED'
+  | 'QUESTION_DRAFTED'
+  | 'TASK_BLOCKED_ON_QUESTION'
   | 'MEMBER_UNASSIGNED'
   | 'REPO_UPDATED'
   | 'TASKS_IMPORTED'
@@ -192,12 +194,34 @@ export type QuestionAskedPayload = {
 };
 
 // 대상 역할의 사람이 답했다. answeredByRole: 답한 사람이 대상 역할 담당인지 대표인지(대표는 어느 역할이든 답할 수 있다).
+// source: human(직접) · agent_confirmed(에이전트 답 확인) · human_override(에이전트 답 뒤집기 — 고치는 태스크는 미구현, notice).
+// resumedTask: 이 답으로 질문 때문에 멈춘 태스크가 READY로 돌아갔다.
 export type QuestionAnsweredPayload = {
   questionId: string;
   taskId: string;
   targetRole: string;
   answeredByRole: 'TARGET_OWNER' | 'REPRESENTATIVE';
+  source: 'human' | 'agent_confirmed' | 'human_override';
+  resumedTask: boolean;
   waitedMs: number;
+  notice?: 'REWORK_NOT_IMPLEMENTED';
+};
+
+// 대상 역할 에이전트의 상담 실행이 초안을 올렸다. autoAnswered: 전부 이미 정해진 것이라 초안이 곧 답(사람 미확인).
+export type QuestionDraftedPayload = {
+  questionId: string;
+  taskId: string;
+  decidedCount: number;
+  questionCount: number;
+  autoAnswered: boolean;
+  resumedTask: boolean;
+};
+
+// 묻는 쪽이 정한 시간만 기다리고 태스크를 내려놓았다(BLOCKED·QUESTION). 답이 오면 READY로 돌아간다.
+export type TaskBlockedOnQuestionPayload = {
+  taskId: string;
+  questionId: string;
+  targetRole: string;
 };
 
 // 시간 안에 답이 오지 않았다 — 에이전트는 멈추고(E4) 태스크는 사람이 다시 움직여야 한다.
@@ -205,6 +229,8 @@ export type QuestionExpiredPayload = {
   questionId: string;
   taskId: string;
   targetRole: string;
+  // 그 질문으로 멈춘 태스크를 ESCALATED로 올렸다.
+  escalated: boolean;
 };
 
 // 대표가 승인·반려했다.
@@ -382,6 +408,8 @@ export type EventPayloadMap = {
   QUESTION_ASKED: QuestionAskedPayload;
   QUESTION_ANSWERED: QuestionAnsweredPayload;
   QUESTION_EXPIRED: QuestionExpiredPayload;
+  QUESTION_DRAFTED: QuestionDraftedPayload;
+  TASK_BLOCKED_ON_QUESTION: TaskBlockedOnQuestionPayload;
   MEMBER_UNASSIGNED: MemberUnassignedPayload;
   REPO_UPDATED: RepoUpdatedPayload;
   TASKS_IMPORTED: TasksImportedPayload;

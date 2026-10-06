@@ -51,8 +51,10 @@ export const TOPICS_BY_EVENT: Record<EventType, Mapping> = {
   APPROVAL_REQUESTED: { project: ['approvals', 'tasks'], org: ['approvals'] },
   APPROVAL_RESULT: { project: ['approvals', 'tasks'], org: ['approvals'] },
   QUESTION_ASKED: { project: ['questions'], org: ['questions'] },
-  QUESTION_ANSWERED: { project: ['questions'], org: ['questions'] },
-  QUESTION_EXPIRED: { project: ['questions'], org: ['questions'] },
+  QUESTION_ANSWERED: { project: ['questions', 'tasks'], org: ['questions'] },
+  QUESTION_EXPIRED: { project: ['questions', 'tasks'], org: ['questions'] },
+  QUESTION_DRAFTED: { project: ['questions', 'tasks'], org: ['questions'] },
+  TASK_BLOCKED_ON_QUESTION: { project: ['tasks', 'questions'] },
 
   PM_PLAN_REQUESTED: { project: ['plans'] },
   PM_CALL: { project: ['plans'] },
