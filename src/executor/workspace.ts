@@ -1,12 +1,12 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import os from 'node:os';
+import { nomosHome } from '../bridge/credentials.js';
 import path from 'node:path';
 
 // 작업공간은 레포 자체와 분리한다. git worktree로 분기하므로 사용자의 기존 작업 트리를 건드리지 않는다.
 // 태스크가 끝나도 남긴다 — 실패 원인은 로그가 아니라 남은 파일에서 드러나는 경우가 많다.
 export function workspacesRoot(): string {
-  return path.join(os.homedir(), '.nomos', 'workspaces');
+  return path.join(nomosHome(), 'workspaces');
 }
 
 export function workspaceDir(projectId: string, taskId: string): string {
@@ -15,7 +15,7 @@ export function workspaceDir(projectId: string, taskId: string): string {
 
 // 레포 fullName → 이미 받아 둔 로컬 경로(선택). 없으면 CLI가 ~/.nomos/repos/에 받는다(repo-checkout.ts).
 export function repoMapPath(): string {
-  return path.join(os.homedir(), '.nomos', 'repos.json');
+  return path.join(nomosHome(), 'repos.json');
 }
 
 // 없으면 빈 맵. 시드는 "적힌 것만" 쓰면 되므로 실패시키지 않는다.
@@ -122,7 +122,7 @@ export function cleanWorkspaces(): { pruned: string[]; removed: string | null } 
   const pruned: string[] = [];
   // repos.json에 적힌 레포 + CLI가 받아 둔 레포(~/.nomos/repos/<조직>/<레포>).
   const repos: Record<string, string> = { ...readRepoMap() };
-  const managed = path.join(os.homedir(), '.nomos', 'repos');
+  const managed = path.join(nomosHome(), 'repos');
   if (existsSync(managed)) {
     for (const owner of readdirSync(managed)) {
       const ownerDir = path.join(managed, owner);

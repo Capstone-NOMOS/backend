@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
-import os from 'node:os';
+import { nomosHome } from '../bridge/credentials.js';
 import path from 'node:path';
 import { readRepoMap, repoMapPath } from './workspace.js';
 
@@ -13,7 +13,7 @@ import { readRepoMap, repoMapPath } from './workspace.js';
 export type RepoCheckout = { path: string; managed: boolean; baseRef: (branch: string) => string };
 
 export function managedReposRoot(): string {
-  return path.join(os.homedir(), '.nomos', 'repos');
+  return path.join(nomosHome(), 'repos');
 }
 
 // owner/repo. 클론 경로(~/.nomos/repos/<owner>/<repo>)가 되므로 '.'·'..' 세그먼트는 받지 않는다(폴더 밖으로 나간다).
