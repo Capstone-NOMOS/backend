@@ -98,3 +98,44 @@ describe('권한 도구 — 라우터가 자기 소관이라고 판정한 질문
     expect(result).toMatchObject({ message: expect.stringContaining('DECIDED') });
   });
 });
+
+describe('권한 도구 — C안: 실행 안에서 정한 시간만 기다린다', () => {
+  it('에이전트 답(agent_answered)도 바로 쓴다', async () => {
+    const result = await handleAskUserQuestion({ questions: [QUESTION] }, deps([{ status: 'pending', answers: null }, { status: 'agent_answered', answers: { [QUESTION.question]: 'camelCase' } }]));
+    expect(result).toMatchObject({ behavior: 'allow', updatedInput: { answers: { [QUESTION.question]: 'camelCase' } } });
+  });
+
+  it('시간이 지나면 내려놓고(detach) "멈춰라, 나중에 다시 시작된다"로 돌려준다', async () => {
+    let t = 0;
+    const detached: string[] = [];
+    const result = await handleAskUserQuestion(
+      { questions: [QUESTION] },
+      deps([{ status: 'pending', answers: null }], {
+        inlineWaitMs: 5_000,
+        maxWaitMs: 60_000,
+        now: () => (t += 2_000),
+        detach: async (id) => {
+          detached.push(id);
+          return { status: 'pending', answers: null };
+        },
+      }),
+    );
+    expect(detached).toEqual(['q-1']);
+    expect(result).toMatchObject({ behavior: 'deny', message: expect.stringContaining('paused') });
+    expect(result).toMatchObject({ message: expect.stringContaining('do NOT commit') });
+    expect(result).toMatchObject({ message: expect.stringContaining('BLOCKED:') });
+  });
+
+  it('내려놓는 순간 답이 와 있었으면 그 답을 쓴다', async () => {
+    let t = 0;
+    const result = await handleAskUserQuestion(
+      { questions: [QUESTION] },
+      deps([{ status: 'pending', answers: null }], {
+        inlineWaitMs: 1_000,
+        now: () => (t += 2_000),
+        detach: async () => ({ status: 'answered', answers: { [QUESTION.question]: 'snake_case' } }),
+      }),
+    );
+    expect(result).toMatchObject({ behavior: 'allow', updatedInput: { answers: { [QUESTION.question]: 'snake_case' } } });
+  });
+});

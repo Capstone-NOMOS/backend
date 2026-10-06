@@ -40,6 +40,7 @@ import { streamTaskSource } from './stream-source.js';
 import { pollingTaskSource, type TaskSource, type TaskSummary } from './task-source.js';
 import { runLint, runSpecTests, type SpecTest, type StageReport } from './verify.js';
 import { ensureRepo } from './repo-checkout.js';
+import { runConsult } from './consult.js';
 import { cleanWorkspaces, headSha, prepareWorkspace } from './workspace.js';
 
 // 푸시가 오지 않아도 이 간격으로 한 번씩 다시 본다(끊겼을 때는 이 간격으로 폴링한다).
@@ -68,12 +69,46 @@ type Briefing = {
   spec: { featureKey: string; title: string; content: string } | null;
   notes: { id: string }[];
   lastRejection: { reason: string; commitSha: string | null } | null;
+  answeredQuestions?: { question: string; answer: string; source: string }[];
   notesBlock: string;
   writablePaths: { pathPattern: string }[];
   claudeSettings: unknown;
   specTests: SpecTest[];
   policyHash: string;
 };
+
+// 지금 돌고 있는 태스크의 작업공간 — 상담 실행이 진행 중인 작업(커밋 안 된 파일 포함)을 읽으려고 둔다.
+const activeWorkspaces = new Map<string, { dir: string; repo: string }>();
+
+// 상담 실행(C안) — 다른 역할 에이전트가 이 역할 소관을 물으면 레포를 읽기만 해서 초안을 올린다(본인 구독).
+// 한 번에 하나씩. 실패한 질문은 다시 시도하지 않는다 — 사람이 답한다(자동 재시도를 넣지 않는 Executor 원칙과 같다).
+const consulting = new Set<string>();
+const consultGaveUp = new Set<string>();
+
+async function consultPending(client: NomosClient, role: string): Promise<void> {
+  if (consulting.size > 0) return;
+  const { questions, repos } = await client.listConsultJobs();
+  const job = questions.find((q) => !consultGaveUp.has(q.id));
+  if (!job) return;
+  consulting.add(job.id);
+  void (async () => {
+    try {
+      const active = [...activeWorkspaces.values()].find((w) => repos.some((r) => r.fullName === w.repo));
+      const repo = active ? { fullName: active.repo } : repos[0];
+      if (!repo) throw new Error('이 역할이 소유한 레포가 프로젝트에 없다');
+      const dir = active ? active.dir : ensureRepo({ fullName: repo.fullName, cloneUrl: repos[0]!.cloneUrl }, { log }).path;
+      log(`상담 실행: ${job.askerRole}의 질문 ${job.questions.length}개 — ${repo.fullName}${active ? ' (진행 중인 작업공간)' : ''}`);
+      const draft = await runConsult({ dir, role, repoName: repo.fullName, question: job });
+      const result = await client.submitDraft(job.id, draft);
+      log(result.status === 'agent_answered' ? '  초안 올림 — 전부 코드에 정해져 있어 바로 답이 됐다(사람 확인 대기)' : '  초안 올림 — 정해지지 않은 결정이 있어 담당자에게 넘어갔다');
+    } catch (err) {
+      consultGaveUp.add(job.id);
+      log(`  상담 실패 — 담당자가 직접 답한다: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      consulting.delete(job.id);
+    }
+  })();
+}
 
 async function handleTask(client: NomosClient, projectId: string, task: TaskSummary): Promise<void> {
   log(`태스크 ${task.id} — ${task.title}`);
@@ -92,6 +127,7 @@ async function handleTask(client: NomosClient, projectId: string, task: TaskSumm
     policyHash: briefing.policyHash,
   });
   log(`작업공간 ${workspace.dir} (브랜치 ${workspace.branch})`);
+  activeWorkspaces.set(task.id, { dir: workspace.dir, repo: briefing.repo.fullName });
   // 프롬프트에 넣는 노트 = 제출 때 "받은 노트"로 함께 보낼 노트. MCP 서버(submit_artifact)가 읽는다.
   writeBriefingNotes(workspace.dir, task.id, (briefing.notes ?? []).map((n) => n.id));
 
@@ -209,12 +245,20 @@ async function start(): Promise<void> {
             .catch((err) => log(`태스크 ${task.id} 실패: ${err instanceof Error ? err.message : String(err)}`))
             .finally(() => {
               inFlight.delete(task.id);
+              activeWorkspaces.delete(task.id);
               finished();
             });
         }
       }
     } catch (err) {
       log(`태스크 목록 실패: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    // 다른 역할이 이 역할에 물은 질문 — 질문이 생기면 서버가 같은 신호(스냅샷 푸시)로 깨운다.
+    try {
+      // 역할이 없는 에이전트(역할 제한 없는 배정)는 상담할 소관도 없다.
+      if (self.teamRole) await consultPending(client, self.teamRole);
+    } catch (err) {
+      log(`상담할 질문 목록 실패: ${err instanceof Error ? err.message : String(err)}`);
     }
     await Promise.race([source.waitForChange(POLL_INTERVAL_MS), new Promise<void>((resolve) => (finished = resolve))]);
   }

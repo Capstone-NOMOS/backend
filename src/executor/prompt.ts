@@ -8,6 +8,7 @@ export type PromptBriefing = {
   spec: { featureKey: string; title: string; content: string } | null;
   notesBlock: string;
   lastRejection?: { reason: string; commitSha: string | null } | null;
+  answeredQuestions?: { question: string; answer: string; source: string }[];
   writablePaths: { pathPattern: string }[];
 };
 
@@ -37,6 +38,18 @@ export function buildTaskPrompt(briefing: PromptBriefing, branch: string): strin
         '# 직전 제출이 대표에게 반려됐다',
         `사유: ${briefing.lastRejection.reason}`,
         `반려된 커밋: ${briefing.lastRejection.commitSha ?? '(알 수 없음)'} — 이 브랜치에 이전 작업이 남아 있다. 처음부터 다시 만들지 말고 사유에 맞게 고친 뒤 다시 제출한다.`,
+      ].join('\n'),
+    );
+  }
+  // 질문 때문에 멈췄다 재개한 태스크 — 그동안 받은 답. 같은 브랜치에 이전 작업이 남아 있다.
+  if (briefing.answeredQuestions && briefing.answeredQuestions.length > 0) {
+    sections.push(
+      [
+        '# 물어서 받은 답 (이 태스크는 답을 기다리느라 멈췄다가 다시 시작됐다)',
+        ...briefing.answeredQuestions.map(
+          (a) => `- Q: ${a.question}\n  A: ${a.answer}${a.source === 'agent' ? ' (상대 에이전트가 코드에서 찾은 답 — 사람 미확인)' : ''}`,
+        ),
+        '이 브랜치에 이전 작업이 남아 있으면 이어서 진행한다. 같은 질문을 다시 묻지 않는다.',
       ].join('\n'),
     );
   }

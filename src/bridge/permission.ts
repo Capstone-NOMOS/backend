@@ -31,7 +31,19 @@ export function denyUnanswered(reason: string, questions: string[]): PermissionR
   };
 }
 
-export type QuestionLike = { status: 'pending' | 'answered' | 'expired' | 'self_owned'; answers: Record<string, string> | null };
+export type QuestionLike = { status: 'pending' | 'agent_answered' | 'answered' | 'expired' | 'self_owned'; answers: Record<string, string> | null };
+
+// 정한 시간 안에 답이 없어 태스크를 내려놓았다(서버가 BLOCKED). 답이 오면 이 태스크가 다시 시작되고 브리핑에 답이 실린다 —
+// 지금 추측해 구현하면 그 답과 어긋난다(실험 E4: 지시가 없으면 추측해 커밋했다). 그래서 멈추라고 명시한다.
+export function denyPaused(questions: string[]): PermissionResult {
+  return {
+    behavior: 'deny',
+    message:
+      'NOMOS: no answer yet — the question was handed to the role that owns this decision, and this task is now paused. ' +
+      'It will be resumed later with the answer in the briefing. Do NOT guess and do NOT commit. Stop work now, leave the working tree as is, ' +
+      `and end your final message with one line per question: BLOCKED: <the question>.${questions.length > 0 ? ` Questions: ${questions.join(' / ')}` : ''}`,
+  };
+}
 
 // 라우터가 "묻는 쪽 자기 소관"이라고 판정했다 — 남에게 넘기지 않고 스스로 정하게 한다. 정한 것은 다른 사람이 따라야 하므로 DECIDED로 남긴다.
 export const DENY_SELF_OWNED: PermissionResult = {
@@ -44,6 +56,9 @@ export const DENY_SELF_OWNED: PermissionResult = {
 export type WaitDeps = {
   ask: (questions: unknown[]) => Promise<{ id: string } & QuestionLike>;
   get: (questionId: string) => Promise<QuestionLike>;
+  // 실행 안에서 기다리는 시간이 지나면 부른다 — 서버가 태스크를 BLOCKED로 내려놓는다. 그 사이 답이 왔으면 답을 돌려준다.
+  detach?: (questionId: string) => Promise<QuestionLike>;
+  inlineWaitMs?: number;
   sleep: (ms: number) => Promise<void>;
   onWaiting?: (elapsedMs: number) => Promise<void> | void;
   pollMs?: number;
@@ -63,12 +78,19 @@ export async function handleAskUserQuestion(input: Record<string, unknown>, deps
     const asked = await deps.ask(questions);
     let state: QuestionLike = asked;
     while (state.status === 'pending') {
+      if (deps.detach && deps.inlineWaitMs !== undefined && now() - started >= deps.inlineWaitMs) {
+        state = await deps.detach(asked.id);
+        if (state.status === 'pending') return denyPaused(texts);
+        break;
+      }
       if (now() - started >= deps.maxWaitMs) return denyUnanswered('No answer arrived in time.', texts);
       await deps.onWaiting?.(now() - started);
       await deps.sleep(deps.pollMs ?? 2_000);
       state = await deps.get(asked.id);
     }
-    if (state.status === 'answered' && state.answers) return { behavior: 'allow', updatedInput: { ...input, answers: state.answers } };
+    if ((state.status === 'answered' || state.status === 'agent_answered') && state.answers) {
+      return { behavior: 'allow', updatedInput: { ...input, answers: state.answers } };
+    }
     if (state.status === 'self_owned') return DENY_SELF_OWNED;
     return denyUnanswered('No answer arrived in time.', texts);
   } catch (err) {

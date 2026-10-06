@@ -191,7 +191,10 @@ server.registerTool(
 // 권한 도구 — Claude Code가 --permission-prompt-tool로 부른다(모델에게는 보이지 않는다 — 실험 E5).
 // AskUserQuestion만 처리하고 나머지는 전부 거부한다. 이유는 bridge/permission.ts.
 // 답을 기다리는 동안 진행 알림을 보낸다 — 없으면 Claude Code가 30분 무응답에서 끊는다(실험 E1·E1b).
-const QUESTION_MAX_WAIT_MS = Number(process.env.NOMOS_QUESTION_MAX_WAIT_MS ?? 15 * 60_000);
+// 실행 안에서 답을 기다리는 시간(C안). 지나면 서버가 태스크를 BLOCKED로 내려놓고 실행은 커밋 없이 끝난다 — 답이 오면 다시 시작된다.
+// 상대 에이전트의 상담 실행은 30초 안팎이었다(실험) — 코드에 이미 정해진 답은 이 안에 온다. 진짜 결정은 사람을 기다려야 해서 내려놓는다.
+const QUESTION_INLINE_WAIT_MS = Number(process.env.NOMOS_QUESTION_INLINE_WAIT_MS ?? 3 * 60_000);
+const QUESTION_MAX_WAIT_MS = QUESTION_INLINE_WAIT_MS + 60_000;
 
 server.registerTool(
   PERMISSION_TOOL,
@@ -218,6 +221,8 @@ server.registerTool(
     const result = await handleAskUserQuestion(input, {
       ask: (questions) => client.askQuestions(taskId, questions),
       get: (questionId) => client.getQuestion(taskId, questionId),
+      detach: (questionId) => client.detachQuestion(taskId, questionId),
+      inlineWaitMs: QUESTION_INLINE_WAIT_MS,
       sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
       maxWaitMs: QUESTION_MAX_WAIT_MS,
       onWaiting: async () => {
