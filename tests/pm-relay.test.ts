@@ -44,8 +44,18 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  clearRelayJobs();
-  await drainPmJobs();
+  // 테스트가 남긴 백그라운드 PM 작업은 대기열에 **늦게** 올라올 수 있다(계획 행·예산 확인을 먼저 한다).
+  // 한 번만 비우면 그 뒤에 올라온 작업이 가져갈 워커 없이 PM_TIMEOUT_MS(기본 10분)까지 기다려 이 정리 단계가 시간 제한에 걸렸다
+  // (부하가 있을 때 전체 실행의 절반가량). 백그라운드 작업이 다 끝날 때까지 계속 비운다.
+  let drained = false;
+  const draining = drainPmJobs().then(() => {
+    drained = true;
+  });
+  while (!drained) {
+    clearRelayJobs();
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  await draining;
   mutableEnv.PM_PROVIDER = originalProvider;
   mutableEnv.PM_TIMEOUT_MS = originalTimeout;
 });
