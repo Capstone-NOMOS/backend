@@ -5,9 +5,10 @@
 // 여기서 판정하는 것은 "명령이 0으로 끝났는가"뿐이다. 출력을 읽고 해석하지 않는다 —
 // 해석이 들어가는 순간 브릿지마다 결과가 달라지고, 그건 결정적 검증이 아니다.
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { removeQuietly } from './cleanup.js';
 
 const run = promisify(execFile);
 
@@ -111,7 +112,7 @@ export async function runSpecTests(
 
   const dir = path.join(workspaceDir, SPEC_TEST_DIR);
   // 시험지는 작업 결과가 아니다. 커밋에 섞이면 V3에서 신고 누락으로 잡힌다.
-  rmSync(dir, { recursive: true, force: true });
+  removeQuietly(dir);
   mkdirSync(dir, { recursive: true });
   try {
     const files = specTests.map((t) => {
@@ -131,6 +132,6 @@ export async function runSpecTests(
         });
   } finally {
     // 남겨두면 다음 실행에서 모델이 시험지를 읽고 거기에 맞춰 고칠 수 있다.
-    rmSync(dir, { recursive: true, force: true });
+    removeQuietly(dir);
   }
 }
