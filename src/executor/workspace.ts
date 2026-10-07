@@ -141,7 +141,8 @@ export function cleanWorkspaces(): { pruned: string[]; removed: string | null } 
 
   const root = workspacesRoot();
   if (!existsSync(root)) return { pruned, removed: null };
-  rmSync(root, { recursive: true, force: true });
+  // 사람이 직접 부르는 명령이라 못 지우면 오류를 그대로 보인다(삼키면 지웠다고 거짓 보고한다). 잠금만 재시도로 넘긴다.
+  rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   return { pruned, removed: root };
 }
 
