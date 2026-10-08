@@ -69,6 +69,9 @@ const envSchema = z
     PM_TIMEOUT_MS: z.coerce.number().int().positive().default(600_000),
     // 한 수정 체인에서 받을 수 있는 수정 요청 수(원본 요청은 세지 않는다). 중계 모드에서는 API 예산이 상한 역할을 못 하므로 서버가 센다.
     PM_MAX_REVISIONS: z.coerce.number().int().min(0).max(20).default(3),
+    // 에이전트 질문(AskUserQuestion)의 유효 기간. 묻는 쪽 실행은 몇 분만 기다리고(브릿지 NOMOS_QUESTION_INLINE_WAIT_MS) 태스크를
+    // BLOCKED로 내려놓는다 — 이 기간 안에 답이 오면 READY로 돌아가고, 지나면 질문은 만료되고 태스크는 ESCALATED.
+    QUESTION_TIMEOUT_MS: z.coerce.number().int().min(10_000).max(30 * 86_400_000).default(3 * 86_400_000),
   })
   .superRefine((v, ctx) => {
     if (v.APP_BASE_URL !== undefined) {

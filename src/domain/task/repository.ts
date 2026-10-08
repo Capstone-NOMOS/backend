@@ -302,6 +302,38 @@ export async function listClaimableTasks(db: Queryable, projectId: string, teamR
   return rows.map(toTask);
 }
 
+// 질문의 답을 기다리느라 태스크를 내려놓는다(BLOCKED·QUESTION). 담당을 비운다 — 답이 와서 READY가 되면 그 역할 에이전트가
+// 다시 잡는다(claimTaskRow는 담당이 비어 있어야 한다). 브랜치는 남겨 같은 브랜치에서 이어 간다.
+// 그 에이전트가 잡고 있는 태스크일 때만 바뀐다.
+export async function blockTaskForQuestion(db: Queryable, taskId: string, agentId: string): Promise<boolean> {
+  const { rowCount } = await db.query(
+    `UPDATE tasks SET state = 'BLOCKED', blocked_reason = 'QUESTION', assignee_agent_id = NULL, updated_at = now()
+      WHERE id = $1 AND assignee_agent_id = $2 AND state IN ('CLAIMED', 'IN_PROGRESS')`,
+    [taskId, agentId],
+  );
+  return rowCount === 1;
+}
+
+// 기다리던 답이 다 왔다 — 다시 잡을 수 있게 돌려놓는다. 질문 때문에 멈춘 태스크만.
+export async function unblockQuestionTask(db: Queryable, taskId: string): Promise<boolean> {
+  const { rowCount } = await db.query(
+    `UPDATE tasks SET state = 'READY', blocked_reason = NULL, updated_at = now()
+      WHERE id = $1 AND state = 'BLOCKED' AND blocked_reason = 'QUESTION'`,
+    [taskId],
+  );
+  return rowCount === 1;
+}
+
+// 질문을 기다리다 만료됐다 — 사람이 봐야 한다. 질문 때문에 멈춘 태스크만.
+export async function escalateQuestionTask(db: Queryable, taskId: string): Promise<boolean> {
+  const { rowCount } = await db.query(
+    `UPDATE tasks SET state = 'ESCALATED', blocked_reason = NULL, updated_at = now()
+      WHERE id = $1 AND state = 'BLOCKED' AND blocked_reason = 'QUESTION'`,
+    [taskId],
+  );
+  return rowCount === 1;
+}
+
 // ── 멈춘 태스크(BLOCKED · AGENT_STOPPED) ──────────────────────────────────
 
 // 에이전트가 잡고 있던(CLAIMED·IN_PROGRESS) 태스크를 BLOCKED(AGENT_STOPPED)로. 담당은 남겨 둔다(누가 멈췄는지 화면에 보인다).

@@ -1,0 +1,52 @@
+{
+  "_comment": "질문 라우터 평가 데이터셋. source=experiment는 실험에서 에이전트가 실제로 한 질문(E6·BE 자발 질문), synthetic은 자기 소관(SELF) 사례를 보태려고 만든 것. accept는 정답으로 인정하는 판정 — 애매한 문항은 둘을 인정한다. 라벨을 바꾸면 이전 결과와 비교할 수 없으니 version을 올린다.",
+  "version": 1,
+  "contexts": {
+    "fe-members": {
+      "askerRole": "FRONTEND",
+      "task": { "title": "F-10 스터디 멤버 목록 화면", "kind": "IMPLEMENT" },
+      "repo": { "fullName": "acme/study-web" },
+      "spec": { "featureKey": "F-10", "title": "스터디 멤버 목록 화면", "content": "스터디 상세 페이지(/studies/:id)에 멤버 목록을 보여 준다.\n- 멤버 목록은 백엔드 API GET /api/studies/:id/members 에서 받는다(백엔드 팀이 구현 중).\n- 각 멤버의 닉네임과 가입일을 표시한다.\n- WHEN 멤버가 없으면 THEN \"아직 멤버가 없습니다\"를 보여 준다." }
+    },
+    "fe-join": {
+      "askerRole": "FRONTEND",
+      "task": { "title": "F-11 스터디 참여 버튼", "kind": "IMPLEMENT" },
+      "repo": { "fullName": "acme/study-web" },
+      "spec": { "featureKey": "F-11", "title": "스터디 참여 버튼", "content": "스터디 상세 페이지에 \"참여하기\" 버튼을 둔다.\n- 누르면 백엔드 API POST /api/studies/:id/join 을 호출한다(백엔드 팀이 구현 중).\n- WHEN 정원이 차서 참여할 수 없으면 THEN \"정원이 가득 찼습니다\"를 보여 준다.\n- WHEN 성공하면 THEN 버튼을 \"참여 중\"으로 바꾼다." }
+    },
+    "be-members": {
+      "askerRole": "BACKEND",
+      "task": { "title": "F-20 스터디 멤버 목록 API", "kind": "IMPLEMENT" },
+      "repo": { "fullName": "acme/study-api" },
+      "spec": { "featureKey": "F-20", "title": "스터디 멤버 목록 API", "content": "GET /api/studies/:id/members 를 만든다.\n- 프론트 팀이 스터디 상세 화면의 멤버 목록을 만드는 중이고, 그 화면에 필요한 멤버 정보를 이 API로 받는다.\n- WHEN 스터디가 없으면 THEN 404." }
+    },
+    "be-list": {
+      "askerRole": "BACKEND",
+      "task": { "title": "F-21 스터디 목록 API", "kind": "IMPLEMENT" },
+      "repo": { "fullName": "acme/study-api" },
+      "spec": { "featureKey": "F-21", "title": "스터디 목록 API", "content": "GET /api/studies 를 만든다.\n- 프론트의 스터디 목록 화면에서 쓴다. 한 번에 보여 줄 개수와 넘기는 방식은 그 화면에 맞춘다.\n- 각 스터디의 제목·정원·현재 인원을 준다." }
+    }
+  },
+  "items": [
+    { "id": "q01", "context": "fe-members", "source": "experiment", "question": "GET /api/studies/:id/members 의 응답 본문 형태는 무엇인가요?", "accept": ["BACKEND"] },
+    { "id": "q02", "context": "fe-members", "source": "experiment", "question": "멤버 객체의 닉네임/가입일 필드 이름은 무엇인가요?", "accept": ["BACKEND"] },
+    { "id": "q03", "context": "fe-members", "source": "experiment", "question": "가입일 값의 타입/형식은 무엇인가요?", "accept": ["BACKEND"] },
+    { "id": "q04", "context": "fe-join", "source": "experiment", "question": "백엔드가 \"정원이 가득 찼다\"를 POST /api/studies/:id/join 응답으로 어떻게 알려 주나요? (상태 코드 + 본문 형식)", "accept": ["BACKEND"] },
+    { "id": "q05", "context": "fe-join", "source": "experiment", "question": "성공 응답 본문은 무엇으로 가정할까요? (버튼을 \"참여 중\"으로 바꿀 판단 기준)", "accept": ["BACKEND"] },
+    { "id": "q06", "context": "fe-members", "source": "synthetic", "question": "가입일을 화면에 어떤 형식으로 표시할까요? (YYYY.MM.DD / 3일 전 같은 상대 시간)", "accept": ["SELF"] },
+    { "id": "q07", "context": "fe-members", "source": "synthetic", "question": "멤버가 없을 때 빈 상태 화면에 안내 문구 말고 일러스트도 넣을까요?", "accept": ["SELF"] },
+    { "id": "q08", "context": "fe-join", "source": "synthetic", "question": "정원 초과 안내를 토스트로 보여 줄까요, 버튼 아래 문구로 보여 줄까요?", "accept": ["SELF"] },
+    { "id": "q09", "context": "fe-members", "source": "synthetic", "question": "멤버 목록 정렬은 서버가 정해서 주나요, 화면에서 정렬해야 하나요?", "accept": ["BACKEND", "SELF"] },
+    { "id": "q10", "context": "fe-members", "source": "synthetic", "question": "멤버 목록 API는 페이지네이션을 하나요?", "accept": ["BACKEND"] },
+    { "id": "q11", "context": "be-members", "source": "experiment", "question": "스터디 상세 화면의 멤버 목록에 필요한 필드는 무엇인가요? (응답은 `{ data: { members: [...] } }`, camelCase, 날짜는 ISO-8601 UTC 문자열로 고정)", "accept": ["FRONTEND"] },
+    { "id": "q12", "context": "be-members", "source": "experiment", "question": "멤버 목록의 정렬 순서는 어떻게 할까요?", "accept": ["SELF", "FRONTEND"] },
+    { "id": "q13", "context": "be-list", "source": "experiment", "question": "스터디 목록 화면은 어떤 페이지네이션 방식을 쓰나요? (GET /api/studies 의 쿼리 파라미터와 응답에 들어갈 페이징 메타가 여기서 결정됩니다)", "accept": ["FRONTEND"] },
+    { "id": "q14", "context": "be-list", "source": "experiment", "question": "한 번에 보여 줄 기본 개수(limit/size 생략 시 기본값)와 허용 최대값은 얼마로 할까요?", "accept": ["FRONTEND", "SELF"] },
+    { "id": "q15", "context": "be-list", "source": "experiment", "question": "limit/page 값이 잘못된 경우(0, 음수, 숫자 아님) 어떻게 응답할까요? src/http.ts 의 STATUS_BY_CODE 에는 400 계열 코드가 아직 없어서, 400을 쓰려면 코드를 새로 추가해야 합니다.", "accept": ["SELF"] },
+    { "id": "q16", "context": "be-members", "source": "synthetic", "question": "멤버 조회 쿼리에 (study_id, joined_at) 인덱스를 추가해도 될까요?", "accept": ["SELF"] },
+    { "id": "q17", "context": "be-members", "source": "synthetic", "question": "응답 필드 이름을 camelCase로 할까요 snake_case로 할까요?", "accept": ["SELF"] },
+    { "id": "q18", "context": "be-list", "source": "synthetic", "question": "스터디 카드에 보여 줄 정보가 제목·정원·현재 인원 말고 더 있나요? (예: 썸네일, 태그)", "accept": ["FRONTEND"] },
+    { "id": "q19", "context": "fe-join", "source": "synthetic", "question": "로그인 토큰이 만료된 상태로 참여를 누르면 API가 어떤 상태 코드를 주나요?", "accept": ["BACKEND"] },
+    { "id": "q20", "context": "be-members", "source": "synthetic", "question": "탈퇴한 멤버도 목록 화면에 \"(탈퇴)\"로 보여 줘야 하나요, 아예 빼야 하나요?", "accept": ["FRONTEND"] }
+  ]
+}

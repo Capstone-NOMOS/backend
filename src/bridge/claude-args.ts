@@ -7,6 +7,9 @@ export const MCP_SERVER_NAME = 'nomos';
 // 서버가 노출하는 도구. Claude Code에서는 mcp__<서버명>__<도구명> 형태로 불린다.
 export const NOMOS_TOOLS = ['claim_task', 'submit_artifact', 'publish_note', 'read_notes'] as const;
 
+// 권한 도구. --allowedTools에 넣지 않는다 — 모델이 부르는 도구가 아니라 Claude Code가 권한을 물을 때 부르는 도구다(bridge/permission.ts).
+export const PERMISSION_TOOL = 'permission_prompt';
+
 export function allowedToolNames(): string[] {
   return NOMOS_TOOLS.map((tool) => `mcp__${MCP_SERVER_NAME}__${tool}`);
 }
@@ -17,6 +20,8 @@ export type ClaudeRunOptions = {
   // 태스크마다 다른 작업공간. settings.json은 브릿지가 여기에 깔아둔다.
   cwd: string;
   model?: string;
+  // 질문 중계(프로젝트 스위치). 꺼져 있으면 권한 도구를 붙이지 않는다 — 헤드리스에는 AskUserQuestion 자체가 없어진다. 생략하면 켜짐.
+  questionRelay?: boolean;
 };
 
 // --strict-mcp-config가 없으면 사용자의 ~/.claude.json에 등록된 MCP 서버가 함께 로드된다.
@@ -32,6 +37,9 @@ export function buildClaudeArgs(options: ClaudeRunOptions): string[] {
   // 파일 편집은 작업 폴더 안에서 자동 승인한다 — settings.json의 deny(.env·contracts 등)는 여전히 이긴다.
   // 없으면 모델이 계획만 세우고 "쓰기 권한을 승인해 달라"며 커밋 없이 끝난다(실제로 그랬다).
   args.push('--permission-mode', 'acceptEdits');
+  // 미리 정해지지 않은 행동의 권한을 우리 도구가 판단한다 — AskUserQuestion만 다른 역할에게 물어 답하고 나머지는 거부한다.
+  // 이게 없으면 헤드리스에는 AskUserQuestion 자체가 없어 모델이 질문을 텍스트로 남기고 끝난다(실험).
+  if (options.questionRelay !== false) args.push('--permission-prompt-tool', `mcp__${MCP_SERVER_NAME}__${PERMISSION_TOOL}`);
   // 헤드리스에는 권한 프롬프트에 답할 사람이 없다. 이게 없으면 모델이 도구를 고른 뒤
   // "승인 대기"에서 멈춘다 — 도구를 못 찾는 것과 증상이 달라 헷갈리기 쉽다.
   // 가변 인자를 마지막에 두어 뒤에 아무것도 붙지 않게 한다.

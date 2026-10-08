@@ -2,6 +2,7 @@ import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
+import { setQuestionRouter } from '../src/domain/question/router-registry.js';
 import { pool } from '../src/config/db.js';
 import { clearPolicyCache } from '../src/domain/policy/policy-cache.js';
 import { setGithubDeviceApi } from '../src/domain/oauth/service.js';
@@ -227,6 +228,9 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     const projectId = (created.data.project as { id: string }).id;
     await call('GET', `/orgs/${orgId}/projects`, rep);
     await call('GET', `/projects/${projectId}`, rep);
+    // 질문 중계 스위치(시작 전) — 껐다가 다시 켠다(아래에서 질문 흐름을 쓴다).
+    await call('PATCH', `/projects/${projectId}/settings`, rep, { questionRelay: false });
+    await call('PATCH', `/projects/${projectId}/settings`, rep, { questionRelay: true });
     const beAgentId = beConn.data.agentId as string;
     const repAgentId = repConn.data.agentId as string;
     await call('POST', `/projects/${projectId}/members`, rep, { agentId: repAgentId, teamRole: 'FRONTEND' });
@@ -264,6 +268,28 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     // 룸: Executor의 실행 시작·도구 사용 보고
     await call('POST', `/tasks/${taskId}/runs/start`, agent);
     await call('POST', `/tasks/${taskId}/activity`, agent, { items: [{ kind: 'read', target: 'src/api/join.ts' }, { kind: 'run', target: 'npm test' }] });
+
+    // 에이전트 질문(실험) — 브릿지가 AskUserQuestion을 올리고, 대표가 답하고, 브릿지가 답을 읽는다.
+    const question = 'GET /api/studies/:id/members 의 응답 본문 형태는?';
+    const asked = await call('POST', `/tasks/${taskId}/questions`, agent, {
+      questions: [{ question, header: '응답 형태', multiSelect: false, options: [{ label: '{ members: [...] }' }, { label: '배열' }] }],
+    });
+    const questionId = asked.data.id as string;
+    await call('GET', `/projects/${projectId}/questions`, rep);
+    await call('GET', '/me/questions', rep);
+    await call('POST', `/questions/${questionId}/answer`, rep, { answers: { [question]: '{ members: [...] }' } });
+    await call('GET', `/tasks/${taskId}/questions/${questionId}`, agent);
+    await call('POST', `/tasks/${taskId}/questions/${questionId}/detach`, agent); // 이미 답이 있어 아무것도 바꾸지 않는다
+    await call('GET', '/agents/me/questions', agent);
+    // 상담 초안 — 대상이 이 에이전트 역할이 되도록 라우터를 잠깐 바꿔 끼운다.
+    setQuestionRouter({ name: 'contract', route: async () => ({ target: 'BACKEND', confidence: null, reason: null, routedBy: 'contract' }) });
+    try {
+      const q2 = '오류 응답 본문 형식은?';
+      const asked2 = await call('POST', `/tasks/${taskId}/questions`, agent, { questions: [{ question: q2, options: [] }] });
+      await call('POST', `/questions/${asked2.data.id as string}/draft`, agent, { answers: { [q2]: '{ error: { code, message } }' }, decided: { [q2]: true }, basis: { [q2]: ['src/http.ts'] } });
+    } finally {
+      setQuestionRouter(null);
+    }
 
     // 제출 — 커밋 diff는 가짜 검사기로. 신고와 같게 두면 V3는 PASS다.
     setCommitInspector({ kind: 'fake', async changedPaths() { return ['src/api/join.ts']; } });

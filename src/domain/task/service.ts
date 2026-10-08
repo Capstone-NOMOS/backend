@@ -2,8 +2,10 @@ import { withTransaction } from '../../config/db.js';
 import { AppError, type ErrorCode } from '../../errors.js';
 import { tasksChanged } from '../dispatch/tasks-changed.js';
 import { appendEvent } from '../events/append.js';
+import { findProjectById } from '../project/repository.js';
 import { recordDispatches } from '../room/dispatch.js';
 import { findLatestRejection } from '../approval/repository.js';
+import { listTaskAnswers } from '../question/repository.js';
 import type { DenialStage, PathDenialReason } from '../events/types.js';
 import { settle, type Outcome } from '../outcome.js';
 import { getPolicySnapshot } from '../policy/policy-cache.js';
@@ -393,6 +395,9 @@ export type TaskBriefing = {
   policyHash: string;
   // 직전 제출이 대표에게 반려됐으면 그 사유. 반려되면 태스크가 READY로 돌아오고, 같은 태스크 브랜치에서 이어서 고친다.
   lastRejection: { approvalId: string; reason: string; decidedAt: string; artifactId: string | null; commitSha: string | null } | null;
+  answeredQuestions: { question: string; answer: string; source: string }[];
+  // 질문 중계(018). 꺼져 있으면 Executor가 권한 도구(AskUserQuestion)를 붙이지 않고, 다른 역할 소관은 GOTCHA "가정함"으로 남기게 한다.
+  questionRelay: boolean;
 };
 
 export async function getTaskBriefing(ctx: AgentContext, taskId: string): Promise<TaskBriefing> {
@@ -438,6 +443,11 @@ export async function getTaskBriefing(ctx: AgentContext, taskId: string): Promis
       notes,
       notesBlock: buildNotesPromptBlock(notes),
       lastRejection: await findLatestRejection(tx, taskId),
+      questionRelay: (await findProjectById(tx, task.projectId))?.questionRelay ?? true,
+      // 질문 때문에 멈췄다 재개한 태스크 — 그동안 받은 답(에이전트가 코드로 찾은 답은 source=agent, 사람 미확인).
+      answeredQuestions: (await listTaskAnswers(tx, taskId)).flatMap((q) =>
+        q.questions.map((x) => ({ question: x.question, answer: q.answers?.[x.question] ?? '', source: q.answerSource! })),
+      ),
       writablePaths,
       // 로컬 방어선. 이 결과를 Executor가 worktree의 .claude/settings.json으로 깐다.
       claudeSettings: buildClaudePermissions(rules),

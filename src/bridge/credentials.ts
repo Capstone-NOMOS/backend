@@ -13,8 +13,14 @@ export type Credentials = {
   agentId: string;
 };
 
+// NOMOS의 로컬 상태(자격 증명·작업공간·레포)를 두는 곳. 기본 ~/.nomos.
+// NOMOS_HOME으로 바꾸면 한 PC에서 에이전트를 둘 이상 돌릴 수 있다 — 홈 자체를 바꾸면 Claude Code 로그인까지 따라 바뀌어 안 된다.
+export function nomosHome(): string {
+  return process.env.NOMOS_HOME ?? path.join(os.homedir(), '.nomos');
+}
+
 export function credentialsDir(): string {
-  return path.join(os.homedir(), '.nomos');
+  return nomosHome();
 }
 
 export function credentialsPath(): string {

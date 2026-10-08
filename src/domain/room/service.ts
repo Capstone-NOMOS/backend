@@ -78,7 +78,9 @@ export async function endRun(
     const task = await taskInProject(ctx, taskId, tx);
     const open = await findOpenRun(tx, taskId, ctx.agentId);
     if (open === null) throw new AppError('RUN_NOT_OPEN', `no open run for task ${taskId}`);
-    const submitted = !(task.assigneeAgentId === ctx.agentId && RUNNING_STATES.includes(task.state));
+    // 질문의 답을 기다리느라 내려놓았다(BLOCKED·QUESTION, 담당도 비었다) — 제출한 것도, 멈춘 것도 아니다. 답이 오면 다시 시작된다.
+    const waitingQuestion = task.state === 'BLOCKED' && task.blockedReason === 'QUESTION';
+    const submitted = !waitingQuestion && !(task.assigneeAgentId === ctx.agentId && RUNNING_STATES.includes(task.state));
     await appendEvent(tx, {
       orgId: ctx.orgId,
       projectId: ctx.projectId,
@@ -95,9 +97,10 @@ export async function endRun(
         exitCode: input.exitCode,
         submitted,
         taskState: task.state,
+        ...(waitingQuestion ? { waitingQuestion: true } : {}),
       },
     });
-    if (submitted) return { submitted, taskState: task.state, blocked: false };
+    if (submitted || waitingQuestion) return { submitted, taskState: task.state, blocked: false };
     const blocked = await blockStoppedTaskInTx(tx, { orgId: ctx.orgId, projectId: ctx.projectId, onBehalfOf: ctx.onBehalfOf, policyHash: ctx.policyHash }, taskId, {
       cause: input.outcome === 'completed' ? 'not_submitted' : input.outcome,
       agentId: ctx.agentId,

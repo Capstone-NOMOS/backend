@@ -269,3 +269,39 @@ describe('피드 페이지 넘기기', () => {
     expect((await http('GET', `/projects/${w.projectId}/rooms/BACKEND/feed?before=nope`, w.rep.token)).status).toBe(400);
   });
 });
+
+describe('질문 중계와 룸', () => {
+  it('질문 → 답을 기다리며 내려놓음 → 실행 종료는 멈춤(AGENT_STOPPED)이 아니다 → 답이 오면 다시 지시 — 답할 역할의 룸에도 질문이 보인다', async () => {
+    const w = await world();
+    await http('POST', `/tasks/${w.feTaskId}/runs/start`, w.feAgentToken);
+    await http('POST', `/tasks/${w.feTaskId}/claim`, w.feAgentToken);
+    const q = 'GET /api/todos 응답 필드 이름은?';
+    const asked = await http('POST', `/tasks/${w.feTaskId}/questions`, w.feAgentToken, {
+      questions: [{ question: q, header: '필드', options: [{ label: 'title' }, { label: 'name' }], multiSelect: false }],
+    });
+    expect(asked.status).toBe(201);
+    const questionId = asked.data.id as string;
+    expect((await http('POST', `/tasks/${w.feTaskId}/questions/${questionId}/detach`, w.feAgentToken)).status).toBe(200);
+
+    const ended = await http('POST', `/tasks/${w.feTaskId}/runs/end`, w.feAgentToken, { outcome: 'completed', committed: false, durationMs: 200_000, exitCode: 0 });
+    expect(ended.data).toEqual({ submitted: false, taskState: 'BLOCKED', blocked: false });
+    const { rows } = await testPool.query(`SELECT state, blocked_reason FROM tasks WHERE id = $1`, [w.feTaskId]);
+    expect(rows[0]).toEqual({ state: 'BLOCKED', blocked_reason: 'QUESTION' });
+
+    // BE 담당(사람)이 답한다 → READY → "다시 실행해 주세요 (재개)".
+    expect((await http('POST', `/questions/${questionId}/answer`, w.be.token, { answers: { [q]: 'title' } })).status).toBe(200);
+    const fe = (await feed(w.rep.token, w.projectId, 'FRONTEND')).messages.map((m) => m.text).reverse();
+    expect(fe.slice(-5)).toEqual([
+      'FRONTEND 에이전트가 BACKEND에게 질문했습니다 (1개)',
+      'BACKEND의 답을 기다리며 태스크를 잠시 내려놓았습니다 — 답이 오면 다시 시작합니다',
+      '실행을 멈췄습니다 (200초) — 질문의 답이 오면 다시 시작합니다',
+      '질문에 답이 왔습니다(담당자) → 다시 시작합니다',
+      'T-2 가입 화면 다시 실행해 주세요 (재개)',
+    ]);
+    expect((await testPool.query(`SELECT 1 FROM events WHERE type = 'TASK_BLOCKED'`)).rowCount).toBe(0);
+
+    // 답할 역할(BACKEND)의 룸에도 질문이 보인다 — 거기서 답을 준비한다.
+    const be = (await feed(w.be.token, w.projectId, 'BACKEND')).messages.map((m) => m.text);
+    expect(be).toContain('FRONTEND 에이전트가 BACKEND에게 질문했습니다 (1개)');
+  });
+});

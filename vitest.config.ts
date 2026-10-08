@@ -5,8 +5,9 @@ export default defineConfig({
     environment: 'node',
     include: ['tests/**/*.test.ts'],
     setupFiles: ['tests/setup-invariants.ts'],
-    testTimeout: 20000,
-    hookTimeout: 20000,
+    // 20초에서는 부하가 있을 때 준비 단계(beforeAll의 스키마 재생성 등)가 간헐적으로 넘쳤다(전체 3회 중 1회). 60초에서는 6회 동안 없었다.
+    testTimeout: 60000,
+    hookTimeout: 60000,
     env: {
       DATABASE_URL: 'postgres://postgres:postgres@localhost:55432/nomos_test',
       LOG_LEVEL: 'error',
