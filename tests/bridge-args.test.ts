@@ -40,7 +40,7 @@ describe('MCP 격리', () => {
     const bash = args[args.indexOf('--allowedTools') + 1]!.split(',').filter((t) => t.startsWith('Bash'));
     expect(bash).toContain('Bash(git commit:*)');
     // 접두사 없는 Bash·와일드카드 Bash는 없다.
-    for (const rule of bash) expect(rule, rule).toMatch(/^Bash\([a-z][a-z -]+:\*\)$/);
+    for (const rule of bash) expect(rule, rule).toMatch(/^Bash\([a-z][a-z0-9 -]+:\*\)$/);
   });
 
   it('도구 이름은 설정의 서버 이름에서 파생된다', () => {

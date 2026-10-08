@@ -249,7 +249,7 @@ describe('멤버 배정', () => {
     const members = await assignMember(ctx.actor, project.id, be.agentId, 'BACKEND');
 
     expect(members).toEqual([
-      { agentId: be.agentId, agentName: 'be-laptop', teamRole: 'BACKEND', userId: be.userId },
+      { agentId: be.agentId, agentName: 'be-laptop', teamRole: 'BACKEND', userId: be.userId, githubInvites: [] }, // GitHub 레포가 없는 프로젝트라 초대 결과는 비어 있다
     ]);
     const { rows } = await pool.query(
       `SELECT actor_agent_id, on_behalf_of, payload FROM events WHERE type = 'MEMBER_ASSIGNED'`,

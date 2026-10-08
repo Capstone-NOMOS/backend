@@ -3,7 +3,9 @@ import { pool, withTransaction } from '../../config/db.js';
 import { AppError } from '../../errors.js';
 import { assignAgentsToOrg } from '../agent/repository.js';
 import { appendEvent } from '../events/append.js';
-import { checkCollaborator, hasGithubToken, listUserRepos, type GithubRepo } from '../github/client.js';
+import { logger } from '../../config/logger.js';
+import { githubRepApi, type GithubRepoInfo } from '../github/rep-api.js';
+import { representativeGithubToken } from '../github/rep-token.js';
 import { listReposByOrg } from '../repo/repository.js';
 import {
   assignUserToOrg,
@@ -51,8 +53,15 @@ export async function createOrganization(userId: string, name: string): Promise<
   });
 }
 
-export async function listAvailableGithubRepos(): Promise<GithubRepo[]> {
-  return listUserRepos();
+// 연결 드롭다운: 그 조직 대표가 GitHub에서 접근할 수 있는 레포. 대표가 GitHub를 연결하지 않았으면 빈 배열(500이 아니다 — 직접 입력 경로가 열려 있다).
+// 서버 공용 PAT를 쓰지 않는다 — 쓰면 모든 조직이 그 PAT 주인의 레포를 본다.
+export async function listAvailableGithubRepos(orgId: string): Promise<GithubRepoInfo[]> {
+  const token = await representativeGithubToken(pool, orgId);
+  if (token === null) {
+    logger.warn('representative has no GitHub link; returning empty repo list', { orgId });
+    return [];
+  }
+  return githubRepApi().listRepos(token);
 }
 
 // 사용자를 가리키는 키는 다른 응답(createOrg·acceptInvite·프로젝트 멤버)과 같은 userId로 쓴다.
@@ -79,7 +88,8 @@ export async function listMembers(orgId: string): Promise<MemberView[]> {
     orgRole: u.orgRole,
   });
 
-  if (!hasGithubToken()) return users.map(base);
+  const token = await representativeGithubToken(pool, orgId);
+  if (token === null) return users.map(base);
 
   const repos = await listReposByOrg(pool, orgId);
   if (repos.length === 0) return users.map(base);
@@ -90,7 +100,7 @@ export async function listMembers(orgId: string): Promise<MemberView[]> {
     if (u.githubLogin !== null) {
       for (const repo of repos) {
         try {
-          const result = await checkCollaborator(repo.fullName, u.githubLogin);
+          const result = await githubRepApi().isCollaborator(token, repo.fullName, u.githubLogin);
           isCollaborator = (isCollaborator ?? false) || result;
         } catch {
           continue;

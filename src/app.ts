@@ -16,6 +16,8 @@ import { specsRouter } from './routes/specs.js';
 import { pmRouter } from './routes/pm.js';
 import { repoPathsRouter } from './routes/repo-paths.js';
 import { reposRouter } from './routes/repos.js';
+import { roomsRouter } from './routes/rooms.js';
+import { startDispatchRecorder } from './domain/room/dispatch.js';
 import { tasksRouter } from './routes/tasks.js';
 
 export type AppOptions = {
@@ -41,6 +43,8 @@ export function appOptionsFromEnv(): AppOptions {
 // 앱 조립만 한다. listen은 server.ts가 한다 — 통합 테스트가 임의 포트로 띄울 수 있어야 하기 때문이다.
 export function createApp(options: AppOptions = appOptionsFromEnv()): Express {
   const app = express();
+  // 가져갈 수 있게 된 태스크마다 "실행해 주세요"(TASK_DISPATCHED)를 남긴다 — 룸 피드의 첫 줄. 한 번만 구독한다.
+  startDispatchRecorder();
   // 운영은 Caddy 한 단 뒤에 있다. 이 설정이 없으면 req.ip가 Caddy 주소로 찍힌다(브라우저 승인 화면의 요청 IP가 쓸모없어진다).
   // 1단만 믿는다 — X-Forwarded-For의 맨 오른쪽(Caddy가 붙인 값)을 쓰므로 클라이언트가 앞에 끼운 값에 속지 않는다.
   app.set('trust proxy', 1);
@@ -73,6 +77,7 @@ export function createApp(options: AppOptions = appOptionsFromEnv()): Express {
   app.use('/api', projectsRouter);
   app.use('/api', specsRouter);
   app.use('/api', pmRouter);
+  app.use('/api', roomsRouter);
 
   // 수동 테스트용 Swagger UI. 켤지와 인증은 DOCS_ENABLED·DOCS_BASIC_AUTH가 정한다(NODE_ENV와 분리).
   if (options.docs !== null) {

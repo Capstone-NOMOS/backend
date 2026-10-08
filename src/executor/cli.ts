@@ -21,7 +21,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { writeBriefingNotes } from '../bridge/briefing-notes.js';
-import { buildMcpConfig } from '../bridge/claude-args.js';
+import { ALLOWED_BASH_PREFIXES, buildMcpConfig } from '../bridge/claude-args.js';
+import { prepareDependencies } from './setup.js';
 import {
   credentialsPath,
   readCredentials,
@@ -29,6 +30,7 @@ import {
   writeCredentials,
 } from '../bridge/credentials.js';
 import { NomosApiError, NomosClient } from '../bridge/nomos-client.js';
+import { ActivityReporter, activityFromStreamLine, RunObserver } from './activity.js';
 import { connect, DEFAULT_SERVER, serverCalls } from './connect.js';
 import { deviceLogin } from './device-login.js';
 import { cliVersion, mcpServerPath } from './paths.js';
@@ -107,13 +109,43 @@ async function handleTask(client: NomosClient, projectId: string, task: TaskSumm
     buildMcpConfig({ serverPath: mcpServerPath(), workspaceDir: workspace.dir }),
   );
 
+  // 룸: 실행 시작을 알리고, 도는 동안 도구 사용을 보낸다. 룸 보고가 실패해도 실행은 그대로 간다(옛 서버에는 이 API가 없다).
+  const runOpen = await client
+    .startRun(task.id)
+    .then(() => true)
+    .catch((err: unknown) => {
+      log(`룸에 실행 시작을 알리지 못했다(실행은 계속한다): ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    });
+  const reporter = runOpen ? new ActivityReporter(client, task.id, log) : null;
+  const observer = new RunObserver(workspace.dir);
+
+  // 의존성은 모델이 아니라 여기서 설치한다(설치 스크립트 끔). 실패해도 진행한다 — 프롬프트에 결과를 적는다.
+  const setup = await prepareDependencies(workspace.dir, log);
+
   const before = headSha(workspace.dir);
   const result = await runClaude({
     workspaceDir: workspace.dir,
-    prompt: buildTaskPrompt(briefing, workspace.branch),
+    prompt: buildTaskPrompt(briefing, workspace.branch, { allowedCommands: ALLOWED_BASH_PREFIXES, setup: setup.steps }),
     mcpConfigPath,
+    pathPrepend: setup.venvBin,
+    onStdoutLine: (line: string) => {
+      observer.observe(line);
+      reporter?.push(activityFromStreamLine(line, workspace.dir));
+    },
   });
   const committed = headSha(workspace.dir) !== before;
+
+  if (reporter) {
+    await reporter.close();
+    // 제출했는지는 서버가 태스크 상태로 판단해 룸에 남긴다("끝났지만 제출하지 않았다"가 대표에게 보인다).
+    await client
+      .endRun(task.id, { outcome: result.outcome, committed, durationMs: result.durationMs, exitCode: result.exitCode, ...observer.summary() })
+      .then((r) => {
+        if (r.blocked) log('제출 없이 끝나 태스크가 멈춤(BLOCKED)으로 바뀌었다 — 대표가 원인을 해결하고 재개하면 다시 가져간다');
+      })
+      .catch((err: unknown) => log(`룸에 실행 종료를 알리지 못했다: ${err instanceof Error ? err.message : String(err)}`));
+  }
 
   // 자동 재시도는 넣지 않는다. tasks.retry_count는 서버가 관리하는 값이고,
   // Executor가 멋대로 돌리면 M4(재작업률)가 오염된다.

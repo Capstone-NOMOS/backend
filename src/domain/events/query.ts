@@ -23,12 +23,13 @@ export type EventQuery = { before?: string; limit: number; types?: string[] };
 
 async function listProjectEvents(db: Queryable, projectId: string, query: EventQuery): Promise<EventView[]> {
   const { rows } = await db.query(
-    `SELECT id::text AS id, type, ts, on_behalf_of, actor_agent_id, payload, token_cost::float8 AS token_cost, path_violation
-       FROM events
-      WHERE project_id = $1
-        AND ($2::bigint IS NULL OR id < $2::bigint)
-        AND ($3::text[] IS NULL OR type = ANY($3::text[]))
-      ORDER BY id DESC
+    // ORDER BY는 반드시 e.id(bigint)로 — 그냥 id라고 쓰면 SELECT의 별칭(id::text)을 정렬해 문자열 순서가 된다("9" > "10", 운영 테스트에서 실제로 01:21이 01:01 아래로 갔다).
+    `SELECT e.id::text AS id, e.type, e.ts, e.on_behalf_of, e.actor_agent_id, e.payload, e.token_cost::float8 AS token_cost, e.path_violation
+       FROM events e
+      WHERE e.project_id = $1
+        AND ($2::bigint IS NULL OR e.id < $2::bigint)
+        AND ($3::text[] IS NULL OR e.type = ANY($3::text[]))
+      ORDER BY e.id DESC
       LIMIT $4`,
     [projectId, query.before ?? null, query.types && query.types.length > 0 ? query.types : null, query.limit],
   );

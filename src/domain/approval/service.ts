@@ -12,8 +12,13 @@ import {
   decideApproval,
   findApprovalForUpdate,
   insertApproval,
+  insertReleaseApproval,
+  isProjectReadyForRelease,
   listApprovals,
+  listIntegrationChecks,
+  listReleaseTasks,
   lockApprovalTask,
+  markProjectCompleted,
   type ApprovalDecision,
   type ApprovalStatusFilter,
   type ApprovalView,
@@ -74,6 +79,28 @@ export async function requestActionApproval(tx: PoolClient, ctx: EventContext, i
   return approval.id;
 }
 
+// ── G3: 통합 확인·완료 승인 ───────────────────────────────────────────────
+// 통합 확인은 에이전트가 아니라 대표가 한다(운영 테스트 4-3 — 에이전트에게는 선행 코드·상대 레포·실행 수단이 없다).
+// 태스크가 DONE이 되는 **같은 트랜잭션에서** 부른다(검증 결론·ACTION 승인). 모든 태스크가 DONE이면 카드를 하나 만든다 —
+// 확인 항목(PM의 integrationChecks)과 태스크별 레포·브랜치·마지막 커밋(사람이 머지·실행해 볼 것)을 스냅샷으로 담는다.
+export const RELEASE_REQUESTER = 'system:pm';
+
+export async function requestReleaseIfComplete(tx: PoolClient, ctx: { orgId: string; projectId: string }): Promise<string | null> {
+  if (!(await isProjectReadyForRelease(tx, ctx.projectId))) return null;
+  const checks = await listIntegrationChecks(tx, ctx.projectId);
+  const tasks = await listReleaseTasks(tx, ctx.projectId);
+  const approvalId = await insertReleaseApproval(tx, ctx.projectId, { integrationChecks: checks, tasks });
+  if (approvalId === null) return null;
+  await appendEvent(tx, {
+    orgId: ctx.orgId,
+    projectId: ctx.projectId,
+    type: 'RELEASE_REQUESTED',
+    onBehalfOf: RELEASE_REQUESTER,
+    payload: { approvalId, checkCount: checks.length, taskCount: tasks.length },
+  });
+  return approvalId;
+}
+
 // 조직 전체의 대기열(대시보드 "승인 · 결정 대기", 받은 편지함) — 대표 전용(라우트가 막는다).
 export async function listOrgApprovals(orgId: string, status: ApprovalStatusFilter, limit: number): Promise<ApprovalView[]> {
   return listApprovals(pool, { orgId, status, limit });
@@ -107,6 +134,22 @@ export async function decide(
     if (approval.orgId !== actor.orgId) throw new AppError('CROSS_ORG_ACCESS', 'cannot access another organization');
     if (approval.decision !== null) {
       throw new AppError('APPROVAL_ALREADY_DECIDED', `approval was already decided (${approval.decision})`);
+    }
+    if (approval.gate === 'G3') {
+      // 승인 = 통합 확인 끝 → 프로젝트 완료. 반려 = 진행 중 그대로(고칠 태스크는 대표가 만든다 — 다시 전부 DONE이 되면 새 카드).
+      if (!(await decideApproval(tx, approval.id, decision, actor.userId, reason))) {
+        throw new AppError('APPROVAL_ALREADY_DECIDED', 'approval was decided concurrently');
+      }
+      if (decision === 'APPROVE') await markProjectCompleted(tx, approval.projectId);
+      const released = (await findProjectById(tx, approval.projectId))!;
+      await appendEvent(tx, {
+        orgId: actor.orgId,
+        projectId: approval.projectId,
+        type: 'RELEASE_DECIDED',
+        onBehalfOf: actor.userId,
+        payload: { approvalId: approval.id, decision, reason, projectStatus: released.status },
+      });
+      return approval.projectId;
     }
     if (approval.gate !== 'ACTION') {
       throw new AppError('APPROVAL_NOT_FOUND', `approval ${approvalId} is not an action approval`);
@@ -156,6 +199,8 @@ export async function decide(
         ...(retryCount === null ? {} : { retryCount, retryCause: 'REJECTED' as const }),
       },
     });
+    // 이 승인으로 마지막 태스크가 DONE이 됐으면 통합 확인(G3)을 요청한다.
+    if (decision === 'APPROVE') await requestReleaseIfComplete(tx, { orgId: actor.orgId, projectId: approval.projectId });
     return approval.projectId;
   });
 

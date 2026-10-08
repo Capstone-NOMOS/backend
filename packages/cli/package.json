@@ -1,6 +1,6 @@
 {
   "name": "@capstone-nomos/cli",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "NOMOS 에이전트 CLI — 노트북의 Claude Code를 NOMOS 서버에 연결하고 배정된 태스크를 실행한다",
   "type": "module",
   "bin": {

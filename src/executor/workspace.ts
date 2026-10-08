@@ -99,7 +99,16 @@ export function prepareWorkspace(input: PrepareInput): PreparedWorkspace {
 
 // Executor가 작업공간에 쓰는 파일(MCP 설정·실행 로그·브리핑 노트·정책 표시·settings.json)이 모델의 `git add`에 섞이지 않게 한다.
 // 커밋에 섞이면 신고 경로와 실제 diff가 어긋나 V3가 FAIL을 낸다. info/exclude는 레포 공통이라 모든 worktree에 걸린다.
-export const NOMOS_LOCAL_FILES = ['/.nomos-mcp.json', '/.nomos-run.log', '/.nomos-briefing.json', '/.claude/.nomos-policy.json', '/.claude/settings.json'];
+// node_modules·.nomos-venv는 Executor가 미리 설치한 의존성(setup.ts) — 레포에 .gitignore가 없어도 커밋에 섞이지 않게.
+export const NOMOS_LOCAL_FILES = [
+  '/.nomos-mcp.json',
+  '/.nomos-run.log',
+  '/.nomos-briefing.json',
+  '/.claude/.nomos-policy.json',
+  '/.claude/settings.json',
+  '/node_modules/',
+  '/.nomos-venv/',
+];
 
 export function excludeNomosFiles(repoPath: string): void {
   try {

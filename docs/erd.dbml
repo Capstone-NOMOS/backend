@@ -606,6 +606,39 @@ Table disputes {
   Note: 'PM은 verdict를 뒤집을 수 없음'
 }
 
+Table task_dispatches {
+  task_id       uuid        [pk, not null]
+  attempt       integer     [pk, not null, note: '그때의 tasks.retry_count. 재시도로 다시 READY가 되면 새 행']
+  dispatched_at timestamptz [not null, default: `now()`]
+
+  Note: '''
+  ★ 017 룸: 서버(PM)가 "이 태스크를 실행해 주세요"를 보낸 기록. 가져갈 수 있게 된 순간(시작됨·READY·담당 없음·선행 완료) attempt마다 한 번.
+  tasksChanged 신호마다 계산하고, PK가 중복을 막는다. 새로 들어간 행에만 TASK_DISPATCHED(system:dispatcher)를 같은 트랜잭션에 남긴다.
+  CHECK attempt >= 0
+  '''
+}
+
+Table agent_activity {
+  id         bigserial   [pk]
+  project_id uuid        [not null]
+  task_id    uuid        [not null]
+  agent_id   uuid        [not null]
+  kind       text        [not null, note: 'read | edit | write | run | search | other']
+  target     text        [not null, note: '작업공간 기준 경로 또는 명령 첫 줄, 1~300자']
+  ts         timestamptz [not null, default: `now()`]
+
+  indexes {
+    (project_id, id)
+  }
+  Note: '''
+  ★ 017 룸: 에이전트가 실행 중에 쓴 도구 한 줄씩(Executor가 Claude stream-json에서 뽑아 보낸다).
+  상태 변화가 아니라 events에 넣지 않는다. 파일 내용·명령 결과·모델 설명은 받지 않는다(설명은 인계 노트의 몫).
+  열린 실행(AGENT_RUN_STARTED 뒤 AGENT_RUN_ENDED 전)에만 붙는다.
+  agent_activity_kind_chk   kind IN ('read','edit','write','run','search','other')
+  agent_activity_target_chk char_length(target) BETWEEN 1 AND 300
+  '''
+}
+
 Table approvals {
   id           uuid        [pk, default: `gen_random_uuid()`]
   project_id   uuid        [not null]
@@ -799,6 +832,11 @@ Ref: disputes.project_id > projects.id [delete: cascade]
 Ref: disputes.raised_by > agents.id
 Ref: disputes.target_task_id > tasks.id
 Ref: disputes.blocking_task_id > tasks.id
+
+Ref: task_dispatches.task_id > tasks.id
+Ref: agent_activity.project_id > projects.id
+Ref: agent_activity.task_id > tasks.id
+Ref: agent_activity.agent_id > agents.id
 
 Ref: approvals.project_id > projects.id [delete: cascade]
 Ref: approvals.decided_by > users.id

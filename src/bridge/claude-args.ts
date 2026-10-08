@@ -52,6 +52,14 @@ export const ALLOWED_BASH_PREFIXES = [
   'npm run test',
   'npx vitest',
   'node --test',
+  // 시험 실행기(운영 테스트 4-4: python이 막혀 BE가 시험을 한 번도 못 돌리고 거부만 13번). 설치는 Executor가 미리 한다 — 설치 명령은 열지 않는다.
+  'pnpm test',
+  'pnpm run test',
+  'yarn test',
+  'python -m pytest',
+  'python -m unittest',
+  'python3 -m pytest',
+  'python3 -m unittest',
 ] as const;
 
 export function allowedBashRules(): string[] {

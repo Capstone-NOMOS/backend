@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 프로젝트
 
-NOMOS 서버 — 여러 개발자가 각자 노트북에서 Claude Code 에이전트를 돌릴 때 그 사이의 계약·권한·분쟁을 조율하는 서버. 현재 구현 범위는 조직·레포·경로 소유권·초대, 로컬 계정과 CLI 연결(브라우저 승인 포함), 프로젝트·태스크·산출물·인계 노트·검증, 명세·태스크 작성, 내장 PM의 계획 수립, 승인 대기열(ACTION 게이트), 화면용 실시간 신호(마이그레이션 016까지), AWS 배포다.
+NOMOS 서버 — 여러 개발자가 각자 노트북에서 Claude Code 에이전트를 돌릴 때 그 사이의 계약·권한·분쟁을 조율하는 서버. 현재 구현 범위는 조직·레포·경로 소유권·초대, 로컬 계정과 CLI 연결(브라우저 승인 포함), 프로젝트·태스크·산출물·인계 노트·검증, 명세·태스크 작성, 내장 PM의 계획 수립, 승인 대기열(ACTION 게이트), 화면용 실시간 신호, 역할별 룸 피드(마이그레이션 017까지), AWS 배포다.
 
 설계 원칙(위반 금지): **P1** 상태는 서버가 소유하고 클라이언트는 전이를 요청만 한다. **P3** 모든 행동은 사람에게 귀속된다(`on_behalf_of` 없는 이벤트는 없다). **P5** 모든 상태 변화는 `events`에 append되고 events가 유일한 진실이다.
 
@@ -44,7 +44,7 @@ npx vitest run -t "기본 경로 규칙"    # 이름으로 단일 테스트
 
 - **이미 설정된 환경변수가 `.env`보다 우선한다**(`loadEnvFile`의 동작, 실측 확인). `DATABASE_URL=... npm run seed`로 한 번만 덮어쓸 수 있다.
 - `NODE_ENV`가 `production` 또는 **`test`**면 `.env`를 읽지 않는다. 테스트는 `vitest.config.ts`의 `test.env`만 쓴다 —
-  읽으면 개발용 `DATABASE_URL`·`GITHUB_TOKEN`이 테스트로 새어 **테스트가 개발 DB를 TRUNCATE**하거나 실제 네트워크를 호출한다.
+  읽으면 개발용 `DATABASE_URL`·`ANTHROPIC_API_KEY`가 테스트로 새어 **테스트가 개발 DB를 TRUNCATE**하거나 실제 네트워크를 호출한다.
   `tests/env-loading.test.ts`가 이 격리를 고정한다.
 - `npm run migrate`는 node-pg-migrate라는 **별도 프로세스**라 `env.ts`를 거치지 않는다. 그래서 npm 스크립트에서
   Node의 `--env-file-if-exists=.env`로 같은 파일을 읽힌다. 새 CLI 진입점을 추가하면 같은 처리를 해줄 것.
@@ -144,7 +144,10 @@ await withTransaction(async (tx) => {
 
 ### GitHub 레포 만들기·협업자 초대 (`domain/github/rep-api.ts`)
 
-대표 본인의 GitHub 토큰(`oauth_sessions`)으로 GitHub를 **바꾸는** 호출은 여기 한 곳이다. 읽기 전용인 `github/client.ts`(서버의 `GITHUB_TOKEN`)와 섞지 말 것.
+GitHub API는 **그 조직 대표의 GitHub 토큰(`oauth_sessions`)으로만** 부른다 — 레포 목록·조회·협업자 확인(읽기)과 레포 만들기·초대(쓰기) 모두 여기 한 곳.
+**서버 공용 PAT(`GITHUB_TOKEN`)를 다시 두지 말 것** — PAT 하나로 읽으면 모든 조직이 그 PAT 주인의 레포 목록을 보게 된다(운영 테스트 보고서가 "PAT 추가"를 제안했다가 되돌림).
+대표가 GitHub를 연결하지 않았으면 목록은 빈 배열, 협업자 표시는 생략(`false`로 채우지 않는다). 직접 입력(fullName)으로 연결해도 대표 토큰으로 레포를 찾아
+`github_repo_id`·기본 브랜치·`clone_url`을 채운다(비어 있으면 V3가 SKIPPED였다). 못 찾으면 예전처럼 비워 두고 연결은 막지 않는다.
 
 - **레포는 GitHub 조직에만, 비공개로 만든다**(`POST /orgs/:orgId/github/repos`, 대표 전용). 팀 프로젝트라 개인 계정에는 만들지 않는다(대표 결정).
   만들면서 바로 연결한다 — 기존 연결과 같은 `connectOneRepo` 한 벌이고, `ownerRole`(필수)·`github_repo_id`·`clone_url`이 채워져 V3가 처음부터 돈다.
@@ -155,6 +158,8 @@ await withTransaction(async (tx) => {
 - **역할 배정 시 협업자 자동 초대**: 그 에이전트 주인의 `github_login`(멤버가 "GitHub 연결"로 등록 — 가입 때 아이디를 손으로 받지 않는다. 본인 확인이 안 된다)을
   프로젝트의 GitHub 레포마다 push 권한으로 초대한다. 배정을 먼저 커밋하고 그 뒤에 부른다 — **초대 실패가 배정을 막지 않는다**(결과 `githubInvites`, 이벤트 `GITHUB_COLLABORATORS_INVITED`).
   미연결·실패는 `POST .../members/:agentId/github-invite`로 다시 보낸다(시작 뒤에도 된다). 초대는 멤버가 GitHub에서 수락해야 효력이 있다.
+  결과는 따로 저장하지 않는다 — 응답의 멤버 정보(`ProjectMember.githubInvites`)에 **그 이벤트에서 읽은 멤버별 마지막 결과**를 붙인다(새로고침하면 사라진다는 FE 보고).
+  `invited`는 보냈다는 뜻이고 수락 여부는 멤버 목록의 `isCollaborator`다.
 - GitHub 조직이 OAuth 앱 접근 제한을 켜 두었으면 그 조직에서 NOMOS 앱을 승인해야 목록·생성이 된다(403 `GITHUB_FORBIDDEN`).
 
 ### 경로 소유권 모델
@@ -181,7 +186,7 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
 그래서 **소유 역할이 지정된 경로 규칙이 하나도 없는 레포는 프로젝트에 넣을 수 없다**(`createProject`, 422 `REPO_OWNERSHIP_NOT_SET`, 메시지에 막힌 레포 전부와 부를 API를 함께 적는다). 그대로 두면 아무도 쓸 수 없는 레포라 원인이 제출 시점에야 드러나기 때문이다.
 기준은 "하나라도 지정됐는가"이지 "`**`가 지정됐는가"가 아니다 — 모노레포처럼 `apps/*/**`만 나누고 루트를 비워 두는 설계를 막지 않는다. 그 경우 루트 파일은 기본 거부다(열리지 않는다).
 
-각 규칙의 `action_key`는 **허용 레벨 정책표**(`action_catalog`, 17행)의 "탐지" 열을 경로로 옮긴 것이다. 정책표는 행동마다 누가 승인하는가(AUTO / PM_REVIEW / HUMAN / FORBIDDEN)를 L1~L4 열로 정의하고, `locked_mode`(🔒) 행은 네 레벨이 모두 같아야 한다는 CHECK로 DB가 막는다. **`PM_REVIEW`는 PM이 반려만 할 수 있고 통과는 AUTO 검증이 결정한다** — LLM이 게이트를 열 수 없다. PM이 응답하지 못할 때(타임아웃·예산 소진) AUTO 강등은 **PM_REVIEW 한 칸에만** 적용하고(🔒 행은 원천 제외, HUMAN·FORBIDDEN은 절대 강등 없음) 같은 트랜잭션에 `PM_REVIEW_DEGRADED`(사유·`policy_hash`)를 남긴다(`domain/policy/pm-review-fallback.ts`). `package.json`의 `dep:add`는 경로가 아니라 dependencies/devDependencies diff로 판정하도록 **판정기만 있고 연결되지 않았다**(`domain/policy/dependency-diff.ts`, 읽을 수 없으면 dep:add로 취급) — 지금은 `package.json`을 고쳐도 `dep:add`가 걸리지 않는다. 시드 40번(`requirements.txt`)만 경로로 잡힌다. `package.json`을 경로 행으로 추가해 메우지 말 것: scripts만 고친 변경까지 dep:add가 되어 매번 대표 승인 대기열에 쌓인다. 제출·V3가 변경 전후 내용을 읽을 때 연결한다. 비밀 파일 행의 `action_key`를 NULL로 두면 `code:own_path`로 해석되므로 반드시 `secret:touch`여야 한다. 시드 목록을 바꾸면 `source='seed'` 행만 골라 기존 레포에도 반영하는 마이그레이션을 같이 쓴다(004·005가 선례).
+각 규칙의 `action_key`는 **허용 레벨 정책표**(`action_catalog`, 17행)의 "탐지" 열을 경로로 옮긴 것이다. 정책표는 행동마다 누가 승인하는가(AUTO / PM_REVIEW / HUMAN / FORBIDDEN)를 L1~L4 열로 정의하고, `locked_mode`(🔒) 행은 네 레벨이 모두 같아야 한다는 CHECK로 DB가 막는다. **`PM_REVIEW`는 PM이 반려만 할 수 있고 통과는 AUTO 검증이 결정한다** — LLM이 게이트를 열 수 없다. PM이 응답하지 못할 때(타임아웃·예산 소진) AUTO 강등은 **PM_REVIEW 한 칸에만** 적용하고(🔒 행은 원천 제외, HUMAN·FORBIDDEN은 절대 강등 없음) 같은 트랜잭션에 `PM_REVIEW_DEGRADED`(사유·`policy_hash`)를 남긴다(`domain/policy/pm-review-fallback.ts`). `package.json`의 `dep:add`는 경로가 아니라 dependencies/devDependencies diff로 판정한다(`domain/policy/dependency-diff.ts`). **서버 검증 중에** 커밋 직전·직후의 `package.json`(어느 깊이든)을 V3 검사기(`fileVersions`)로 읽어, 새 패키지·버전 변경이 있으면(새로 만든 `package.json`도) 산출물에 `dep:add`를 더하고 판정을 더 엄격한 쪽으로 다시 계산한다(`ACTION_DETECTED`, 운영 테스트 4-7). **못 읽으면 dep:add로 본다**(fail closed). 시드 40번(`requirements.txt`)은 여전히 경로로 잡힌다. `package.json`을 경로 행으로 추가하지 말 것: scripts만 고친 변경까지 dep:add가 되어 매번 대표 승인 대기열에 쌓인다. 비밀 파일 행의 `action_key`를 NULL로 두면 `code:own_path`로 해석되므로 반드시 `secret:touch`여야 한다. 시드 목록을 바꾸면 `source='seed'` 행만 골라 기존 레포에도 반영하는 마이그레이션을 같이 쓴다(004·005가 선례).
 
 - `priority`는 **항상 명시적 정수**이고 **레포 안에서 유일**하다(`uq_repo_paths_priority`). 대역은 `0~99` seed · `100~199` scan · `200~299` manual · `900+` 조직 상한이고 source별 CHECK(`repo_paths_priority_band_chk`)가 강제한다. manual 규칙은 priority를 안 주면 대역의 최댓값 + 1. "더 구체적인 패턴이 이긴다" 같은 규칙 기반 판정은 금지 — 재현 실험이 성립하려면 어느 규칙이 이기는지가 결정적이어야 한다.
 - `resolveRule`은 매칭 규칙 중 priority 최대값을 고르고, 동점이면 `path_pattern` **사전순 오름차순**으로 tie-break한다. priority가 유일하므로 DB 데이터에선 폴백이 발동하지 않지만, 함수 자체의 결정성은 유지한다.
@@ -242,6 +247,11 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
   셸은 `ALLOWED_BASH_PREFIXES`(git·시험 실행)만. 없으면 모델이 계획만 세우고 "쓰기 권한을 승인해 달라"며 커밋 없이 끝난다(실제로 그랬다).
   **임의 셸(`Bash`·`Bash(*)`)을 열지 말 것** — 셸로 파일을 쓰면 Edit deny(.env·contracts)를 우회한다.
   Executor가 작업공간에 쓰는 파일(`.nomos-*`, `.claude/settings.json` 등)은 레포 `info/exclude`에 넣어 모델 커밋에 섞이지 않게 한다(섞이면 V3 FAIL).
+- **의존성 설치는 Executor가 Claude 전에 한다**(`executor/setup.ts`) — 모델에게 `npm install`·`pip install`을 열지 말 것(설치 스크립트가 Edit 금지를 우회한다).
+  npm 계열은 `--ignore-scripts`(잠금 파일 없으면 `--no-package-lock` — 새 파일이 커밋에 섞인다), pip는 작업공간 가상환경(`.nomos-venv`, PATH 앞에 붙인다)에
+  `--only-binary :all:`(소스 빌드는 코드 실행이다). 실패해도 진행하고 결과를 프롬프트에 적는다. `node_modules/`·`.nomos-venv/`도 info/exclude에 있다.
+- 허용 명령에는 **시험 실행기만** 더한다(`python -m pytest`·`unittest`·`pnpm test` 등). 프롬프트(`# 작업 환경`)에 허용 목록·"`&&`·`;`·`|`로 잇지 말 것"·
+  "파일은 Read/Glob/Grep"·"막히면 이유를 마지막 메시지에"를 적는다 — 운영 테스트에서 BE가 거부된 명령을 바꿔 가며 13번 시도했다(41턴·$1.84).
 - **`--mcp-config`와 `--strict-mcp-config`는 항상 함께 간다**(`src/bridge/claude-args.ts`). 후자가 빠지면 사용자의
   `~/.claude.json`에 등록된 MCP 서버가 함께 로드되고, GitHub MCP가 살아 있으면 `submit_artifact`를 건너뛰고
   직접 push할 수 있다. 그러면 제출 시점 경로 검증이 아무것도 못 막는다. `tests/bridge-args.test.ts`가 이걸 고정한다.
@@ -413,6 +423,7 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
   바뀌고 나머지 흐름은 같다(`domain/pm/relay.ts`, 대기열은 메모리). 작업은 **그 조직 대표 본인의 에이전트만** 가져간다(`GET /pm/jobs/next`) —
   작업에 프로젝트 맥락이 들어 있고 결과가 곧 초안이다. 아무도 안 가져가면 `PM_TIMEOUT_MS`로 `failed(timeout)`. 개인 구독을 여러 사용자의 PM으로
   쓰지 말 것 — 운영은 API 모드(기본)다. 워커는 지침을 파일·프롬프트를 stdin으로 넘긴다(Windows 명령줄 32k자 제한).
+- **PM은 INTEGRATION 태스크를 만들지 않는다** — 통합 확인 항목(`integrationChecks`)을 쓰고 대표가 G3에서 확인한다(위 "승인 대기열").
 - **PM 지침의 선행(dependsOn)**: 계약만 보고 만들 수 있으면 걸지 않는다(병행). 상대가 구현하며 정할 것·실제 동작하는 상대 API에 기대면 건다.
   계약을 먼저 정해야 하는데 명세에 다 못 적으면 "계약 확정"(DECIDED 노트) 태스크로 쪼개고 상대는 거기에만 건다. 선행을 거는 것 = 그 결과와 노트를 받고 시작한다는 뜻이다.
 - **PM은 시험지(spec_tests)를 쓰지 않는다 — 의도된 결정이다. PM 명세의 `tests: []`는 버그가 아니다.** 명세 content에 계약(API: 메서드·경로·상태코드·응답 필드 /
@@ -427,9 +438,17 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
     그 전에 레포별 시험 하네스(기동·시드·인증)를 헌법에 먼저 정할 것.
 - 모델·노력·한도는 설정값(`PM_MODEL` 기본 `claude-sonnet-5-5`, `PM_EFFORT` 기본 `high`, `PM_MAX_TOKENS`). 생각 토큰도 출력으로 과금되니 실제 비용을 보고 조정한다.
 
-### 승인 대기열 (`domain/approval`, 015) — ACTION 게이트만
+### 승인 대기열 (`domain/approval`, 015) — ACTION 게이트 + G3
 
-검증은 통과했지만 정책 판정이 HUMAN·PM_REVIEW라 `AWAITING_APPROVAL`에 멈춘 산출물을 사람이 결정한다. G1·G2·G3 카드와 PM 예산 초과 승인은 아직 없다.
+검증은 통과했지만 정책 판정이 HUMAN·PM_REVIEW라 `AWAITING_APPROVAL`에 멈춘 산출물을 사람이 결정한다(ACTION). G1·G2 카드와 PM 예산 초과 승인은 아직 없다.
+
+- **G3 = 통합 확인·완료 승인**(운영 테스트 4-3, 대표 결정). 통합 확인은 에이전트가 아니라 대표가 한다 — 에이전트에게는 선행 태스크 코드(main에 머지되지 않는다)·
+  상대 역할의 레포·서버 실행 수단이 없어 통합 태스크가 늘 멈췄다. **PM은 INTEGRATION 태스크를 만들지 않고**(`pmOnlyProblems` → 교정) `integrationChecks`를 쓴다.
+  태스크가 DONE이 되는 같은 트랜잭션(검증 결론·ACTION 승인)에서 `requestReleaseIfComplete`가 "모든 태스크 DONE"이면 카드를 하나 만든다
+  (확인 항목 + 태스크별 레포·브랜치·마지막 커밋 스냅샷, `RELEASE_REQUESTED`·`system:pm`). 프로젝트 행을 `FOR NO KEY UPDATE`로 잠근 **뒤 다음 문장에서** 다시 읽는다 —
+  두 태스크가 동시에 끝나면 서로의 DONE이 안 보여 둘 다 카드를 안 만든다. 대기 카드는 `ON CONFLICT DO NOTHING`(상태 변경을 롤백시키지 않는다).
+  승인 → 프로젝트 `completed`, 반려 → 진행 중 그대로(고칠 태스크는 대표가 만든다, 다시 전부 DONE이면 새 카드). `RELEASE_DECIDED`. 응답의 `taskId`는 G3면 null.
+  사람이 API로 만드는 INTEGRATION 태스크는 아직 막지 않는다(기존 데이터·테스트가 명세 없는 종류로 쓴다).
 
 - **결정은 대표만 한다.** "해당 역할의 사람"은 곧 제출한 에이전트의 주인이라 자기 승인이 된다. 대표가 자기 에이전트의 산출물을
   승인하는 것은 지금은 허용하되(다른 승인자가 없다) `APPROVAL_RESULT.payload.selfApproval: true`로 남긴다 — 다른 승인자 규칙을 만들 때의 근거.
@@ -441,6 +460,31 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
   이어서 고치라고 한다. 다른 노트북이 받으면 Executor가 `origin/<태스크 브랜치>`에서 이어 받는다(`executor/workspace.ts`).
 - 결정 뒤 `tasksChanged` — 승인이면 뒤 태스크가 풀리고 반려면 이 태스크가 다시 READY다.
 - 015는 이미 `AWAITING_APPROVAL`에 멈춰 있던 태스크에 **지금 DB 값으로** 카드를 만든다(`payload.backfilled: true`, 단계 결과 없음).
+
+### 룸 (`domain/room`, 017) — 보기 전용
+
+룸 = **프로젝트 × 역할**. 테이블이 없다(역할당 에이전트가 하나라 구성이 저절로 정해진다). 피드는 세 가지를 시각순으로 섞은 한 줄씩이고 **문장은 서버가 만든다**(`room/render.ts`).
+- **pm**(서버): "실행해 주세요"(`TASK_DISPATCHED`), 검증 결과, 승인, 프로젝트 시작·계획 적용(프로젝트 단위는 **모든 룸**에).
+  검증은 **결론이 난 줄만** 낸다(VERIFYING 중간 보고·`APPROVAL_REQUESTED`는 줄을 만들지 않는다 — 실제 실행에서 같은 말이 세 줄씩 겹쳤다).
+- **nomos**(Executor 보고): 에이전트 실행(`AGENT_RUN_STARTED`), 수령, 제출, 실행 종료(`AGENT_RUN_ENDED`).
+  태스크는 실행 **안에서** 모델이 잡으므로(`claim_task`) 실행 시작 시점의 태스크는 보통 READY다 — 시작 보고는 "잡고 있음 또는 지금 잡을 수 있음"이면 받는다(실측: 잡은 뒤로 제한했더니 실제 실행의 시작 보고가 전부 거부됐다).
+- **agent**: 도구 사용(`agent_activity`)과 인계 노트.
+
+- **팀원은 자기 역할 룸만, 대표는 전부**(`ROOM_NOT_VISIBLE`). 판정은 `room/service.ts`의 `visibleRoles` 한 곳.
+- **"실행해 주세요"는 서비스마다 부르지 않는다.** `tasksChanged` 신호를 받아(`room/dispatch.ts`, `createApp`에서 구독) 가져갈 수 있게 된 태스크를 attempt마다
+  한 번 기록한다 — `task_dispatches` PK가 중복을, 같은 트랜잭션의 이벤트가 P5를 지킨다. 조건은 `listClaimableTasks`에서 역할만 뺀 것이다(둘이 갈리면 지시는 왔는데 못 가져간다).
+  테스트는 `truncateAll`이 `drainTasksChanged()`로 리스너를 기다린 뒤 TRUNCATE한다(겹치면 교착).
+- **제출 여부는 서버가 정한다.** Executor는 정상 종료·시간 초과·비정상과 커밋 여부만 보고하고, 서버가 태스크 상태로 `submitted`를 정해
+  "끝났지만 제출하지 않았다"를 룸에 남긴다 — 데모에서 팀원 터미널에만 보이던 막다른 길이다.
+- **활동은 도구 종류와 대상(작업공간 기준 경로·명령 첫 줄, 300자)만** 받는다. 파일 내용·명령 결과·모델 설명 문장은 받지 않는다(설명은 인계 노트의 몫, 대표 결정).
+  상태 변화가 아니라 `events`가 아닌 `agent_activity`이고, 열린 실행(STARTED 뒤 ENDED 전)에만 붙는다. 화면 신호는 `room/activity-hub` → `/api/stream`의 `room` 토픽(서버 1대 전제).
+- **제출 없이 끝난 태스크는 BLOCKED(`AGENT_STOPPED`)로 멈춘다**(`task/stall.ts`, 종료 보고와 같은 트랜잭션). CLAIMED로 두면 아무도 다시 못 가져가고(운영 테스트의 영구 정체),
+  READY로 되돌려 재시도를 깎으면 권한·환경 탓(쉘 거부·선행 코드 없음)을 에이전트 실패로 센다(대표 결정). **retry_count는 검증 실패·반려만 쓴다.**
+  사유는 `TASK_BLOCKED`에 — 모델의 마지막 말과 Executor가 실행 기록에서 뽑은 **거부된 쉘 명령**(대표가 무엇을 풀어야 하는지). 대표가 `POST /tasks/:id/resume`으로 재개하면 READY(담당 비움),
+  `task_dispatches`의 resumes가 달라져 "다시 실행해 주세요 (재개)"가 다시 나간다. Executor가 꺼져 종료 보고조차 없으면 감시(`startStallWatchdog`, `startServer`에서만)가
+  45분 동안 실행 보고·도구 사용이 없는 수령을 같은 방식으로 멈춘다(`system:watchdog`). `tasks.claimed_at`(마지막 수령 시각)이 그 기준이자 화면의 "수령 후 경과"다.
+- Executor의 룸 보고(`executor/activity.ts`)는 **실패해도 실행을 멈추지 않는다.** 옛 서버에는 API가 없으니 시작 보고가 실패하면 그 실행의 활동·종료 보고를 건너뛴다.
+- 사람 메시지(룸 채팅)는 아직 없다. 넣을 때도 **실행 중인 모델에 끼워 넣지 않는다**(인계 노트와 같은 이유 — 리플레이가 깨지고 노트가 채널이 된다).
 
 ### 프로젝트와 멤버
 
@@ -506,7 +550,7 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
 도메인 코드는 `src/errors.ts`의 `AppError`만 던진다. 상세(`details`)는 `PUBLIC_DETAIL_CODES`에 있는 코드만 응답에 싣고, 배열이든 객체든 `error.details`에 담는다
 (`POLICY_STALE`만 예전 모양대로 `error.reason`으로 펼친다 — 배포된 브릿지가 읽는다). HTTP 상태는 `STATUS_BY_CODE` 테이블이 code로부터 결정하므로 서비스는 상태 코드를 몰라도 된다. `error-handler`는 항상 마지막에 등록하고, AppError가 아닌 예외는 500으로 감추고 상세는 로그로만 남긴다.
 
-**GitHub API 실패가 우리 기능을 멈추면 안 된다.** collaborator 조회가 실패해도 members 목록은 반환된다 — try/catch로 감싸고 `isCollaborator` 필드를 **생략**한다. `false`로 채우지 말 것: "확인 안 됨"과 "권한 없음"은 다르다. 토큰이 없을 때 레포 목록 조회는 500이 아니라 빈 배열 + 경고 로그를 반환한다.
+**GitHub API 실패가 우리 기능을 멈추면 안 된다.** collaborator 조회가 실패해도 members 목록은 반환된다 — try/catch로 감싸고 `isCollaborator` 필드를 **생략**한다. `false`로 채우지 말 것: "확인 안 됨"과 "권한 없음"은 다르다. 대표가 GitHub를 연결하지 않았을 때 레포 목록 조회는 500이 아니라 빈 배열 + 경고 로그를 반환한다.
 
 ## 배포
 
@@ -602,7 +646,7 @@ const { repoId } = req.params as z.infer<typeof repoIdParamsSchema>
 
 ### 라우터 마운트
 
-라우터 13개(`auth`, `agents`, `orgs`, `repos`, `repo-paths`, `invites`, `oauth`, `approvals`, `tasks`, `notes`, `projects`, `specs`, `pm`)가 전부 `app.use("/api", ...)`로 마운트되고(`/health`·`/docs`는 `/api` 밖), 각 파일이 `/orgs/:orgId/...` 같은 전체 경로를 직접 선언한다. 그래서 URL 접두사가 아니라 **도메인 기준**으로 파일이 나뉜다 — 예를 들어 `POST /api/orgs/:orgId/repos`는 URL은 orgs 밑이지만 `routes/repos.ts`에 있고, `POST /api/orgs/:orgId/invites`는 `routes/invites.ts`에 있다.
+라우터 14개(`auth`, `agents`, `orgs`, `repos`, `repo-paths`, `invites`, `oauth`, `approvals`, `tasks`, `notes`, `projects`, `specs`, `pm`, `rooms`)가 전부 `app.use("/api", ...)`로 마운트되고(`/health`·`/docs`는 `/api` 밖), 각 파일이 `/orgs/:orgId/...` 같은 전체 경로를 직접 선언한다. 그래서 URL 접두사가 아니라 **도메인 기준**으로 파일이 나뉜다 — 예를 들어 `POST /api/orgs/:orgId/repos`는 URL은 orgs 밑이지만 `routes/repos.ts`에 있고, `POST /api/orgs/:orgId/invites`는 `routes/invites.ts`에 있다.
 
 
 ## 스키마 변경 규칙

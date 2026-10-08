@@ -9,6 +9,8 @@ import { logger } from '../../config/logger.js';
 type Listener = (projectId: string) => void | Promise<void>;
 
 const listeners = new Set<Listener>();
+// 아직 끝나지 않은 리스너 호출. 테스트가 정리(TRUNCATE) 전에 기다린다 — 운영 코드는 기다리지 않는다.
+const inflight = new Set<Promise<void>>();
 
 export function onTasksChanged(listener: Listener): () => void {
   listeners.add(listener);
@@ -18,8 +20,15 @@ export function onTasksChanged(listener: Listener): () => void {
 export function tasksChanged(projectId: string): void {
   for (const listener of listeners) {
     // 알림 실패가 원래 요청을 실패시키면 안 된다 — 상태는 이미 커밋됐다. 놓친 알림은 에이전트의 안전망 폴링이 메운다.
-    Promise.resolve()
+    const p: Promise<void> = Promise.resolve()
       .then(() => listener(projectId))
-      .catch((err: unknown) => logger.warn('tasks-changed listener failed', { projectId, error: String(err) }));
+      .catch((err: unknown) => logger.warn('tasks-changed listener failed', { projectId, error: String(err) }))
+      .finally(() => inflight.delete(p));
+    inflight.add(p);
   }
+}
+
+// 지금 돌고 있는 리스너가 전부 끝날 때까지 기다린다(그 사이에 새로 불린 것까지).
+export async function drainTasksChanged(): Promise<void> {
+  while (inflight.size > 0) await Promise.allSettled([...inflight]);
 }

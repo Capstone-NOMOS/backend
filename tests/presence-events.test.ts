@@ -9,7 +9,7 @@ import { connectAgent, refreshAgentToken } from '../src/domain/agent/service.js'
 import { login, signup } from '../src/domain/auth/service.js';
 import { acceptInvite, createInvite } from '../src/domain/invite/service.js';
 import { createOrganization } from '../src/domain/org/service.js';
-import { assignMember, createProject } from '../src/domain/project/service.js';
+import { assignMember, unassignMember, createProject } from '../src/domain/project/service.js';
 import { connectRepos } from '../src/domain/repo/service.js';
 import { attachAgentStream, type AgentStream } from '../src/realtime/agent-stream.js';
 import { resetSchema, testPool, truncateAll } from './test-db.js';
@@ -113,8 +113,18 @@ describe('이벤트 로그 조회', () => {
 
   it('최신순으로 주고, nextBefore로 이어서 읽으면 빠짐·겹침 없이 전부다', async () => {
     const w = await world();
-    const all = await pool.query(`SELECT id::text AS id FROM events WHERE project_id = $1 ORDER BY id DESC`, [w.projectId]);
+    // 기대값을 같은 별칭 정렬로 만들면 버그를 못 잡는다(실제로 그랬다) — 숫자 열로 정렬하고, id가 10을 넘게 이벤트를 더 만든다.
+    // id가 두 자리 → 세 자리로 넘어가게 한다(시퀀스를 98로 옮긴 뒤 이벤트를 더 만든다). 문자열 정렬이면 "99" > "100"이 된다.
+    await pool.query(`SELECT setval('events_id_seq', GREATEST((SELECT max(id) FROM events), 98))`);
+    const actor = { userId: w.rep.userId, orgId: w.orgId, orgRole: 'REPRESENTATIVE' };
+    for (let i = 0; i < 2; i += 1) {
+      await unassignMember(actor, w.projectId, w.agentId);
+      await assignMember(actor, w.projectId, w.agentId, 'BACKEND');
+    }
+    const all = await pool.query(`SELECT e.id::text AS id FROM events e WHERE e.project_id = $1 ORDER BY e.id DESC`, [w.projectId]);
     expect(all.rows.length).toBeGreaterThan(1);
+    const ids = all.rows.map((r) => Number(r.id));
+    expect(ids.some((id) => id >= 100) && ids.some((id) => id < 100)).toBe(true);
 
     const seen: string[] = [];
     let before = '';

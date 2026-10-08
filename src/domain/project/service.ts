@@ -27,6 +27,7 @@ import {
   insertProjectMember,
   isProjectMember,
   linkProjectRepos,
+  listLatestInvites,
   listProjectGithubRepos,
   listProjectMembers,
   listProjectRepos,
@@ -35,6 +36,7 @@ import {
   summarizeProjectTasks,
   type AutonomyPreset,
   type Project,
+  type MemberInviteStatus,
   type ProjectMember,
   type RepoRow,
 } from './repository.js';
@@ -52,11 +54,20 @@ export type CreateProjectInput = {
   repoIds: string[];
 };
 
+// 응답에 나가는 멤버 — 레포별 마지막 GitHub 초대 결과를 붙인다(초대한 적 없으면 빈 목록).
+export type ProjectMemberView = ProjectMember & { githubInvites: MemberInviteStatus[] };
+
 export type ProjectDetail = {
   project: Project;
   repos: RepoRow[];
-  members: ProjectMember[];
+  members: ProjectMemberView[];
 };
+
+async function membersWithInvites(db: Queryable, projectId: string, members?: ProjectMember[]): Promise<ProjectMemberView[]> {
+  const list = members ?? (await listProjectMembers(db, projectId));
+  const invites = await listLatestInvites(db, projectId);
+  return list.map((m) => ({ ...m, githubInvites: invites.get(m.agentId) ?? [] }));
+}
 
 // 어휘 위반은 형식 오류(zod 400)와 구분해 422로 답한다 — 무엇이 허용되는지 함께 알려준다.
 function assertPreset(value: string): AutonomyPreset {
@@ -177,7 +188,7 @@ export async function assignMember(
   projectId: string,
   agentId: string,
   teamRole: TeamRole,
-): Promise<ProjectMember[]> {
+): Promise<ProjectMemberView[]> {
   return withTransaction(async (tx) => {
     // 시작(G1)과 겹치지 않게 잠근다. 시작이 먼저 잡았으면 끝날 때까지 기다린 뒤 started_at을 본다.
     const project = await assertProjectInOrg(tx, actor.orgId, projectId, 'share');
@@ -222,7 +233,7 @@ export async function assignMember(
       payload: { agentId, teamRole },
     });
 
-    return listProjectMembers(tx, projectId);
+    return membersWithInvites(tx, projectId);
   });
 }
 
@@ -233,10 +244,11 @@ export async function assignMemberWithInvites(
   projectId: string,
   agentId: string,
   teamRole: TeamRole,
-): Promise<{ members: ProjectMember[]; githubInvites: GithubInviteResult[] }> {
-  const members = await assignMember(actor, projectId, agentId, teamRole);
+): Promise<{ members: ProjectMemberView[]; githubInvites: GithubInviteResult[] }> {
+  await assignMember(actor, projectId, agentId, teamRole);
   const githubInvites = await inviteToProjectGithubRepos(actor, projectId, agentId, 'assign');
-  return { members, githubInvites };
+  // 초대 결과(이벤트)가 남은 뒤에 읽어 멤버 정보에도 들어가게 한다.
+  return { members: await membersWithInvites(pool, projectId), githubInvites };
 }
 
 // 초대를 다시 보낸다(대표 전용) — 배정 때 멤버가 GitHub를 연결하지 않았거나 GitHub가 실패한 경우.
@@ -302,7 +314,7 @@ export async function unassignMember(
   actor: Actor,
   projectId: string,
   agentId: string,
-): Promise<ProjectMember[]> {
+): Promise<ProjectMemberView[]> {
   return withTransaction(async (tx) => {
     const project = await assertProjectInOrg(tx, actor.orgId, projectId, 'share');
     assertNotStarted(project);
@@ -323,7 +335,7 @@ export async function unassignMember(
       payload: { agentId, teamRole },
     });
 
-    return listProjectMembers(tx, projectId);
+    return membersWithInvites(tx, projectId);
   });
 }
 
@@ -384,7 +396,7 @@ export async function startProject(actor: Actor, projectId: string): Promise<Pro
     return {
       project: (await findProjectById(tx, projectId))!,
       repos: await listProjectRepos(tx, projectId),
-      members,
+      members: await membersWithInvites(tx, projectId, members),
     };
   });
   // 커밋 뒤 — 가져갈 수 있는 태스크를 담당 에이전트에게 보낸다.
@@ -402,7 +414,7 @@ export async function getProject(actor: Actor, projectId: string): Promise<Proje
       throw new AppError('NOT_PROJECT_MEMBER', 'you are not a member of this project');
     }
 
-    return { project, repos: await listProjectRepos(tx, projectId), members };
+    return { project, repos: await listProjectRepos(tx, projectId), members: await membersWithInvites(tx, projectId, members) };
   });
 }
 

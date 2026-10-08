@@ -20,14 +20,15 @@ orgsRouter.post('/orgs', validate({ body: createOrgBodySchema }), authenticate, 
 
 // GET /api/orgs/:orgId/github/repos — 연결할 수 있는 GitHub 레포 목록(조직 멤버 누구나).
 // 레포 연결을 팀원에게 열었으므로 그 드롭다운을 채우는 이 목록도 함께 열려 있어야 한다.
-// 토큰이 없으면 빈 배열을 반환한다 (500을 던지지 않음).
+// 그 조직 대표의 GitHub 토큰으로 읽는다. 대표가 GitHub를 연결하지 않았으면 빈 배열(500을 던지지 않음).
 orgsRouter.get(
   '/orgs/:orgId/github/repos',
   validate({ params: orgIdParamsSchema }),
   authenticate,
   requireSameOrg,
-  async (_req, res) => {
-    const repos = await listAvailableGithubRepos();
+  async (req, res) => {
+    const { orgId } = req.params as z.infer<typeof orgIdParamsSchema>;
+    const repos = await listAvailableGithubRepos(orgId);
     res.status(200).json({ data: { repos } });
   },
 );

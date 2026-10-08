@@ -14,7 +14,13 @@ export type CommitInspector = {
   // 커밋이 건드린 경로 목록. 레포 루트 기준 상대경로, 슬래시 구분.
   // 없는 커밋이면 CommitNotFoundError(→ FAIL), 서버 쪽 사정으로 못 읽으면 InspectionSkipped(→ SKIPPED).
   changedPaths(input: InspectInput): Promise<string[]>;
+  // 그 커밋 직전(부모)과 직후의 파일 내용 — dep:add 판정(package.json의 의존성 diff)이 쓴다. 없던 파일·지운 파일은 null.
+  // 못 읽으면 던진다(호출부는 fail closed — dep:add로 본다). 구현하지 않은 검사기도 같은 취급이다.
+  fileVersions?(input: InspectInput, filePath: string): Promise<{ before: string | null; after: string | null }>;
 };
+
+// 매니페스트는 작다. 이보다 크면 의존성 판정 대상이 아니라고 보고 읽지 않는다(던진다 → fail closed).
+export const MAX_MANIFEST_BYTES = 512 * 1024;
 
 export class CommitNotFoundError extends Error {
   constructor(readonly commitSha: string, cause?: unknown) {
