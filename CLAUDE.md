@@ -245,6 +245,11 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
   셸은 `ALLOWED_BASH_PREFIXES`(git·시험 실행)만. 없으면 모델이 계획만 세우고 "쓰기 권한을 승인해 달라"며 커밋 없이 끝난다(실제로 그랬다).
   **임의 셸(`Bash`·`Bash(*)`)을 열지 말 것** — 셸로 파일을 쓰면 Edit deny(.env·contracts)를 우회한다.
   Executor가 작업공간에 쓰는 파일(`.nomos-*`, `.claude/settings.json` 등)은 레포 `info/exclude`에 넣어 모델 커밋에 섞이지 않게 한다(섞이면 V3 FAIL).
+- **의존성 설치는 Executor가 Claude 전에 한다**(`executor/setup.ts`) — 모델에게 `npm install`·`pip install`을 열지 말 것(설치 스크립트가 Edit 금지를 우회한다).
+  npm 계열은 `--ignore-scripts`(잠금 파일 없으면 `--no-package-lock` — 새 파일이 커밋에 섞인다), pip는 작업공간 가상환경(`.nomos-venv`, PATH 앞에 붙인다)에
+  `--only-binary :all:`(소스 빌드는 코드 실행이다). 실패해도 진행하고 결과를 프롬프트에 적는다. `node_modules/`·`.nomos-venv/`도 info/exclude에 있다.
+- 허용 명령에는 **시험 실행기만** 더한다(`python -m pytest`·`unittest`·`pnpm test` 등). 프롬프트(`# 작업 환경`)에 허용 목록·"`&&`·`;`·`|`로 잇지 말 것"·
+  "파일은 Read/Glob/Grep"·"막히면 이유를 마지막 메시지에"를 적는다 — 운영 테스트에서 BE가 거부된 명령을 바꿔 가며 13번 시도했다(41턴·$1.84).
 - **`--mcp-config`와 `--strict-mcp-config`는 항상 함께 간다**(`src/bridge/claude-args.ts`). 후자가 빠지면 사용자의
   `~/.claude.json`에 등록된 MCP 서버가 함께 로드되고, GitHub MCP가 살아 있으면 `submit_artifact`를 건너뛰고
   직접 push할 수 있다. 그러면 제출 시점 경로 검증이 아무것도 못 막는다. `tests/bridge-args.test.ts`가 이걸 고정한다.

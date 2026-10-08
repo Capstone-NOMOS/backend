@@ -33,6 +33,12 @@ export function resolveClaudeCommand(args: string[]): { command: string; command
   return { command: 'claude', commandArgs: args };
 }
 
+// Windows는 환경변수 이름이 대소문자를 가리지 않아 Path로 들어 있는 경우가 많다 — 있는 이름을 그대로 쓴다.
+export function withPathPrepended(env: NodeJS.ProcessEnv, dir: string): NodeJS.ProcessEnv {
+  const key = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH';
+  return { ...env, [key]: env[key] ? `${dir}${path.delimiter}${env[key]}` : dir };
+}
+
 export type RunInput = {
   workspaceDir: string;
   prompt: string;
@@ -41,6 +47,8 @@ export type RunInput = {
   timeoutMs?: number;
   // stdout(stream-json) 한 줄씩 실시간으로. 룸 활동 보고가 쓴다. 던져도 실행은 계속된다.
   onStdoutLine?: (line: string) => void;
+  // PATH 앞에 붙일 폴더(작업공간의 파이썬 가상환경) — 모델의 `python -m pytest`가 미리 설치한 의존성을 쓰게.
+  pathPrepend?: string | null;
 };
 
 export async function runClaude(input: RunInput): Promise<RunResult> {
@@ -59,6 +67,7 @@ export async function runClaude(input: RunInput): Promise<RunResult> {
     const child = spawn(command, commandArgs, {
       cwd: input.workspaceDir,
       stdio: ['ignore', 'pipe', 'pipe'],
+      ...(input.pathPrepend ? { env: withPathPrepended(process.env, input.pathPrepend) } : {}),
     });
 
     const chunks: string[] = [];

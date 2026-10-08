@@ -21,7 +21,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { writeBriefingNotes } from '../bridge/briefing-notes.js';
-import { buildMcpConfig } from '../bridge/claude-args.js';
+import { ALLOWED_BASH_PREFIXES, buildMcpConfig } from '../bridge/claude-args.js';
+import { prepareDependencies } from './setup.js';
 import {
   credentialsPath,
   readCredentials,
@@ -119,11 +120,15 @@ async function handleTask(client: NomosClient, projectId: string, task: TaskSumm
   const reporter = runOpen ? new ActivityReporter(client, task.id, log) : null;
   const observer = new RunObserver(workspace.dir);
 
+  // 의존성은 모델이 아니라 여기서 설치한다(설치 스크립트 끔). 실패해도 진행한다 — 프롬프트에 결과를 적는다.
+  const setup = await prepareDependencies(workspace.dir, log);
+
   const before = headSha(workspace.dir);
   const result = await runClaude({
     workspaceDir: workspace.dir,
-    prompt: buildTaskPrompt(briefing, workspace.branch),
+    prompt: buildTaskPrompt(briefing, workspace.branch, { allowedCommands: ALLOWED_BASH_PREFIXES, setup: setup.steps }),
     mcpConfigPath,
+    pathPrepend: setup.venvBin,
     onStdoutLine: (line: string) => {
       observer.observe(line);
       reporter?.push(activityFromStreamLine(line, workspace.dir));
