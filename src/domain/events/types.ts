@@ -30,6 +30,7 @@ export type EventType =
   | 'TASK_RESUMED'
   | 'RELEASE_REQUESTED'
   | 'RELEASE_DECIDED'
+  | 'ACTION_DETECTED'
   | 'REPO_UPDATED'
   | 'TASKS_IMPORTED'
   | 'SPEC_CREATED'
@@ -286,6 +287,19 @@ export type TaskBlockedPayload = {
   deniedCommands: string[];
 };
 
+// 제출 뒤 검증에서 행동 키가 새로 드러났다 — 지금은 package.json의 의존성 추가(dep:add)뿐이다. 경로로는 잡을 수 없어(scripts만 고친 변경까지 걸린다)
+// 커밋 전후 내용을 읽어 판정한다. 산출물의 행동 키와 판정(gate_mode)이 더 엄격한 쪽으로 바뀐다. unreadable이면 못 읽어서 fail closed로 건 것.
+export type ActionDetectedPayload = {
+  taskId: string;
+  artifactId: string;
+  actionKey: 'dep:add';
+  paths: string[];
+  changes: { path: string; section: string; name: string; from: string | null; to: string }[];
+  unreadable: string[];
+  gateModeBefore: string;
+  gateModeAfter: string;
+};
+
 // 모든 태스크가 DONE이 됐다 → 대표의 통합 확인·완료 승인 카드(G3). 통합 확인은 에이전트가 아니라 사람이 한다(운영 테스트 4-3, 대표 결정).
 // checks는 적용된 계획의 integrationChecks. on_behalf_of는 'system:pm'.
 export type ReleaseRequestedPayload = {
@@ -445,6 +459,7 @@ export type EventPayloadMap = {
   TASK_RESUMED: TaskResumedPayload;
   RELEASE_REQUESTED: ReleaseRequestedPayload;
   RELEASE_DECIDED: ReleaseDecidedPayload;
+  ACTION_DETECTED: ActionDetectedPayload;
   REPO_UPDATED: RepoUpdatedPayload;
   TASKS_IMPORTED: TasksImportedPayload;
   SPEC_CREATED: SpecCreatedPayload;

@@ -7,7 +7,9 @@ import { AppError } from '../../errors.js';
 import { logger } from '../../config/logger.js';
 import { appendEvent } from '../events/append.js';
 import { getPolicySnapshot } from '../policy/policy-cache.js';
-import { inspectPaths } from '../policy/scope-check.js';
+import { diffDependencies } from '../policy/dependency-diff.js';
+import type { PolicyMode } from '../policy/pm-review-fallback.js';
+import { inspectPaths, strictestMode } from '../policy/scope-check.js';
 import { assertProjectVisibleToUser, type UserContext } from '../project/visibility.js';
 import { findRepoById } from '../repo/repository.js';
 import type { RepoPath } from '../repo/types.js';
@@ -15,6 +17,7 @@ import type { TeamRole } from '../roles.js';
 import {
   countSpecTestsLockedBefore,
   failTaskForRetry,
+  escalateArtifactActions,
   findArtifactById,
   findTaskById,
   markTaskState,
@@ -272,6 +275,76 @@ async function recordSummary(
   if (summary.taskState === 'DONE') await requestReleaseIfComplete(tx, { orgId: ctx.orgId, projectId: ctx.projectId });
 }
 
+// ── dep:add — package.json의 의존성 추가 ──────────────────────────────────
+// 경로 규칙으로는 잡지 않는다(scripts만 고친 변경까지 dep:add가 되어 매번 승인 대기열에 쌓인다). 커밋 직전·직후의 package.json을 읽어
+// dependencies·devDependencies에 새 패키지나 버전 변경이 있을 때만 건다(domain/policy/dependency-diff.ts). 새로 만든 package.json도 추가다.
+// 못 읽으면(검사기가 못 읽음·지원 안 함·JSON 깨짐) **dep:add로 본다**(fail closed) — 운영 테스트에서 FE의 새 package.json이 AUTO로 통과했다.
+type DependencyDetection = {
+  paths: string[];
+  changes: { path: string; section: string; name: string; from: string | null; to: string }[];
+  unreadable: string[];
+};
+
+async function detectDependencyAdditions(plan: Plan): Promise<DependencyDetection> {
+  const manifests = plan.artifact.changedPaths.filter((p) => p.replace(/\\/g, '/').split('/').pop()?.toLowerCase() === 'package.json');
+  const result: DependencyDetection = { paths: [], changes: [], unreadable: [] };
+  const inspector = getCommitInspector();
+  for (const manifest of manifests) {
+    try {
+      if (!inspector.fileVersions) throw new Error('inspector cannot read file contents');
+      const { before, after } = await inspector.fileVersions(
+        { repoId: plan.repo.id, orgId: plan.repo.orgId, cloneUrl: plan.repo.cloneUrl, githubRepoId: plan.repo.githubRepoId, commitSha: plan.artifact.commitSha },
+        manifest,
+      );
+      const diff = diffDependencies(before, after);
+      if (diff.unparseable) {
+        result.paths.push(manifest);
+        result.unreadable.push(manifest);
+      } else if (diff.changes.length > 0) {
+        result.paths.push(manifest);
+        result.changes.push(...diff.changes.map((c) => ({ path: manifest, section: c.section, name: c.name, from: c.from, to: c.to })));
+      }
+    } catch (err) {
+      logger.warn('package.json 내용을 읽지 못해 dep:add로 본다', { artifactId: plan.artifact.id, path: manifest, err: String(err) });
+      result.paths.push(manifest);
+      result.unreadable.push(manifest);
+    }
+  }
+  return result;
+}
+
+// 산출물에 dep:add를 더하고 판정을 더 엄격한 쪽으로 다시 계산한다(정책 사본 기준). 이미 걸려 있으면(requirements.txt 경로 규칙 등) 그대로.
+async function escalateForDependencies(tx: PoolClient, ctx: EventContext, plan: Plan, deps: DependencyDetection): Promise<Artifact> {
+  const current = (await findArtifactById(tx, plan.artifact.id))!;
+  if (deps.paths.length === 0 || current.triggeredActions.includes(DEP_ADD)) return current;
+  const snapshot = await getPolicySnapshot(tx, ctx.projectId, ctx.policyHash);
+  const triggered = [...new Set([...current.triggeredActions, DEP_ADD])].sort();
+  const modes = triggered.map((key) => snapshot.policies.find((p) => p.actionKey === key)?.mode ?? 'HUMAN') as PolicyMode[];
+  const gateMode = strictestMode(modes);
+  const escalated = await escalateArtifactActions(tx, current.id, triggered, gateMode);
+  await appendEvent(tx, {
+    orgId: ctx.orgId,
+    projectId: ctx.projectId,
+    type: 'ACTION_DETECTED',
+    ...(ctx.agentId === undefined ? {} : { actorAgentId: ctx.agentId }),
+    onBehalfOf: ctx.onBehalfOf,
+    policyHash: ctx.policyHash,
+    payload: {
+      taskId: plan.task.id,
+      artifactId: current.id,
+      actionKey: DEP_ADD,
+      paths: deps.paths,
+      changes: deps.changes.slice(0, 50),
+      unreadable: deps.unreadable,
+      gateModeBefore: current.gateMode,
+      gateModeAfter: gateMode,
+    },
+  });
+  return escalated;
+}
+
+const DEP_ADD = 'dep:add';
+
 // ── 서버 단계 실행 ────────────────────────────────────────────────────────
 // 제출 응답 안에서 동기로 돈다. V1A·V1B·V3는 전부 서버가 혼자 판정할 수 있고,
 // 비동기로 돌리면 "제출은 됐는데 결과는 언제 오는가"를 관리하는 상태가 하나 더 는다.
@@ -323,12 +396,15 @@ export async function runServerVerifications(
     await evaluateV1B(plan),
     await evaluateV3(plan),
   ];
+  // 의존성 추가(dep:add)는 경로가 아니라 내용 diff로 판정한다 — 네트워크·git이라 트랜잭션 밖에서.
+  const deps = await detectDependencyAdditions(plan);
 
   return withTransaction(async (tx) => {
     for (const r of results) await insertVerification(tx, r);
     // 결론을 내리기 직전에 태스크를 다시 읽는다 — 위 I/O 동안 상태가 바뀌었을 수 있다.
     const task = (await findTaskById(tx, plan.task.id))!;
-    const summary = await settle(tx, ctx, plan.artifact, task);
+    const artifact = await escalateForDependencies(tx, ctx, plan, deps);
+    const summary = await settle(tx, ctx, artifact, task);
     await recordSummary(tx, ctx, task, summary);
     return summary;
   });

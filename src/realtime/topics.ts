@@ -51,6 +51,7 @@ export const TOPICS_BY_EVENT: Record<EventType, Mapping> = {
   TASK_BLOCKED: { project: ['room', 'tasks'] },
   TASK_RESUMED: { project: ['room', 'tasks'] },
   RELEASE_REQUESTED: { project: ['approvals', 'project', 'room'], org: ['approvals', 'projects'] },
+  ACTION_DETECTED: { project: ['tasks'] },
   RELEASE_DECIDED: { project: ['approvals', 'project', 'room'], org: ['approvals', 'projects'] },
   NOTES_ACK_REQUIRED: {},
   TOOL_DENIED: {},

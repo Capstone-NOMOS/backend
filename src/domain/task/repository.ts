@@ -351,3 +351,17 @@ export async function listUnresponsiveClaims(db: Queryable, thresholdMs: number)
     onBehalfOf: r.user_id as string,
   }));
 }
+
+// 검증 중에 행동 키가 새로 드러났다(예: package.json의 의존성 추가 → dep:add). 더 엄격한 쪽으로만 바뀐다 — 호출부가 계산한다.
+export async function escalateArtifactActions(
+  db: Queryable,
+  artifactId: string,
+  triggeredActions: string[],
+  gateMode: string,
+): Promise<Artifact> {
+  const { rows } = await db.query(
+    `UPDATE artifacts SET triggered_actions = $2, gate_mode = $3 WHERE id = $1 RETURNING *`,
+    [artifactId, triggeredActions, gateMode],
+  );
+  return toArtifact(rows[0]!);
+}
