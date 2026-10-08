@@ -10,6 +10,7 @@ import { env } from '../src/config/env.js';
 import { setPmModel } from '../src/domain/pm/model.js';
 import { drainPmJobs } from '../src/domain/pm/service.js';
 import type { GithubDeviceApi } from '../src/domain/oauth/github-device.js';
+import { setGithubRepApi, type GithubRepApi } from '../src/domain/github/rep-api.js';
 import {
   gitMirrorInspector,
   setCommitInspector,
@@ -85,6 +86,29 @@ describe('문서와 라우트가 1:1이다', () => {
 let server: Server;
 let baseUrl: string;
 let restoreGithub: GithubDeviceApi;
+let restoreGithubRep: GithubRepApi;
+
+// 대표 토큰으로 부르는 GitHub 쓰기 API(레포 만들기·협업자 초대)도 가짜로.
+const fakeGithubRep: GithubRepApi = {
+  async listOrgs() {
+    return ['acme'];
+  },
+  async createOrgRepo(_token, input) {
+    return { fullName: `${input.org}/${input.name}`, githubRepoId: 123456, defaultBranch: 'main' };
+  },
+  async inviteCollaborator() {
+    return 'invited';
+  },
+  async listRepos() {
+    return [{ fullName: 'acme/study-api', githubRepoId: 987654321, defaultBranch: 'main' }];
+  },
+  async getRepo() {
+    return null;
+  },
+  async isCollaborator() {
+    return true;
+  },
+};
 
 const fakeGithub: GithubDeviceApi = {
   async requestDeviceCode() {
@@ -104,6 +128,7 @@ beforeAll(async () => {
   await resetSchema();
   clearPolicyCache();
   restoreGithub = setGithubDeviceApi(fakeGithub);
+  restoreGithubRep = setGithubRepApi(fakeGithubRep);
   server = createApp().listen(0);
   await new Promise<void>((resolve) => server.once('listening', resolve));
   baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -111,6 +136,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   setGithubDeviceApi(restoreGithub);
+  setGithubRepApi(restoreGithubRep);
   setCommitInspector(gitMirrorInspector());
   await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
   await pool.end();
@@ -191,6 +217,9 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     await call('PATCH', `/repos/${repoId}/paths/${root.id}`, rep, { ownerRole: 'BACKEND' });
     await call('POST', `/repos/${repoId}/paths`, rep, { pathPattern: 'docs/**', access: 'read' });
     await call('GET', `/orgs/${orgId}/repos`, rep);
+    // GitHub 조직에 레포 만들기(대표) — 프로젝트에는 위 레포만 넣는다.
+    await call('GET', `/orgs/${orgId}/github/orgs`, rep);
+    await call('POST', `/orgs/${orgId}/github/repos`, rep, { githubOrg: 'acme', name: 'study-web', ownerRole: 'FRONTEND' });
 
     // 프로젝트·배정
     const created = await call('POST', `/orgs/${orgId}/projects`, rep, {
@@ -204,6 +233,7 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     await call('POST', `/projects/${projectId}/members`, rep, { agentId: repAgentId, teamRole: 'FRONTEND' });
     await call('DELETE', `/projects/${projectId}/members/${repAgentId}`, rep);
     await call('POST', `/projects/${projectId}/members`, rep, { agentId: beAgentId, teamRole: 'BACKEND' });
+    await call('POST', `/projects/${projectId}/members/${beAgentId}/github-invite`, rep);
 
     // 명세·태스크 작성
     const spec = await call('POST', `/projects/${projectId}/specs`, rep, {
@@ -232,6 +262,9 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     await call('POST', `/projects/${projectId}/start`, rep);
     await call('GET', '/agents/me/tasks', agent);
     await call('POST', `/tasks/${taskId}/claim`, agent);
+    // 룸: Executor의 실행 시작·도구 사용 보고
+    await call('POST', `/tasks/${taskId}/runs/start`, agent);
+    await call('POST', `/tasks/${taskId}/activity`, agent, { items: [{ kind: 'read', target: 'src/api/join.ts' }, { kind: 'run', target: 'npm test' }] });
 
     // 에이전트 질문(실험) — 브릿지가 AskUserQuestion을 올리고, 대표가 답하고, 브릿지가 답을 읽는다.
     const question = 'GET /api/studies/:id/members 의 응답 본문 형태는?';
@@ -260,6 +293,16 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
       commitSha: 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0', changedPaths: ['src/api/join.ts'],
     });
     const artifactId = submitted.data.id as string;
+    await call('POST', `/tasks/${taskId}/runs/end`, agent, { outcome: 'completed', committed: true, durationMs: 1200, exitCode: 0 });
+    await call('GET', `/projects/${projectId}/rooms`, rep);
+    await call('GET', `/projects/${projectId}/rooms/BACKEND/feed?limit=20`, rep);
+    // 제출 없이 끝난 실행 → 멈춤(BLOCKED) → 대표 재개
+    const stuck = await call('POST', `/projects/${projectId}/tasks`, rep, { title: 'T-9 막히는 태스크', teamRole: 'BACKEND', kind: 'INTEGRATION', repoId });
+    const stuckId = stuck.data.id as string;
+    await call('POST', `/tasks/${stuckId}/runs/start`, agent);
+    await call('POST', `/tasks/${stuckId}/claim`, agent);
+    await call('POST', `/tasks/${stuckId}/runs/end`, agent, { outcome: 'completed', committed: false, durationMs: 1000, exitCode: 0, lastMessage: '권한이 없다', deniedCommands: ['git fetch'] });
+    await call('POST', `/tasks/${stuckId}/resume`, rep, { note: '허용함' });
     await call('GET', `/tasks/${taskId}/artifacts`, agent);
     await call('GET', `/tasks/${taskId}/artifacts`, rep);
     await call('POST', `/artifacts/${artifactId}/verifications`, agent, { stage: 'V4', result: 'PASS', durationMs: 1200 });

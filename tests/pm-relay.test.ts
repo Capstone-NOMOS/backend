@@ -174,7 +174,7 @@ describe('중계 모드 — 서버 → 대표 노트북 → 서버', () => {
 
     const plan = await getPlan(w, planId);
     expect(plan).toMatchObject({ status: 'ready', error: null });
-    expect(plan.draft).toEqual(DRAFT); // PM이 낸 JSON 그대로
+    expect(plan.draft).toEqual({ ...DRAFT, integrationChecks: [] }); // PM이 낸 JSON 그대로(없는 확인 항목은 빈 목록)
 
     const calls = await pool.query(`SELECT on_behalf_of, payload FROM events WHERE type = 'PM_CALL'`);
     expect(calls.rows).toHaveLength(1);

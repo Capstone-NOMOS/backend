@@ -26,8 +26,8 @@ export const SEED_PATH_RULES: readonly SeedPathRule[] = [
   { pathPattern: 'tests/**', ownerRole: null, access: 'write', actionKey: 'test:write', priority: 20 },
   { pathPattern: 'Dockerfile', ownerRole: null, access: 'write', actionKey: 'infra:ci', priority: 30 },
   { pathPattern: '.github/**', ownerRole: null, access: 'write', actionKey: 'infra:ci', priority: 31 },
-  // package.json의 의존성 추가는 경로가 아니라 내용 diff로 판정한다 (domain/policy/dependency-diff.ts). 단 그 판정기는
-  // 아직 제출·V3에 연결되지 않았다 — 지금은 package.json 변경이 dep:add로 잡히지 않는다(CLAUDE.md 참고).
+  // package.json의 의존성 추가는 경로가 아니라 내용 diff로 판정한다 (domain/policy/dependency-diff.ts — 서버 검증이
+  // 커밋 전후 내용을 읽어 dep:add를 더한다, verification/service.ts). 경로 행으로 넣으면 scripts만 고친 변경까지 걸린다.
   { pathPattern: 'requirements.txt', ownerRole: null, access: 'write', actionKey: 'dep:add', priority: 40 },
   { pathPattern: '**/*.sql', ownerRole: null, access: 'write', actionKey: 'db:migration', priority: 50 },
   { pathPattern: 'migrations/**', ownerRole: null, access: 'write', actionKey: 'db:migration', priority: 51 },

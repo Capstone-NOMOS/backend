@@ -2,7 +2,7 @@ import type { QueryResultRow } from 'pg';
 import type { Queryable } from '../../config/db.js';
 import type { TeamRole } from '../roles.js';
 
-// 에이전트 질문(017). SQL만 둔다.
+// 에이전트 질문(018). SQL만 둔다.
 
 // Claude Code AskUserQuestion의 질문 형식 그대로.
 export type QuestionOption = { label: string; description?: string };

@@ -7,7 +7,7 @@ import { pool } from '../../config/db.js';
 import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
 import { githubInspector } from './github-inspector.js';
-import { CommitNotFoundError, InspectionSkipped, type CommitInspector } from './inspection.js';
+import { CommitNotFoundError, InspectionSkipped, MAX_MANIFEST_BYTES, type CommitInspector } from './inspection.js';
 
 export { CommitNotFoundError, InspectionSkipped, type CommitInspector, type InspectInput } from './inspection.js';
 
@@ -80,6 +80,24 @@ export function gitMirrorInspector(root: string = mirrorRoot()): CommitInspector
         .split('\n')
         .map((line) => line.trim())
         .filter((line) => line.length > 0);
+    },
+
+    // changedPaths가 먼저 돌아 mirror가 최신이다. 경로는 git의 `<rev>:<path>` 문법에 들어가므로 콜론·줄바꿈이 든 경로는 받지 않는다.
+    async fileVersions({ repoId, commitSha }, filePath) {
+      if (/[:\r\n\0]/.test(filePath) || filePath.startsWith('-')) throw new Error(`unsupported path: ${filePath}`);
+      const dir = path.join(root, `${repoId}.git`);
+      const show = async (rev: string): Promise<string | null> => {
+        try {
+          const { stdout } = await run('git', ['--git-dir', dir, 'show', `${rev}:${filePath}`], { maxBuffer: MAX_MANIFEST_BYTES });
+          return stdout;
+        } catch (err) {
+          const message = String((err as { stderr?: unknown }).stderr ?? err);
+          // 그 시점에 파일이 없었다(새 파일·지운 파일) 또는 부모가 없다(첫 커밋).
+          if (/does not exist|exists on disk, but not in|invalid object name|bad revision|unknown revision/i.test(message)) return null;
+          throw err;
+        }
+      };
+      return { before: await show(`${commitSha}^`), after: await show(commitSha) };
     },
   };
 }

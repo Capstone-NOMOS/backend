@@ -2,6 +2,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
+import { drainTasksChanged } from '../src/domain/dispatch/tasks-changed.js';
 
 const { Pool } = pg;
 
@@ -29,8 +30,10 @@ export async function runMigrations(): Promise<void> {
 }
 
 export async function truncateAll(): Promise<void> {
+  // 커밋 뒤 비동기로 도는 tasksChanged 리스너(배정 기록 등)가 TRUNCATE와 겹치면 교착하거나 지운 행을 참조한다 — 끝나길 기다린다.
+  await drainTasksChanged();
   await testPool.query(
-    `TRUNCATE TABLE agent_questions, approvals, notes, verifications, artifacts, task_deps, tasks, plans, spec_tests, specs, project_policies, oauth_sessions, project_members, project_repos, projects,
+    `TRUNCATE TABLE agent_questions, agent_activity, task_dispatches, approvals, notes, verifications, artifacts, task_deps, tasks, plans, spec_tests, specs, project_policies, oauth_sessions, project_members, project_repos, projects,
        agent_device_requests, agent_tokens, agents, events, invites, repo_paths, repos, users, organizations
      RESTART IDENTITY CASCADE`,
   );
@@ -46,6 +49,8 @@ export async function resetSchema(): Promise<void> {
 export async function dropSchema(): Promise<void> {
   await testPool.query(`
     DROP TABLE IF EXISTS agent_questions;
+    DROP TABLE IF EXISTS agent_activity;
+    DROP TABLE IF EXISTS task_dispatches;
     DROP TABLE IF EXISTS approvals;
     DROP TABLE IF EXISTS agent_device_requests;
     DROP TABLE IF EXISTS events;

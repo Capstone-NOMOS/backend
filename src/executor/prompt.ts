@@ -12,7 +12,13 @@ export type PromptBriefing = {
   writablePaths: { pathPattern: string }[];
 };
 
-export function buildTaskPrompt(briefing: PromptBriefing, branch: string): string {
+// 작업 환경(운영 테스트 4-4). 거부된 명령을 바꿔 가며 재시도하느라 턴을 쓰지 않게, 쓸 수 있는 것과 없는 것을 미리 말한다.
+export type PromptEnvironment = {
+  allowedCommands: readonly string[];
+  setup: { command: string; ok: boolean }[];
+};
+
+export function buildTaskPrompt(briefing: PromptBriefing, branch: string, environment?: PromptEnvironment): string {
   const { task, repo, spec } = briefing;
   const sections: string[] = [];
 
@@ -76,6 +82,24 @@ export function buildTaskPrompt(briefing: PromptBriefing, branch: string): strin
       '- 다른 에이전트의 잘못을 노트에 적지 않는다. 그건 raise_dispute의 몫이다.',
     ].join('\n'),
   );
+
+  if (environment) {
+    const installed = environment.setup.length === 0
+      ? '- 설치할 의존성 파일(package.json·requirements.txt 등)이 없었다.'
+      : environment.setup.map((s) => `- ${s.ok ? '설치됨' : '설치 실패'}: ${s.command}`).join('\n');
+    sections.push(
+      [
+        '# 작업 환경',
+        '- 쉘 명령은 Bash 도구로, 아래 접두사로 시작하는 것만 쓸 수 있다. 그 밖의 명령과 PowerShell은 승인할 사람이 없어 **자동으로 거부된다** — 바꿔 가며 다시 시도하지 않는다.',
+        ...environment.allowedCommands.map((c) => `  - ${c}`),
+        '- 명령은 한 번에 하나씩 쓴다. `&&`·`;`·`|`로 잇거나 리다이렉트하면 거부된다.',
+        '- 파일을 보거나 찾을 때는 쉘(ls·cat·find) 대신 Read·Glob·Grep 도구를 쓴다. 작업 폴더 밖은 볼 수 없다.',
+        '- 의존성은 NOMOS가 미리 설치해 두었다. 직접 설치(npm install·pip install)는 할 수 없다. 새 의존성이 필요하면 매니페스트(package.json·requirements.txt)만 고치고 GOTCHA 노트에 남긴다.',
+        installed,
+        '- 환경이 막혀 태스크를 끝낼 수 없으면 지어내거나 시험 없이 통과했다고 하지 않는다. 할 수 있는 만큼 하고, 막힌 이유를 마지막 메시지에 분명히 적고 끝낸다 — 그 문장이 대표에게 그대로 전달되고 대표가 해결한 뒤 다시 시작된다.',
+      ].join('\n'),
+    );
+  }
 
   sections.push(`# 지금 할 일\n태스크 ${task.id}를 claim_task로 받고 위 규칙에 따라 진행하라.`);
 

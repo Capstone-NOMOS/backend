@@ -323,3 +323,66 @@ export async function approveAppliedPlans(db: Queryable, projectId: string): Pro
   );
   return rows.map((r) => r.id as string);
 }
+
+// ── GitHub 협업자 자동 초대 ──────────────────────────────────────────────
+
+// 프로젝트 레포 중 GitHub에 실제로 있는 것(github_repo_id가 있는 것)만. 로컬 데모 레포는 초대할 곳이 없다.
+export async function listProjectGithubRepos(db: Queryable, projectId: string): Promise<RepoRow[]> {
+  const { rows } = await db.query(
+    `SELECT r.id, r.org_id, r.full_name FROM project_repos pr
+       JOIN repos r ON r.id = pr.repo_id
+      WHERE pr.project_id = $1 AND r.github_repo_id IS NOT NULL
+      ORDER BY r.full_name`,
+    [projectId],
+  );
+  return rows.map((r) => ({ id: r.id, orgId: r.org_id, fullName: r.full_name }));
+}
+
+// 에이전트 주인의 GitHub 아이디. GitHub를 연결하지 않았으면 githubLogin이 null이다.
+export async function findAgentOwnerGithub(
+  db: Queryable,
+  agentId: string,
+): Promise<{ userId: string; githubLogin: string | null } | null> {
+  const { rows } = await db.query(
+    `SELECT u.id, u.github_login FROM agents a JOIN users u ON u.id = a.user_id WHERE a.id = $1`,
+    [agentId],
+  );
+  const row = rows[0];
+  return row ? { userId: row.id as string, githubLogin: (row.github_login as string | null) ?? null } : null;
+}
+
+// 이 프로젝트의 멤버인가(재초대 API가 멤버가 아닌 에이전트를 받지 않게).
+export async function isProjectMember(db: Queryable, projectId: string, agentId: string): Promise<boolean> {
+  const { rows } = await db.query(`SELECT 1 FROM project_members WHERE project_id = $1 AND agent_id = $2`, [projectId, agentId]);
+  return rows.length > 0;
+}
+
+// 멤버별 마지막 GitHub 협업자 초대 결과(GITHUB_COLLABORATORS_INVITED). 이벤트가 유일한 진실이라 따로 저장하지 않고 여기서 읽는다.
+// 배정·재초대 응답에만 있던 결과가 새로고침하면 사라졌다(FE 보고) — 프로젝트 조회의 멤버 정보에 붙인다.
+export type MemberInviteStatus = {
+  repoId: string;
+  fullName: string;
+  status: 'invited' | 'already_collaborator' | 'skipped' | 'failed';
+  reason?: string;
+  at: string;
+};
+
+export async function listLatestInvites(db: Queryable, projectId: string): Promise<Map<string, MemberInviteStatus[]>> {
+  const { rows } = await db.query(
+    `SELECT DISTINCT ON (payload->>'agentId') payload->>'agentId' AS agent_id, payload->'results' AS results, ts
+       FROM events
+      WHERE project_id = $1 AND type = 'GITHUB_COLLABORATORS_INVITED'
+      ORDER BY payload->>'agentId', id DESC`,
+    [projectId],
+  );
+  const byAgent = new Map<string, MemberInviteStatus[]>();
+  for (const r of rows) {
+    const at = (r.ts as Date).toISOString();
+    const results = (r.results ?? []) as { repoId: string; fullName: string; status: MemberInviteStatus['status']; reason?: string }[];
+    byAgent.set(
+      r.agent_id as string,
+      results.map((x) => ({ repoId: x.repoId, fullName: x.fullName, status: x.status, ...(x.reason ? { reason: x.reason } : {}), at })),
+    );
+  }
+  return byAgent;
+}

@@ -160,8 +160,13 @@ components:
         id: { type: string, format: uuid }
         projectId: { type: string, format: uuid }
         projectName: { type: string }
-        gate: { type: string, enum: [G1, G2, G3, ACTION], description: '지금은 ACTION(정책 판정이 HUMAN·PM_REVIEW인 산출물)만 생긴다' }
-        taskId: { type: string, format: uuid }
+        gate:
+          type: string
+          enum: [G1, G2, G3, ACTION]
+          description: |
+            - ACTION: 검증은 통과했지만 정책 판정이 HUMAN·PM_REVIEW인 산출물(태스크 하나)
+            - G3: **통합 확인·완료 승인**(프로젝트 전체). 모든 태스크가 DONE이 되면 생긴다. 승인하면 프로젝트 completed, 반려하면 진행 중 그대로(고칠 태스크를 대표가 만든다)
+        taskId: { type: string, format: uuid, nullable: true, description: 'ACTION이면 그 태스크, G3면 null(프로젝트 전체)' }
         taskTitle: { type: string, nullable: true, description: '지금 태스크 제목(카드의 스냅샷은 payload.taskTitle)' }
         taskState: { type: string, nullable: true, description: '지금 태스크 상태' }
         artifactId: { type: string, format: uuid, nullable: true }
@@ -174,7 +179,9 @@ components:
           type: object
           additionalProperties: true
           description: |
-            요청 시점의 카드 스냅샷 — taskTitle, artifactId, attempt, commitSha, changedPaths, triggeredActions, gateMode, stages, submittedByAgentId.
+            요청 시점의 카드 스냅샷.
+            - ACTION: taskTitle, artifactId, attempt, commitSha, changedPaths, triggeredActions, gateMode, stages, submittedByAgentId.
+            - G3: integrationChecks(PM이 쓴 확인 항목 문자열 목록), tasks([{ taskId, title, teamRole, repo, branchName, commitSha }] — 머지·실행해 볼 브랜치와 마지막 커밋).
             **backfilled: true**면 승인 기능 이전부터 멈춰 있던 태스크라 지금 DB에서 알 수 있는 값만 있다(stages 등 없음) — "정보 일부 없음"을 표시한다.
         decision: { type: string, enum: [APPROVE, REJECT, null], nullable: true, description: 'null이면 대기 중' }
         decidedBy: { type: string, format: uuid, nullable: true }
@@ -372,6 +379,77 @@ components:
         fullName: { type: string }
         seededPathCount: { type: integer }
         rootOwnerRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true, description: '`**` 행의 소유 역할. 연결 때 ownerRole을 주지 않았으면 null(나중에 PATCH로 지정)' }
+    CreatedGithubRepo:
+      type: object
+      required: [id, fullName, seededPathCount, rootOwnerRole, githubRepoId, defaultBranch, cloneUrl]
+      properties:
+        id: { type: string, format: uuid }
+        fullName: { type: string }
+        seededPathCount: { type: integer }
+        rootOwnerRole: { type: string, enum: [FRONTEND, BACKEND] }
+        githubRepoId: { type: integer }
+        defaultBranch: { type: string, description: 'GitHub 조직의 기본 브랜치 설정을 따른다(보통 main)' }
+        cloneUrl: { type: string, description: 'V3가 커밋을 읽을 곳. 자동으로 채워진다' }
+    GithubInviteResult:
+      type: object
+      required: [repoId, fullName, status]
+      properties:
+        repoId: { type: string, format: uuid }
+        fullName: { type: string }
+        status:
+          type: string
+          enum: [invited, already_collaborator, skipped, failed]
+          description: |
+            - invited: 초대장을 보냈다. **멤버가 GitHub에서 수락해야** 클론·push할 수 있다
+            - already_collaborator: 이미 접근할 수 있다
+            - skipped: 멤버나 대표가 GitHub를 연결하지 않아 보내지 못했다(reason)
+            - failed: GitHub가 거부·실패했다(reason)
+        reason: { type: string }
+    RoomMessage:
+      type: object
+      required: [id, ts, speaker, type, taskId, taskTitle, text]
+      properties:
+        id: { type: string, description: '피드 커서로도 쓴다(before)' }
+        ts: { type: string, format: date-time }
+        speaker:
+          type: string
+          enum: [pm, nomos, agent]
+          description: |
+            - pm: 서버가 지시·판정을 알림(실행해 주세요, 검증 결과, 승인)
+            - nomos: Executor가 보고한 실행 상태(수령, 구현 시작, 제출, 실행 종료)
+            - agent: 에이전트가 쓴 도구(읽기·수정·실행) · 인계 노트
+        type:
+          type: string
+          description: '원본 이벤트 타입(TASK_DISPATCHED 등) 또는 ACTIVITY_READ·ACTIVITY_EDIT·ACTIVITY_WRITE·ACTIVITY_RUN·ACTIVITY_SEARCH·ACTIVITY_OTHER. 아이콘용'
+        taskId: { type: string, format: uuid, nullable: true }
+        taskTitle: { type: string, nullable: true }
+        text: { type: string, description: '화면에 그대로 보여 줄 문장(서버가 만든다)' }
+    RoomSummary:
+      type: object
+      required: [role, agent, activeTasks]
+      properties:
+        role: { type: string, enum: [FRONTEND, BACKEND] }
+        agent:
+          type: object
+          nullable: true
+          description: 이 역할에 배정된 에이전트. 없으면 null
+          required: [agentId, agentName, online, lastSeenAt]
+          properties:
+            agentId: { type: string, format: uuid }
+            agentName: { type: string }
+            online: { type: boolean }
+            lastSeenAt: { type: string, format: date-time, nullable: true }
+        activeTasks:
+          type: array
+          description: 진행 중(CLAIMED·IN_PROGRESS·VERIFYING·AWAITING_APPROVAL) 태스크
+          items:
+            type: object
+            required: [id, title, state, teamRole]
+            properties:
+              id: { type: string, format: uuid }
+              title: { type: string }
+              state: { type: string }
+              teamRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true }
     RepoSettings:
       type: object
       required: [id, fullName, githubRepoId, defaultBranch, devBranch, cloneUrl]
@@ -444,12 +522,26 @@ components:
         fullName: { type: string }
     ProjectMember:
       type: object
-      required: [agentId, agentName, teamRole, userId]
+      required: [agentId, agentName, teamRole, userId, githubInvites]
       properties:
         agentId: { type: string, format: uuid }
         agentName: { type: string }
         teamRole: { type: string, enum: [FRONTEND, BACKEND] }
         userId: { type: string, format: uuid, description: '에이전트 주인' }
+        githubInvites:
+          type: array
+          description: |
+            레포별 **마지막** GitHub 협업자 초대 결과(배정·다시 초대 때 남은 이벤트에서 읽는다 — 새로고침해도 남는다). 초대한 적 없으면 빈 목록
+            (GitHub 레포가 없는 프로젝트 등). invited는 초대장을 보냈다는 뜻이고 수락 여부는 GET /orgs/{orgId}/members의 isCollaborator로 본다.
+          items:
+            type: object
+            required: [repoId, fullName, status, at]
+            properties:
+              repoId: { type: string, format: uuid }
+              fullName: { type: string }
+              status: { type: string, enum: [invited, already_collaborator, skipped, failed] }
+              reason: { type: string }
+              at: { type: string, format: date-time, description: '그 초대를 시도한 시각' }
     ProjectDetail:
       type: object
       required: [project, repos, members]
@@ -459,7 +551,7 @@ components:
         members: { type: array, items: { $ref: '#/components/schemas/ProjectMember' } }
     Task:
       type: object
-      required: [id, projectId, repoId, specId, kind, title, state, teamRole, assigneeAgentId, branchName, blockedReason, retryCount]
+      required: [id, projectId, repoId, specId, kind, title, state, teamRole, assigneeAgentId, branchName, blockedReason, retryCount, claimedAt]
       properties:
         id: { type: string, format: uuid }
         projectId: { type: string, format: uuid }
@@ -471,7 +563,14 @@ components:
         teamRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true }
         assigneeAgentId: { type: string, format: uuid, nullable: true }
         branchName: { type: string, nullable: true }
-        blockedReason: { type: string, enum: [DISPUTE, DEPENDENCY, QUESTION], nullable: true, description: 'state=BLOCKED일 때만 있다' }
+        blockedReason:
+          type: string
+          enum: [DISPUTE, DEPENDENCY, QUESTION, AGENT_STOPPED]
+          nullable: true
+          description: |
+            state=BLOCKED일 때만 있다.
+            AGENT_STOPPED = 에이전트가 제출 없이 멈췄다(권한·환경·응답 끊김). 사유는 이벤트 TASK_BLOCKED(룸 피드)에 있고, 대표가 `POST /tasks/{taskId}/resume`으로 재개한다. 재시도 횟수는 오르지 않는다
+        claimedAt: { type: string, format: date-time, nullable: true, description: '마지막 수령 시각. 화면의 "수령 후 경과"에 쓴다(CLAIMED·IN_PROGRESS일 때 의미가 있다)' }
         retryCount: { type: integer, description: 'FAIL마다 오른다. 3이면 ESCALATED' }
     Artifact:
       type: object
@@ -611,9 +710,15 @@ components:
               title: { type: string }
               repo: { type: string, description: '레포 fullName' }
               teamRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true }
-              kind: { type: string, enum: [IMPLEMENT, INTEGRATION, REWORK] }
+              kind: { type: string, enum: [IMPLEMENT, INTEGRATION, REWORK], description: 'PM은 INTEGRATION을 내지 않는다(내면 교정 대상). 옛 초안에는 있을 수 있다' }
               spec: { type: string, nullable: true, description: '명세 featureKey' }
               dependsOn: { type: array, items: { type: string }, description: '먼저 끝나야 하는 태스크의 ref' }
+        integrationChecks:
+          type: array
+          items: { type: string }
+          description: |
+            통합 확인 항목. PM은 INTEGRATION 태스크를 만들지 않고(에이전트에게는 선행 코드·상대 레포·실행 수단이 없다) 여기에 적는다.
+            모든 태스크가 DONE이 되면 대표의 **G3 카드**(통합 확인·완료 승인)에 그대로 들어간다. 이 필드 이전에 만든 초안에는 없다.
     PmRelayJob:
       type: object
       description: '중계 모드에서 pm-worker가 실행할 모델 호출 한 건. 서버가 만든 지침·프롬프트·출력 스키마를 그대로 실행한다'
@@ -881,6 +986,8 @@ tags:
   - name: 검증
   - name: 승인
   - name: 질문
+  - name: 룸
+    description: 프로젝트 × 역할. 서버(PM)의 지시·판정, Executor 실행 상태, 에이전트 도구 사용을 한 줄씩
 
 paths:
   /auth/signup:
@@ -1278,7 +1385,8 @@ paths:
       description: |
         레포 연결이 조직 멤버 누구나 할 수 있으므로, 그 드롭다운을 채우는 이 목록도 함께 열려 있다.
 
-        `GITHUB_TOKEN`이 없으면 **500이 아니라 빈 배열**을 반환한다.
+        **그 조직 대표의 GitHub 토큰으로** 읽는다(서버 공용 토큰은 없다 — 있으면 모든 조직이 그 주인의 레포를 보게 된다).
+        대표가 GitHub를 연결하지 않았으면 **500이 아니라 빈 배열**을 반환한다(직접 입력으로 연결할 수 있다).
         GitHub 실패가 우리 기능을 멈추게 하지 않는다.
       security: [{ userToken: [] }]
       parameters: [{ $ref: '#/components/parameters/OrgId' }]
@@ -1296,13 +1404,101 @@ paths:
             application/json:
               example:
                 error: { code: CROSS_ORG_ACCESS, message: cannot access another organization }
+    post:
+      tags: [레포·경로]
+      summary: GitHub 조직에 레포 만들고 연결 (대표 전용)
+      description: |
+        대표의 GitHub 토큰으로 **GitHub 조직에 비공개 레포**를 만들고 곧바로 NOMOS에 연결한다(개인 계정에는 만들지 않는다).
+        프로젝트 생성 화면에서 이걸 부른 뒤 받은 `id`를 `repoIds`에 넣으면 된다.
+
+        - 첫 커밋은 **파일 없는 빈 커밋** 하나다(README 없음). 브랜치가 있어야 에이전트가 분기할 수 있다.
+        - `ownerRole`은 필수다 — `**` 행의 소유 역할. 없으면 프로젝트에 넣을 수 없다(422 `REPO_OWNERSHIP_NOT_SET`).
+        - `githubRepoId`·`cloneUrl`이 자동으로 채워져 V3(실제 diff 검사)가 처음부터 돈다.
+        - GitHub에 레포를 만든 뒤 연결이 실패하면 GitHub에는 레포가 남는다. 그때는 `POST /orgs/{orgId}/repos`로 연결한다.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/OrgId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [githubOrg, name, ownerRole]
+              properties:
+                githubOrg: { type: string, description: 'GitHub 조직 login (GET /orgs/{orgId}/github/orgs)' }
+                name: { type: string, description: '영숫자와 . _ - 만, 100자까지' }
+                description: { type: string, maxLength: 350 }
+                ownerRole: { type: string, enum: [FRONTEND, BACKEND] }
+            example:
+              githubOrg: Capstone-NOMOS
+              name: shop-api
+              ownerRole: BACKEND
+      responses:
+        '201':
+          description: 만들고 연결함
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [repo], properties: { repo: { $ref: '#/components/schemas/CreatedGithubRepo' } } } } }
+              example:
+                data:
+                  repo: { id: '{{REPO_API}}', fullName: Capstone-NOMOS/shop-api, seededPathCount: 15, rootOwnerRole: BACKEND, githubRepoId: 123456, defaultBranch: main, cloneUrl: 'https://github.com/Capstone-NOMOS/shop-api' }
+        '403':
+          description: 대표가 아니거나 GitHub가 거부(그 조직에 레포를 만들 권한이 없음, 조직이 NOMOS 앱을 승인하지 않음)
+          content:
+            application/json:
+              examples:
+                대표아님:
+                  value: { error: { code: NOT_REPRESENTATIVE, message: this action requires the organization representative } }
+                GitHub거부:
+                  value: { error: { code: GITHUB_FORBIDDEN, message: 'GitHub 레포 생성(acme/shop-api): GitHub가 거부했습니다(403)' } }
+        '409':
+          description: GitHub 미연결 또는 같은 이름의 레포가 이미 있음
+          content:
+            application/json:
+              examples:
+                미연결:
+                  value: { error: { code: GITHUB_NOT_LINKED, message: GitHub 계정이 연결되어 있지 않습니다 } }
+                이름중복:
+                  value: { error: { code: GITHUB_REPO_NAME_TAKEN, message: GitHub 조직 acme에 shop-api 레포를 만들 수 없습니다 } }
+
+  /orgs/{orgId}/github/orgs:
+    get:
+      tags: [레포·경로]
+      summary: 레포를 만들 수 있는 GitHub 조직 목록 (대표 전용)
+      description: |
+        대표 본인의 GitHub 토큰으로 대표가 속한 GitHub 조직을 읽는다. 레포 만들기 화면의 드롭다운을 채운다.
+        GitHub를 연결하지 않았으면 409 `GITHUB_NOT_LINKED`.
+
+        GitHub 조직이 OAuth 앱 접근 제한을 켜 두었으면 NOMOS 앱을 그 조직에서 승인해야 목록·생성이 된다.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/OrgId' }]
+      responses:
+        '200':
+          description: GitHub 조직 login 목록
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [orgs], properties: { orgs: { type: array, items: { type: string } } } } } }
+              example:
+                data: { orgs: [Capstone-NOMOS] }
+        '403':
+          description: 대표가 아님
+          content:
+            application/json:
+              example:
+                error: { code: NOT_REPRESENTATIVE, message: this action requires the organization representative }
+        '409':
+          description: 대표가 GitHub를 연결하지 않음
+          content:
+            application/json:
+              example:
+                error: { code: GITHUB_NOT_LINKED, message: GitHub 계정이 연결되어 있지 않습니다 }
 
   /orgs/{orgId}/members:
     get:
       tags: [조직]
       summary: 조직 멤버 목록
       description: |
-        GitHub collaborator 조회가 실패하면 `isCollaborator` 필드를 **생략**한다.
+        협업자 여부는 그 조직 대표의 GitHub 토큰으로 확인한다. 대표가 GitHub를 연결하지 않았거나 조회가 실패하면 `isCollaborator` 필드를 **생략**한다.
         `false`로 채우지 않는다 — "확인 안 됨"과 "권한 없음"은 다르다.
       security: [{ userToken: [] }]
       parameters: [{ $ref: '#/components/parameters/OrgId' }]
@@ -2243,7 +2439,7 @@ paths:
                   repos:
                     - { id: '{{REPO_API}}', fullName: acme/study-api }
                   members:
-                    - { agentId: '{{AGENT_BE}}', agentName: be-laptop, teamRole: BACKEND }
+                    - { agentId: '{{AGENT_BE}}', agentName: be-laptop, teamRole: BACKEND, githubInvites: [] }
         '403':
           description: 이 프로젝트의 멤버가 아님
           content:
@@ -2679,6 +2875,75 @@ paths:
                   events:
                     - { id: '1042', type: NOTE_PUBLISHED, ts: '2026-10-02T00:58:05.640Z', onBehalfOf: e8227252-a58b-4266-839b-8674f99b1e4a, actorAgentId: e6c879be-2a69-4f82-a30d-5063ff664262, payload: { noteId: 5c457d82-8804-4408-a76e-3f5a355b8484, kind: DECIDED }, tokenCost: null, pathViolation: null }
                   nextBefore: null
+  /projects/{projectId}/rooms:
+    get:
+      tags: [룸]
+      summary: 내가 볼 수 있는 룸 목록
+      description: |
+        룸 = 프로젝트 × 역할. **팀원은 자기 에이전트가 배정된 역할 룸만, 대표는 전부** 본다.
+        룸마다 담당 에이전트(온라인 여부)와 진행 중 태스크를 준다 — 룸 화면 머리.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/ProjectId' }]
+      responses:
+        '200':
+          description: 룸 목록(FRONTEND, BACKEND 순)
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [rooms], properties: { rooms: { type: array, items: { $ref: '#/components/schemas/RoomSummary' } } } } } }
+
+  /projects/{projectId}/rooms/{role}/feed:
+    get:
+      tags: [룸]
+      summary: 룸 피드 (최신부터)
+      description: |
+        서버(PM)의 지시·판정, Executor의 실행 상태, 에이전트의 도구 사용을 시각순으로 섞은 한 줄씩. **문장(`text`)은 서버가 만든다** — 화면은 그대로 보여 주면 된다.
+
+        예(오래된 것부터):
+        ```
+        [pm]    T-3 회원가입 API 실행해 주세요
+        [nomos] 에이전트를 실행합니다
+        [nomos] 태스크 수령 — T-3 회원가입 API · 구현을 시작합니다
+        [agent] src/routes/auth.ts 읽는 중
+        [agent] src/routes/auth.ts 수정
+        [agent] npm test 실행
+        [nomos] 제출했습니다 (커밋 a1b2c3d, 파일 3개)
+        [pm]    검증 완료 — V3 통과, V1A·V1B·V2·V4 건너뜀 → 완료되었습니다
+        [nomos] 실행을 마쳤습니다 (240초)
+        ```
+        태스크에 딸린 줄은 그 태스크의 역할 룸에만(역할 제한 없는 태스크는 모든 룸), 프로젝트 단위 PM 알림(시작·계획 적용)은 모든 룸에 나온다.
+        응답은 **최신부터**이고, `nextBefore`를 `before`로 넘기면 더 오래된 줄을 읽는다(없으면 null).
+        실시간: `/api/stream`에서 그 프로젝트를 구독하면 `room` 토픽이 올 때 다시 읽는다.
+        팀원이 다른 역할 룸을 읽으면 403 `ROOM_NOT_VISIBLE`.
+      security: [{ userToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - name: role
+          in: path
+          required: true
+          schema: { type: string, enum: [FRONTEND, BACKEND] }
+          example: BACKEND
+        - name: before
+          in: query
+          required: false
+          schema: { type: string }
+          description: 이전 응답의 nextBefore
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: 피드
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [messages, nextBefore], properties: { messages: { type: array, items: { $ref: '#/components/schemas/RoomMessage' } }, nextBefore: { type: string, nullable: true } } } } }
+        '403':
+          description: 자기 역할이 아닌 룸
+          content:
+            application/json:
+              example:
+                error: { code: ROOM_NOT_VISIBLE, message: you cannot see the BACKEND room of this project }
+
   /projects/{projectId}/members:
     post:
       tags: [프로젝트]
@@ -2690,6 +2955,11 @@ paths:
 
         프로젝트당 역할은 **하나씩만** 배정된다(`uq_project_members_role`). 실험 통제를 위해서다.
         **G1(`started_at`) 이후에는 멤버를 바꿀 수 없다** — 도중에 바뀌면 통제가 흔들린다.
+
+        **GitHub 협업자 자동 초대**: 배정과 함께 그 에이전트 주인을 프로젝트의 GitHub 레포(`githubRepoId`가 있는 것)마다
+        push 권한 협업자로 초대한다(대표의 GitHub 토큰). 결과는 `githubInvites`(레포마다 한 줄). 초대가 실패해도 배정은 유효하다 —
+        멤버가 GitHub를 연결하지 않았으면 `skipped`이고, 연결한 뒤 `POST .../members/{agentId}/github-invite`로 다시 보낸다.
+        GitHub 레포가 없는 프로젝트(로컬 데모)는 빈 배열이다.
       security: [{ userToken: [] }]
       parameters: [{ $ref: '#/components/parameters/ProjectId' }]
       requestBody:
@@ -2710,11 +2980,13 @@ paths:
           description: 배정됨. 남은 멤버 목록과 재발급 안내를 함께 준다.
           content:
             application/json:
-              schema: { type: object, required: [data], properties: { data: { type: object, required: [members, notice], properties: { members: { type: array, items: { $ref: '#/components/schemas/ProjectMember' } }, notice: { type: string } } } } }
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [members, githubInvites, notice], properties: { members: { type: array, items: { $ref: '#/components/schemas/ProjectMember' } }, githubInvites: { type: array, items: { $ref: '#/components/schemas/GithubInviteResult' } }, notice: { type: string } } } } }
               example:
                 data:
                   members:
-                    - { agentId: '{{AGENT_BE}}', agentName: be-laptop, teamRole: BACKEND }
+                    - { agentId: '{{AGENT_BE}}', agentName: be-laptop, teamRole: BACKEND, githubInvites: [] }
+                  githubInvites:
+                    - { repoId: '{{REPO_API}}', fullName: acme/study-api, status: invited }
                   notice: 배정된 에이전트는 POST /api/agents/token/refresh로 토큰을 재발급해야 태스크·노트 API를 쓸 수 있습니다.
         '403':
           description: 대표가 아님 · 다른 조직의 에이전트 · G1 이후
@@ -2736,6 +3008,44 @@ paths:
                   value: { error: { code: ROLE_ALREADY_ASSIGNED, message: BACKEND is already assigned in this project } }
                 에이전트중복:
                   value: { error: { code: AGENT_ALREADY_ASSIGNED, message: this agent is already a member of the project } }
+
+  /projects/{projectId}/members/{agentId}/github-invite:
+    post:
+      tags: [프로젝트]
+      summary: GitHub 협업자 초대 다시 보내기 (대표 전용)
+      description: |
+        역할 배정 때 멤버가 GitHub를 연결하지 않았거나 GitHub 호출이 실패했을 때 다시 보낸다.
+        멤버 구성을 바꾸는 게 아니라 접근을 주는 일이라 **시작(G1) 뒤에도 된다.** 실패해도 200이고 결과는 `githubInvites`에 적힌다.
+      security: [{ userToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - name: agentId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          example: '{{AGENT_BE}}'
+      responses:
+        '200':
+          description: 레포마다 초대 결과
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [githubInvites], properties: { githubInvites: { type: array, items: { $ref: '#/components/schemas/GithubInviteResult' } } } } } }
+              example:
+                data:
+                  githubInvites:
+                    - { repoId: '{{REPO_API}}', fullName: acme/study-api, status: skipped, reason: 멤버가 GitHub를 연결하지 않았다 }
+        '403':
+          description: 대표가 아니거나 다른 조직
+          content:
+            application/json:
+              example:
+                error: { code: NOT_REPRESENTATIVE, message: this action requires the organization representative }
+        '404':
+          description: 이 프로젝트의 멤버가 아닌 에이전트
+          content:
+            application/json:
+              example:
+                error: { code: MEMBER_NOT_FOUND, message: agent ... is not a member of this project }
 
   /projects/{projectId}/members/{agentId}:
     delete:
@@ -3290,7 +3600,7 @@ paths:
             application/json:
               schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/Task' } } }
               example:
-                data: { id: 7f3b2e5a-9c4d-4e3f-b0a1-2c3d4e5f6071, projectId: '{{PROJECT_ID}}', repoId: '{{REPO_API}}', specId: null, kind: INTEGRATION, title: T-052 대기열 신청 버튼, state: READY, teamRole: FRONTEND, assigneeAgentId: null, branchName: null, blockedReason: null, retryCount: 0 }
+                data: { id: 7f3b2e5a-9c4d-4e3f-b0a1-2c3d4e5f6071, projectId: '{{PROJECT_ID}}', repoId: '{{REPO_API}}', specId: null, kind: INTEGRATION, title: T-052 대기열 신청 버튼, state: READY, teamRole: FRONTEND, assigneeAgentId: null, branchName: null, blockedReason: null, retryCount: 0, claimedAt: null }
         '403':
           description: 대표가 아니거나 다른 조직
           content:
@@ -3370,6 +3680,153 @@ paths:
                       deny: ['Read(**/.env*)', 'Read(!**/.env.example)', 'Edit(/contracts/**)', 'Edit(**/secrets/**)']
                   specTests: [{ id: 5f0e..., criterion: 정원이 찬 스터디 신청은 409다, lockedAt: '2026-09-21T00:00:00.000Z' }]
                   policyHash: '{{POLICY_HASH}}'
+
+  /tasks/{taskId}/runs/start:
+    post:
+      tags: [룸]
+      summary: Claude 실행 시작 보고 (Executor)
+      description: |
+        Executor가 Claude를 띄우기 직전에 부른다. 룸에 "에이전트를 실행합니다"가 남는다(이벤트 `AGENT_RUN_STARTED`).
+        태스크를 잡는 것(`claim_task`)은 실행 **안에서** 모델이 하므로, 이 에이전트가 그 태스크를 잡고 있거나(CLAIMED·IN_PROGRESS)
+        **지금 잡을 수 있으면**(READY·담당 없음·내 역할 또는 역할 제한 없음) 받는다. 아니면 409 `RUN_NOT_ALLOWED`.
+      security: [{ agentToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/TaskId' }]
+      responses:
+        '201':
+          description: 시작 기록. attempt는 그때의 재시도 횟수
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [taskId, attempt], properties: { taskId: { type: string, format: uuid }, attempt: { type: integer } } } } }
+        '409':
+          description: 이 에이전트가 잡고 있지도, 잡을 수도 없는 태스크
+          content:
+            application/json:
+              example:
+                error: { code: RUN_NOT_ALLOWED, message: task ... is not held by this agent (state READY) }
+
+  /tasks/{taskId}/runs/end:
+    post:
+      tags: [룸]
+      summary: Claude 실행 종료 보고 (Executor)
+      description: |
+        Claude가 끝나면 부른다(이벤트 `AGENT_RUN_ENDED`). **제출 여부는 서버가 태스크 상태로 정한다** — 이 에이전트가 아직 잡고 있으면
+        제출하지 않은 것이다. 그때는 같은 트랜잭션에서 태스크가 **BLOCKED(AGENT_STOPPED)**로 바뀌고(이벤트 `TASK_BLOCKED`), 룸에
+        "멈췄습니다 — 사유 / 거부된 명령 → 대표 확인 후 재개가 필요합니다"가 남는다. 재시도 횟수는 오르지 않는다.
+        Executor가 꺼져 이 보고조차 오지 않으면 서버 감시가 45분 동안 응답이 없는 수령을 같은 방식으로 멈춘다.
+        열린 실행(시작하고 아직 안 끝낸 것)이 없으면 409 `RUN_NOT_OPEN`.
+      security: [{ agentToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/TaskId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [outcome, committed, durationMs, exitCode]
+              properties:
+                outcome: { type: string, enum: [completed, timeout, failed], description: 'completed=정상 종료, timeout=시간 제한, failed=비정상 종료' }
+                committed: { type: boolean, description: '실행 동안 새 커밋이 생겼나' }
+                durationMs: { type: integer, minimum: 0 }
+                exitCode: { type: integer, nullable: true }
+                lastMessage: { type: string, maxLength: 2000, nullable: true, description: '모델의 마지막 말. 제출하지 않았으면 멈춤 사유로 룸에 보인다' }
+                deniedCommands: { type: array, maxItems: 20, items: { type: string, maxLength: 300 }, description: '실행 중 거부된 쉘 명령(Executor가 실행 기록에서 뽑는다)' }
+            example: { outcome: completed, committed: false, durationMs: 48000, exitCode: 0, lastMessage: 'git merge 권한이 없어 통합 확인을 할 수 없습니다', deniedCommands: ['git fetch --all'] }
+      responses:
+        '200':
+          description: 종료 기록
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [submitted, taskState, blocked], properties: { submitted: { type: boolean }, taskState: { type: string }, blocked: { type: boolean, description: '제출하지 않아 BLOCKED(AGENT_STOPPED)로 멈췄다' } } } } }
+        '409':
+          description: 열린 실행이 없음
+          content:
+            application/json:
+              example:
+                error: { code: RUN_NOT_OPEN, message: no open run for task ... }
+
+  /tasks/{taskId}/activity:
+    post:
+      tags: [룸]
+      summary: 실행 중 도구 사용 보고 (Executor)
+      description: |
+        Executor가 Claude 출력에서 도구 사용을 뽑아 2초마다 묶어 보낸다(최대 50줄). **도구 종류와 대상(작업공간 기준 경로·명령 첫 줄, 300자)만** 받는다 —
+        파일 내용·명령 결과·모델 설명은 받지 않는다(설명은 인계 노트의 몫). 열린 실행에만 붙는다(409 `RUN_NOT_OPEN`).
+        이벤트가 아니라 `agent_activity`에 쌓이고, 화면 스트림에는 `room` 토픽으로 알린다.
+      security: [{ agentToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/TaskId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  minItems: 1
+                  maxItems: 50
+                  items:
+                    type: object
+                    required: [kind, target]
+                    properties:
+                      kind: { type: string, enum: [read, edit, write, run, search, other] }
+                      target: { type: string, maxLength: 300 }
+            example:
+              items:
+                - { kind: read, target: src/routes/auth.ts }
+                - { kind: edit, target: src/routes/auth.ts }
+                - { kind: run, target: npm test }
+      responses:
+        '201':
+          description: 기록함
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [recorded], properties: { recorded: { type: integer } } } } }
+        '409':
+          description: 열린 실행이 없음
+          content:
+            application/json:
+              example:
+                error: { code: RUN_NOT_OPEN, message: no open run for task ... }
+
+  /tasks/{taskId}/resume:
+    post:
+      tags: [룸]
+      summary: 멈춘 태스크 재개 (대표 전용)
+      description: |
+        에이전트가 제출 없이 멈춘 태스크(BLOCKED·`AGENT_STOPPED`)를 원인을 해결한 뒤 다시 돌린다. READY로 돌아가고 담당이 비어
+        같은 역할의 에이전트가 다시 가져간다(룸에 "다시 실행해 주세요 (재개)"). **재시도 횟수는 그대로다** — 권한·환경 탓은 에이전트 실패가 아니다.
+        멈춘 상태가 아니면 409 `TASK_NOT_STOPPED`.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/TaskId' }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: { type: string, maxLength: 500, nullable: true, description: '무엇을 해결했는지(룸에 보인다)' }
+            example: { note: 'python 실행을 허용했습니다' }
+      responses:
+        '200':
+          description: 재개됨(READY)
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/Task' } } }
+        '403':
+          description: 대표가 아님
+          content:
+            application/json:
+              example:
+                error: { code: NOT_REPRESENTATIVE, message: only the representative can resume a stopped task }
+        '409':
+          description: 멈춘 태스크가 아님
+          content:
+            application/json:
+              example:
+                error: { code: TASK_NOT_STOPPED, message: 'task ... is not stopped (state CLAIMED, reason -)' }
 
   /tasks/{taskId}/branch:
     patch:

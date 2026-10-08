@@ -8,7 +8,7 @@ import { z } from 'zod';
 // vitest의 test.env가 넘긴 값이 .env보다 우선한다.
 //
 // test에서도 읽지 않는 이유: vitest.config.ts의 test.env가 필요한 값을 전부 주므로 .env는 불필요하고,
-// 읽으면 GITHUB_TOKEN 같은 개발용 값이 테스트로 새어 실제 네트워크 호출이 일어날 수 있다.
+// 읽으면 ANTHROPIC_API_KEY 같은 개발용 값이 테스트로 새어 실제 네트워크 호출이 일어날 수 있다.
 const DOTENV_SKIPPED = new Set(['production', 'test']);
 
 if (!DOTENV_SKIPPED.has(process.env.NODE_ENV ?? 'development')) {
@@ -30,7 +30,6 @@ const envSchema = z
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
     PORT: z.coerce.number().int().positive().default(3000),
     DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
-    GITHUB_TOKEN: z.string().optional(),
     LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
     // 서버 자신의 공개 주소와 프론트 주소는 다르다(프론트는 Vercel). 초대 링크는 사람이 여는 것이므로
     // 프론트 주소로 만든다 — API 주소로 만들면 링크를 연 사람이 JSON 화면을 본다.

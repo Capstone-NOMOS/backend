@@ -40,7 +40,7 @@ describe('MCP 격리', () => {
     const bash = args[args.indexOf('--allowedTools') + 1]!.split(',').filter((t) => t.startsWith('Bash'));
     expect(bash).toContain('Bash(git commit:*)');
     // 접두사 없는 Bash·와일드카드 Bash는 없다.
-    for (const rule of bash) expect(rule, rule).toMatch(/^Bash\([a-z][a-z -]+:\*\)$/);
+    for (const rule of bash) expect(rule, rule).toMatch(/^Bash\([a-z][a-z0-9 -]+:\*\)$/);
   });
 
   it('권한 도구는 nomos 서버의 permission_prompt이고, 모델이 부르는 허용 목록에는 없다', () => {

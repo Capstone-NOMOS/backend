@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { TEAM_ROLES } from '../domain/roles.js';
 import { authenticate, orgIdOf, requireRepresentative, requireSameOrg } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
-import { connectRepos, listRepos, updateRepoSettings } from '../domain/repo/service.js';
+import { connectRepos, createGithubRepo, listGithubOrgs, listRepos, updateRepoSettings } from '../domain/repo/service.js';
 
 export const reposRouter = Router();
 
@@ -43,6 +43,46 @@ reposRouter.post(
       repos: req.body.repos,
     });
     res.status(201).json({ data: { repos } });
+  },
+);
+
+// GitHub 이름 규칙: 조직은 영숫자·하이픈 39자, 레포는 영숫자·.·_·- 100자. 경로에 그대로 들어가므로 형식부터 막는다.
+const createGithubRepoBodySchema = z.object({
+  githubOrg: z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/, 'GitHub 조직 이름 형식이 아니다'),
+  name: z
+    .string()
+    .regex(/^[A-Za-z0-9._-]{1,100}$/, 'GitHub 레포 이름은 영숫자와 . _ - 만 쓸 수 있다')
+    .refine((n) => n !== '.' && n !== '..', 'GitHub 레포 이름으로 쓸 수 없다'),
+  description: z.string().max(350).optional(),
+  // 필수다 — 소유 역할이 없는 레포는 프로젝트에 넣을 수 없다(REPO_OWNERSHIP_NOT_SET).
+  ownerRole: z.enum(TEAM_ROLES),
+});
+
+// POST /api/orgs/:orgId/github/repos — GitHub 조직에 비공개 레포를 만들고 바로 연결한다(대표 전용).
+// 첫 커밋은 파일 없는 빈 커밋이고, github_repo_id·clone_url이 채워져 V3가 처음부터 돈다.
+reposRouter.post(
+  '/orgs/:orgId/github/repos',
+  validate({ params: orgIdParamsSchema, body: createGithubRepoBodySchema }),
+  authenticate,
+  requireSameOrg,
+  requireRepresentative,
+  async (req, res) => {
+    const { orgId } = req.params as z.infer<typeof orgIdParamsSchema>;
+    const body = req.body as z.infer<typeof createGithubRepoBodySchema>;
+    const repo = await createGithubRepo({ orgId, actorUserId: req.user!.id, ...body });
+    res.status(201).json({ data: { repo } });
+  },
+);
+
+// GET /api/orgs/:orgId/github/orgs — 대표가 레포를 만들 수 있는 GitHub 조직 목록(대표 전용, 대표 본인의 GitHub 토큰).
+reposRouter.get(
+  '/orgs/:orgId/github/orgs',
+  validate({ params: orgIdParamsSchema }),
+  authenticate,
+  requireSameOrg,
+  requireRepresentative,
+  async (req, res) => {
+    res.status(200).json({ data: { orgs: await listGithubOrgs(req.user!.id) } });
   },
 );
 

@@ -2,7 +2,7 @@ import type { Queryable } from '../../config/db.js';
 import { decryptSecret } from '../../utils/secret-box.js';
 import { parseNextLink } from '../github/client.js';
 import { findRepresentativeGithubToken } from '../oauth/repository.js';
-import { CommitNotFoundError, InspectionSkipped, type CommitInspector } from './inspection.js';
+import { CommitNotFoundError, InspectionSkipped, MAX_MANIFEST_BYTES, type CommitInspector } from './inspection.js';
 
 // GitHub 커밋 API로 "바뀐 파일 목록"만 읽는다. patch(코드 내용)는 응답에 오더라도 쓰지 않고 저장하지도 않는다.
 //
@@ -96,6 +96,36 @@ export function githubInspector(options: { db: Queryable; fetchImpl?: FetchLike;
       }
 
       return [...paths];
+    },
+
+    // 부모 sha는 커밋 API에서, 내용은 contents API(raw)에서. 404면 그 시점에 파일이 없었다.
+    async fileVersions({ orgId, githubRepoId, commitSha }, filePath) {
+      if (githubRepoId === null) throw new InspectionSkipped('repos.github_repo_id 미설정');
+      const sealed = await findRepresentativeGithubToken(options.db, orgId);
+      if (sealed === null) throw new InspectionSkipped('GitHub 미연결');
+      const token = await decryptSecret(sealed);
+      const commit = await get(`${api}/repositories/${githubRepoId}/commits/${encodeURIComponent(commitSha)}`, token);
+      if (!commit.ok) throw new Error(`GitHub 응답 ${commit.status}`);
+      const parent = ((await commit.json()) as { parents?: { sha: string }[] }).parents?.[0]?.sha ?? null;
+      const encoded = filePath.split('/').map(encodeURIComponent).join('/');
+      const read = async (ref: string | null): Promise<string | null> => {
+        if (ref === null) return null;
+        const res = await fetchImpl(`${api}/repositories/${githubRepoId}/contents/${encoded}?ref=${encodeURIComponent(ref)}`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/vnd.github.raw+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+            'User-Agent': 'nomos-server',
+          },
+          signal: AbortSignal.timeout(TIMEOUT_MS),
+        });
+        if (res.status === 404) return null;
+        if (!res.ok) throw new Error(`GitHub 응답 ${res.status}`);
+        const text = await res.text();
+        if (text.length > MAX_MANIFEST_BYTES) throw new Error('manifest too large');
+        return text;
+      };
+      return { before: await read(parent), after: await read(commitSha) };
     },
   };
 }

@@ -13,7 +13,7 @@ describe('환경변수 로딩', () => {
   it('.env 전용 값이 테스트로 새지 않는다', () => {
     // vitest.config.ts의 test.env가 주지 않는 값은 undefined여야 한다.
     // 새면 GitHub 호출이 실제로 나가고, 테스트가 네트워크에 의존하게 된다.
-    expect(env.GITHUB_TOKEN).toBeUndefined();
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(env.KMS_KEY_ID).toBeUndefined();
   });
 

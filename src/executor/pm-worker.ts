@@ -1,8 +1,9 @@
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { resolveClaudeCommand } from './runner.js';
+import { removeQuietly } from './cleanup.js';
 
 // executor pm-worker — 중계 모드(PM_PROVIDER=relay)에서 대표 노트북이 PM의 "모델 호출" 한 자리를 맡는다.
 // 서버가 만든 작업(지침·프롬프트·출력 스키마)을 그대로 headless Claude Code에 넣고, 나온 텍스트를 그대로 돌려준다.
@@ -126,7 +127,7 @@ export async function runPmJob(job: PmJob, run: RunClaudeJson = spawnClaude): Pr
     }
     return toJobResult(out, job.request.model);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    removeQuietly(dir);
   }
 }
 

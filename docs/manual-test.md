@@ -165,7 +165,6 @@ cp .env.example .env
 | `APP_BASE_URL` | ❌ | — | **두 값으로 나뉘었다.** 남아 있으면 서버가 뜨지 않는다 — 지울 것 |
 | `DOCS_ENABLED` | | `true` | 로컬 개발은 켜짐, 그 외 꺼짐 |
 | `CORS_ALLOWED_ORIGINS` | | `http://localhost:3001` | CORS 헤더 없음(같은 오리진만) |
-| `GITHUB_TOKEN` | | GitHub PAT | 레포 목록 조회가 **빈 배열**을 반환한다 (500이 아니다) |
 | `GITHUB_CLIENT_ID` · `GITHUB_CLIENT_SECRET` | | OAuth App 값 | GitHub Device Flow 두 API만 502 |
 | `SECRET_ENCRYPTION_KEY` | | base64 32바이트 | Device Flow **승인 완료 시점**에만 실패 |
 | `KMS_KEY_ID` | | **비워둘 것** | — |
@@ -363,7 +362,7 @@ curl -s $BASE/orgs/$ORG_ID/github/repos -H "Authorization: Bearer $TOKEN"
 curl -s $BASE/orgs/$ORG_ID/members -H "Authorization: Bearer $TOKEN"
 ```
 
-`GITHUB_TOKEN`이 없으면 레포 목록은 **빈 배열**이고, 멤버 목록에서는 `isCollaborator` 필드가 **생략**된다
+대표가 GitHub를 연결하지 않았으면 레포 목록은 **빈 배열**이고, 멤버 목록에서는 `isCollaborator` 필드가 **생략**된다(GitHub 호출은 전부 대표의 토큰으로 한다 — 서버 공용 PAT는 없다)
 (`false`로 채우지 않는다 — "확인 안 됨"과 "권한 없음"은 다르다).
 시드 계정은 이미 조직에 속해 있으므로 `POST /api/orgs`는 409가 정상이다.
 
