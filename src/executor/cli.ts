@@ -29,6 +29,7 @@ import {
   writeCredentials,
 } from '../bridge/credentials.js';
 import { NomosApiError, NomosClient } from '../bridge/nomos-client.js';
+import { ActivityReporter, activityFromStreamLine } from './activity.js';
 import { connect, DEFAULT_SERVER, serverCalls } from './connect.js';
 import { deviceLogin } from './device-login.js';
 import { cliVersion, mcpServerPath } from './paths.js';
@@ -107,13 +108,32 @@ async function handleTask(client: NomosClient, projectId: string, task: TaskSumm
     buildMcpConfig({ serverPath: mcpServerPath(), workspaceDir: workspace.dir }),
   );
 
+  // 룸: 실행 시작을 알리고, 도는 동안 도구 사용을 보낸다. 룸 보고가 실패해도 실행은 그대로 간다(옛 서버에는 이 API가 없다).
+  const runOpen = await client
+    .startRun(task.id)
+    .then(() => true)
+    .catch((err: unknown) => {
+      log(`룸에 실행 시작을 알리지 못했다(실행은 계속한다): ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    });
+  const reporter = runOpen ? new ActivityReporter(client, task.id, log) : null;
+
   const before = headSha(workspace.dir);
   const result = await runClaude({
     workspaceDir: workspace.dir,
     prompt: buildTaskPrompt(briefing, workspace.branch),
     mcpConfigPath,
+    ...(reporter ? { onStdoutLine: (line: string) => reporter.push(activityFromStreamLine(line, workspace.dir)) } : {}),
   });
   const committed = headSha(workspace.dir) !== before;
+
+  if (reporter) {
+    await reporter.close();
+    // 제출했는지는 서버가 태스크 상태로 판단해 룸에 남긴다("끝났지만 제출하지 않았다"가 대표에게 보인다).
+    await client
+      .endRun(task.id, { outcome: result.outcome, committed, durationMs: result.durationMs, exitCode: result.exitCode })
+      .catch((err: unknown) => log(`룸에 실행 종료를 알리지 못했다: ${err instanceof Error ? err.message : String(err)}`));
+  }
 
   // 자동 재시도는 넣지 않는다. tasks.retry_count는 서버가 관리하는 값이고,
   // Executor가 멋대로 돌리면 M4(재작업률)가 오염된다.

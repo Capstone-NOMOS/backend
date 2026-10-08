@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 프로젝트
 
-NOMOS 서버 — 여러 개발자가 각자 노트북에서 Claude Code 에이전트를 돌릴 때 그 사이의 계약·권한·분쟁을 조율하는 서버. 현재 구현 범위는 조직·레포·경로 소유권·초대, 로컬 계정과 CLI 연결(브라우저 승인 포함), 프로젝트·태스크·산출물·인계 노트·검증, 명세·태스크 작성, 내장 PM의 계획 수립, 승인 대기열(ACTION 게이트), 화면용 실시간 신호(마이그레이션 016까지), AWS 배포다.
+NOMOS 서버 — 여러 개발자가 각자 노트북에서 Claude Code 에이전트를 돌릴 때 그 사이의 계약·권한·분쟁을 조율하는 서버. 현재 구현 범위는 조직·레포·경로 소유권·초대, 로컬 계정과 CLI 연결(브라우저 승인 포함), 프로젝트·태스크·산출물·인계 노트·검증, 명세·태스크 작성, 내장 PM의 계획 수립, 승인 대기열(ACTION 게이트), 화면용 실시간 신호, 역할별 룸 피드(마이그레이션 017까지), AWS 배포다.
 
 설계 원칙(위반 금지): **P1** 상태는 서버가 소유하고 클라이언트는 전이를 요청만 한다. **P3** 모든 행동은 사람에게 귀속된다(`on_behalf_of` 없는 이벤트는 없다). **P5** 모든 상태 변화는 `events`에 append되고 events가 유일한 진실이다.
 
@@ -442,6 +442,24 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
 - 결정 뒤 `tasksChanged` — 승인이면 뒤 태스크가 풀리고 반려면 이 태스크가 다시 READY다.
 - 015는 이미 `AWAITING_APPROVAL`에 멈춰 있던 태스크에 **지금 DB 값으로** 카드를 만든다(`payload.backfilled: true`, 단계 결과 없음).
 
+### 룸 (`domain/room`, 017) — 보기 전용
+
+룸 = **프로젝트 × 역할**. 테이블이 없다(역할당 에이전트가 하나라 구성이 저절로 정해진다). 피드는 세 가지를 시각순으로 섞은 한 줄씩이고 **문장은 서버가 만든다**(`room/render.ts`).
+- **pm**(서버): "실행해 주세요"(`TASK_DISPATCHED`), 검증 결과, 승인, 프로젝트 시작·계획 적용(프로젝트 단위는 **모든 룸**에).
+- **nomos**(Executor 보고): 수령, 구현 시작(`AGENT_RUN_STARTED`), 제출, 실행 종료(`AGENT_RUN_ENDED`).
+- **agent**: 도구 사용(`agent_activity`)과 인계 노트.
+
+- **팀원은 자기 역할 룸만, 대표는 전부**(`ROOM_NOT_VISIBLE`). 판정은 `room/service.ts`의 `visibleRoles` 한 곳.
+- **"실행해 주세요"는 서비스마다 부르지 않는다.** `tasksChanged` 신호를 받아(`room/dispatch.ts`, `createApp`에서 구독) 가져갈 수 있게 된 태스크를 attempt마다
+  한 번 기록한다 — `task_dispatches` PK가 중복을, 같은 트랜잭션의 이벤트가 P5를 지킨다. 조건은 `listClaimableTasks`에서 역할만 뺀 것이다(둘이 갈리면 지시는 왔는데 못 가져간다).
+  테스트는 `truncateAll`이 `drainTasksChanged()`로 리스너를 기다린 뒤 TRUNCATE한다(겹치면 교착).
+- **제출 여부는 서버가 정한다.** Executor는 정상 종료·시간 초과·비정상과 커밋 여부만 보고하고, 서버가 태스크 상태로 `submitted`를 정해
+  "끝났지만 제출하지 않았다"를 룸에 남긴다 — 데모에서 팀원 터미널에만 보이던 막다른 길이다.
+- **활동은 도구 종류와 대상(작업공간 기준 경로·명령 첫 줄, 300자)만** 받는다. 파일 내용·명령 결과·모델 설명 문장은 받지 않는다(설명은 인계 노트의 몫, 대표 결정).
+  상태 변화가 아니라 `events`가 아닌 `agent_activity`이고, 열린 실행(STARTED 뒤 ENDED 전)에만 붙는다. 화면 신호는 `room/activity-hub` → `/api/stream`의 `room` 토픽(서버 1대 전제).
+- Executor의 룸 보고(`executor/activity.ts`)는 **실패해도 실행을 멈추지 않는다.** 옛 서버에는 API가 없으니 시작 보고가 실패하면 그 실행의 활동·종료 보고를 건너뛴다.
+- 사람 메시지(룸 채팅)는 아직 없다. 넣을 때도 **실행 중인 모델에 끼워 넣지 않는다**(인계 노트와 같은 이유 — 리플레이가 깨지고 노트가 채널이 된다).
+
 ### 프로젝트와 멤버
 
 - 프로젝트 생성은 **한 트랜잭션**에서 프로젝트 행·레포 연결·`project_policies` 17행 복사·헌법 스냅샷·`policy_hash`를
@@ -602,7 +620,7 @@ const { repoId } = req.params as z.infer<typeof repoIdParamsSchema>
 
 ### 라우터 마운트
 
-라우터 13개(`auth`, `agents`, `orgs`, `repos`, `repo-paths`, `invites`, `oauth`, `approvals`, `tasks`, `notes`, `projects`, `specs`, `pm`)가 전부 `app.use("/api", ...)`로 마운트되고(`/health`·`/docs`는 `/api` 밖), 각 파일이 `/orgs/:orgId/...` 같은 전체 경로를 직접 선언한다. 그래서 URL 접두사가 아니라 **도메인 기준**으로 파일이 나뉜다 — 예를 들어 `POST /api/orgs/:orgId/repos`는 URL은 orgs 밑이지만 `routes/repos.ts`에 있고, `POST /api/orgs/:orgId/invites`는 `routes/invites.ts`에 있다.
+라우터 14개(`auth`, `agents`, `orgs`, `repos`, `repo-paths`, `invites`, `oauth`, `approvals`, `tasks`, `notes`, `projects`, `specs`, `pm`, `rooms`)가 전부 `app.use("/api", ...)`로 마운트되고(`/health`·`/docs`는 `/api` 밖), 각 파일이 `/orgs/:orgId/...` 같은 전체 경로를 직접 선언한다. 그래서 URL 접두사가 아니라 **도메인 기준**으로 파일이 나뉜다 — 예를 들어 `POST /api/orgs/:orgId/repos`는 URL은 orgs 밑이지만 `routes/repos.ts`에 있고, `POST /api/orgs/:orgId/invites`는 `routes/invites.ts`에 있다.
 
 
 ## 스키마 변경 규칙

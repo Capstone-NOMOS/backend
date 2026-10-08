@@ -332,6 +332,51 @@ components:
             - skipped: 멤버나 대표가 GitHub를 연결하지 않아 보내지 못했다(reason)
             - failed: GitHub가 거부·실패했다(reason)
         reason: { type: string }
+    RoomMessage:
+      type: object
+      required: [id, ts, speaker, type, taskId, taskTitle, text]
+      properties:
+        id: { type: string, description: '피드 커서로도 쓴다(before)' }
+        ts: { type: string, format: date-time }
+        speaker:
+          type: string
+          enum: [pm, nomos, agent]
+          description: |
+            - pm: 서버가 지시·판정을 알림(실행해 주세요, 검증 결과, 승인)
+            - nomos: Executor가 보고한 실행 상태(수령, 구현 시작, 제출, 실행 종료)
+            - agent: 에이전트가 쓴 도구(읽기·수정·실행) · 인계 노트
+        type:
+          type: string
+          description: '원본 이벤트 타입(TASK_DISPATCHED 등) 또는 ACTIVITY_READ·ACTIVITY_EDIT·ACTIVITY_WRITE·ACTIVITY_RUN·ACTIVITY_SEARCH·ACTIVITY_OTHER. 아이콘용'
+        taskId: { type: string, format: uuid, nullable: true }
+        taskTitle: { type: string, nullable: true }
+        text: { type: string, description: '화면에 그대로 보여 줄 문장(서버가 만든다)' }
+    RoomSummary:
+      type: object
+      required: [role, agent, activeTasks]
+      properties:
+        role: { type: string, enum: [FRONTEND, BACKEND] }
+        agent:
+          type: object
+          nullable: true
+          description: 이 역할에 배정된 에이전트. 없으면 null
+          required: [agentId, agentName, online, lastSeenAt]
+          properties:
+            agentId: { type: string, format: uuid }
+            agentName: { type: string }
+            online: { type: boolean }
+            lastSeenAt: { type: string, format: date-time, nullable: true }
+        activeTasks:
+          type: array
+          description: 진행 중(CLAIMED·IN_PROGRESS·VERIFYING·AWAITING_APPROVAL) 태스크
+          items:
+            type: object
+            required: [id, title, state, teamRole]
+            properties:
+              id: { type: string, format: uuid }
+              title: { type: string }
+              state: { type: string }
+              teamRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true }
     RepoSettings:
       type: object
       required: [id, fullName, githubRepoId, defaultBranch, devBranch, cloneUrl]
@@ -830,6 +875,8 @@ tags:
   - name: 태스크·노트
   - name: 검증
   - name: 승인
+  - name: 룸
+    description: 프로젝트 × 역할. 서버(PM)의 지시·판정, Executor 실행 상태, 에이전트 도구 사용을 한 줄씩
 
 paths:
   /auth/signup:
@@ -2533,6 +2580,75 @@ paths:
                   events:
                     - { id: '1042', type: NOTE_PUBLISHED, ts: '2026-10-02T00:58:05.640Z', onBehalfOf: e8227252-a58b-4266-839b-8674f99b1e4a, actorAgentId: e6c879be-2a69-4f82-a30d-5063ff664262, payload: { noteId: 5c457d82-8804-4408-a76e-3f5a355b8484, kind: DECIDED }, tokenCost: null, pathViolation: null }
                   nextBefore: null
+  /projects/{projectId}/rooms:
+    get:
+      tags: [룸]
+      summary: 내가 볼 수 있는 룸 목록
+      description: |
+        룸 = 프로젝트 × 역할. **팀원은 자기 에이전트가 배정된 역할 룸만, 대표는 전부** 본다.
+        룸마다 담당 에이전트(온라인 여부)와 진행 중 태스크를 준다 — 룸 화면 머리.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/ProjectId' }]
+      responses:
+        '200':
+          description: 룸 목록(FRONTEND, BACKEND 순)
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [rooms], properties: { rooms: { type: array, items: { $ref: '#/components/schemas/RoomSummary' } } } } } }
+
+  /projects/{projectId}/rooms/{role}/feed:
+    get:
+      tags: [룸]
+      summary: 룸 피드 (최신부터)
+      description: |
+        서버(PM)의 지시·판정, Executor의 실행 상태, 에이전트의 도구 사용을 시각순으로 섞은 한 줄씩. **문장(`text`)은 서버가 만든다** — 화면은 그대로 보여 주면 된다.
+
+        예(오래된 것부터):
+        ```
+        [pm]    T-3 회원가입 API 실행해 주세요
+        [nomos] 태스크 수령 — T-3 회원가입 API
+        [nomos] 구현을 시작합니다
+        [agent] src/routes/auth.ts 읽는 중
+        [agent] src/routes/auth.ts 수정
+        [agent] npm test 실행
+        [nomos] 제출했습니다 (커밋 a1b2c3d, 파일 3개)
+        [pm]    검증 완료 — V3 통과, V1A·V1B·V2·V4 건너뜀 → 완료되었습니다
+        [nomos] 실행을 마쳤습니다 (240초)
+        ```
+        태스크에 딸린 줄은 그 태스크의 역할 룸에만(역할 제한 없는 태스크는 모든 룸), 프로젝트 단위 PM 알림(시작·계획 적용)은 모든 룸에 나온다.
+        응답은 **최신부터**이고, `nextBefore`를 `before`로 넘기면 더 오래된 줄을 읽는다(없으면 null).
+        실시간: `/api/stream`에서 그 프로젝트를 구독하면 `room` 토픽이 올 때 다시 읽는다.
+        팀원이 다른 역할 룸을 읽으면 403 `ROOM_NOT_VISIBLE`.
+      security: [{ userToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - name: role
+          in: path
+          required: true
+          schema: { type: string, enum: [FRONTEND, BACKEND] }
+          example: BACKEND
+        - name: before
+          in: query
+          required: false
+          schema: { type: string }
+          description: 이전 응답의 nextBefore
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: 피드
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [messages, nextBefore], properties: { messages: { type: array, items: { $ref: '#/components/schemas/RoomMessage' } }, nextBefore: { type: string, nullable: true } } } } }
+        '403':
+          description: 자기 역할이 아닌 룸
+          content:
+            application/json:
+              example:
+                error: { code: ROOM_NOT_VISIBLE, message: you cannot see the BACKEND room of this project }
+
   /projects/{projectId}/members:
     post:
       tags: [프로젝트]
@@ -3269,6 +3385,110 @@ paths:
                       deny: ['Read(**/.env*)', 'Read(!**/.env.example)', 'Edit(/contracts/**)', 'Edit(**/secrets/**)']
                   specTests: [{ id: 5f0e..., criterion: 정원이 찬 스터디 신청은 409다, lockedAt: '2026-09-21T00:00:00.000Z' }]
                   policyHash: '{{POLICY_HASH}}'
+
+  /tasks/{taskId}/runs/start:
+    post:
+      tags: [룸]
+      summary: Claude 실행 시작 보고 (Executor)
+      description: |
+        Executor가 태스크를 수령한 뒤 Claude를 띄우기 직전에 부른다. 룸에 "구현을 시작합니다"가 남는다(이벤트 `AGENT_RUN_STARTED`).
+        그 태스크를 잡고 있는 에이전트만(CLAIMED·IN_PROGRESS) 부를 수 있다. 아니면 409 `RUN_NOT_ALLOWED`.
+      security: [{ agentToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/TaskId' }]
+      responses:
+        '201':
+          description: 시작 기록. attempt는 그때의 재시도 횟수
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [taskId, attempt], properties: { taskId: { type: string, format: uuid }, attempt: { type: integer } } } } }
+        '409':
+          description: 이 에이전트가 잡고 있는 태스크가 아님
+          content:
+            application/json:
+              example:
+                error: { code: RUN_NOT_ALLOWED, message: task ... is not held by this agent (state READY) }
+
+  /tasks/{taskId}/runs/end:
+    post:
+      tags: [룸]
+      summary: Claude 실행 종료 보고 (Executor)
+      description: |
+        Claude가 끝나면 부른다(이벤트 `AGENT_RUN_ENDED`). **제출 여부는 서버가 태스크 상태로 정한다** — 이 에이전트가 아직 잡고 있으면
+        제출하지 않은 것이다. 룸에 "실행을 마쳤습니다" 또는 "실행이 끝났지만 제출하지 않았습니다"가 남아, 막힌 태스크가 대표에게 보인다.
+        열린 실행(시작하고 아직 안 끝낸 것)이 없으면 409 `RUN_NOT_OPEN`.
+      security: [{ agentToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/TaskId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [outcome, committed, durationMs, exitCode]
+              properties:
+                outcome: { type: string, enum: [completed, timeout, failed], description: 'completed=정상 종료, timeout=시간 제한, failed=비정상 종료' }
+                committed: { type: boolean, description: '실행 동안 새 커밋이 생겼나' }
+                durationMs: { type: integer, minimum: 0 }
+                exitCode: { type: integer, nullable: true }
+            example: { outcome: completed, committed: true, durationMs: 42000, exitCode: 0 }
+      responses:
+        '200':
+          description: 종료 기록
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [submitted, taskState], properties: { submitted: { type: boolean }, taskState: { type: string } } } } }
+        '409':
+          description: 열린 실행이 없음
+          content:
+            application/json:
+              example:
+                error: { code: RUN_NOT_OPEN, message: no open run for task ... }
+
+  /tasks/{taskId}/activity:
+    post:
+      tags: [룸]
+      summary: 실행 중 도구 사용 보고 (Executor)
+      description: |
+        Executor가 Claude 출력에서 도구 사용을 뽑아 2초마다 묶어 보낸다(최대 50줄). **도구 종류와 대상(작업공간 기준 경로·명령 첫 줄, 300자)만** 받는다 —
+        파일 내용·명령 결과·모델 설명은 받지 않는다(설명은 인계 노트의 몫). 열린 실행에만 붙는다(409 `RUN_NOT_OPEN`).
+        이벤트가 아니라 `agent_activity`에 쌓이고, 화면 스트림에는 `room` 토픽으로 알린다.
+      security: [{ agentToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/TaskId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  minItems: 1
+                  maxItems: 50
+                  items:
+                    type: object
+                    required: [kind, target]
+                    properties:
+                      kind: { type: string, enum: [read, edit, write, run, search, other] }
+                      target: { type: string, maxLength: 300 }
+            example:
+              items:
+                - { kind: read, target: src/routes/auth.ts }
+                - { kind: edit, target: src/routes/auth.ts }
+                - { kind: run, target: npm test }
+      responses:
+        '201':
+          description: 기록함
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [recorded], properties: { recorded: { type: integer } } } } }
+        '409':
+          description: 열린 실행이 없음
+          content:
+            application/json:
+              example:
+                error: { code: RUN_NOT_OPEN, message: no open run for task ... }
 
   /tasks/{taskId}/branch:
     patch:

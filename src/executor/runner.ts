@@ -39,6 +39,8 @@ export type RunInput = {
   mcpConfigPath: string;
   model?: string;
   timeoutMs?: number;
+  // stdout(stream-json) 한 줄씩 실시간으로. 룸 활동 보고가 쓴다. 던져도 실행은 계속된다.
+  onStdoutLine?: (line: string) => void;
 };
 
 export async function runClaude(input: RunInput): Promise<RunResult> {
@@ -61,7 +63,24 @@ export async function runClaude(input: RunInput): Promise<RunResult> {
 
     const chunks: string[] = [];
     const collect = (c: Buffer) => chunks.push(c.toString());
-    child.stdout.on('data', collect);
+    let partial = '';
+    const emitLines = (c: Buffer) => {
+      if (!input.onStdoutLine) return;
+      partial += c.toString();
+      const lines = partial.split('\n');
+      partial = lines.pop() ?? '';
+      for (const line of lines) {
+        try {
+          input.onStdoutLine(line);
+        } catch {
+          // 룸 표시 실패가 실행을 멈추면 안 된다.
+        }
+      }
+    };
+    child.stdout.on('data', (c: Buffer) => {
+      collect(c);
+      emitLines(c);
+    });
     child.stderr.on('data', collect);
 
     let timedOut = false;

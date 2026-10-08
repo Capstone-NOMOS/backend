@@ -156,6 +156,22 @@ export class NomosClient {
     };
   }
 
+  // 룸: Claude 실행 시작·끝, 실행 중 도구 사용(종류와 대상만).
+  async startRun(taskId: string): Promise<void> {
+    await this.request('POST', `/api/tasks/${taskId}/runs/start`);
+  }
+
+  async endRun(
+    taskId: string,
+    body: { outcome: 'completed' | 'timeout' | 'failed'; committed: boolean; durationMs: number; exitCode: number | null },
+  ): Promise<{ submitted: boolean; taskState: string }> {
+    return (await this.request('POST', `/api/tasks/${taskId}/runs/end`, body)) as { submitted: boolean; taskState: string };
+  }
+
+  async postActivity(taskId: string, items: { kind: string; target: string }[]): Promise<void> {
+    await this.request('POST', `/api/tasks/${taskId}/activity`, { items });
+  }
+
   async reportBranch(taskId: string, branchName: string): Promise<void> {
     await this.request('PATCH', `/api/tasks/${taskId}/branch`, { branchName });
   }

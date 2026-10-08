@@ -34,6 +34,9 @@ export type ErrorCode =
   | 'GITHUB_NOT_LINKED'
   | 'GITHUB_FORBIDDEN'
   | 'GITHUB_REPO_NAME_TAKEN'
+  | 'RUN_NOT_ALLOWED'
+  | 'RUN_NOT_OPEN'
+  | 'ROOM_NOT_VISIBLE'
   | 'TASK_NOT_FOUND'
   | 'TASK_ALREADY_CLAIMED'
   | 'ARTIFACT_NOT_FOUND'
@@ -115,6 +118,12 @@ const STATUS_BY_CODE: Record<ErrorCode, number> = {
   // GitHub가 대표 토큰의 요청을 거부했다(조직 권한 없음, 조직이 NOMOS 앱을 승인하지 않음 등).
   GITHUB_FORBIDDEN: 403,
   GITHUB_REPO_NAME_TAKEN: 409,
+  // 실행 시작은 그 태스크를 잡고 있는 에이전트만(CLAIMED·IN_PROGRESS).
+  RUN_NOT_ALLOWED: 409,
+  // 시작하지 않았거나 이미 끝낸 실행에 활동·종료를 보냈다.
+  RUN_NOT_OPEN: 409,
+  // 팀원은 자기 역할 룸만 본다(대표는 전부).
+  ROOM_NOT_VISIBLE: 403,
   TASK_NOT_FOUND: 404,
   // 409 — 권한 문제가 아니라 경합에서 진 것이다. 재시도하면 다른 태스크를 잡으면 된다.
   TASK_ALREADY_CLAIMED: 409,

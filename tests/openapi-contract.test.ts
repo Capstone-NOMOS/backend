@@ -252,6 +252,9 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     await call('POST', `/projects/${projectId}/start`, rep);
     await call('GET', '/agents/me/tasks', agent);
     await call('POST', `/tasks/${taskId}/claim`, agent);
+    // 룸: Executor의 실행 시작·도구 사용 보고
+    await call('POST', `/tasks/${taskId}/runs/start`, agent);
+    await call('POST', `/tasks/${taskId}/activity`, agent, { items: [{ kind: 'read', target: 'src/api/join.ts' }, { kind: 'run', target: 'npm test' }] });
 
     // 제출 — 커밋 diff는 가짜 검사기로. 신고와 같게 두면 V3는 PASS다.
     setCommitInspector({ kind: 'fake', async changedPaths() { return ['src/api/join.ts']; } });
@@ -259,6 +262,9 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
       commitSha: 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0', changedPaths: ['src/api/join.ts'],
     });
     const artifactId = submitted.data.id as string;
+    await call('POST', `/tasks/${taskId}/runs/end`, agent, { outcome: 'completed', committed: true, durationMs: 1200, exitCode: 0 });
+    await call('GET', `/projects/${projectId}/rooms`, rep);
+    await call('GET', `/projects/${projectId}/rooms/BACKEND/feed?limit=20`, rep);
     await call('GET', `/tasks/${taskId}/artifacts`, agent);
     await call('GET', `/tasks/${taskId}/artifacts`, rep);
     await call('POST', `/artifacts/${artifactId}/verifications`, agent, { stage: 'V4', result: 'PASS', durationMs: 1200 });

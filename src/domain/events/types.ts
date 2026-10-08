@@ -23,6 +23,9 @@ export type EventType =
   | 'APPROVAL_RESULT'
   | 'MEMBER_UNASSIGNED'
   | 'GITHUB_COLLABORATORS_INVITED'
+  | 'TASK_DISPATCHED'
+  | 'AGENT_RUN_STARTED'
+  | 'AGENT_RUN_ENDED'
   | 'REPO_UPDATED'
   | 'TASKS_IMPORTED'
   | 'SPEC_CREATED'
@@ -249,6 +252,33 @@ export type GithubCollaboratorsInvitedPayload = {
   results: GithubInviteResult[];
 };
 
+// 서버가 "이 태스크를 실행해 주세요"를 보냈다 — 가져갈 수 있게 된 순간(시작됨·READY·담당 없음·선행 완료) attempt마다 한 번.
+// on_behalf_of는 'system:dispatcher'. 실제 전달은 에이전트 스트림(tasksChanged)이 하고, 이건 룸에 남는 기록이다.
+export type TaskDispatchedPayload = {
+  taskId: string;
+  title: string;
+  teamRole: string | null;
+  attempt: number;
+};
+
+// Executor가 Claude 실행을 시작했다/끝냈다. 끝은 Executor가 아는 결과(정상 종료·시간 초과·비정상)와 커밋 여부를 보고하고,
+// 제출 여부(submitted)는 서버가 태스크 상태로 정한다 — "끝났는데 제출하지 않았다"(막다른 길)를 서버가 알게 된다.
+export type AgentRunStartedPayload = {
+  taskId: string;
+  attempt: number;
+};
+
+export type AgentRunEndedPayload = {
+  taskId: string;
+  attempt: number;
+  outcome: 'completed' | 'timeout' | 'failed';
+  committed: boolean;
+  submitted: boolean;
+  durationMs: number;
+  exitCode: number | null;
+  taskState: string;
+};
+
 export type GithubInviteResult = {
   repoId: string;
   fullName: string;
@@ -368,6 +398,9 @@ export type EventPayloadMap = {
   APPROVAL_RESULT: ApprovalResultPayload;
   MEMBER_UNASSIGNED: MemberUnassignedPayload;
   GITHUB_COLLABORATORS_INVITED: GithubCollaboratorsInvitedPayload;
+  TASK_DISPATCHED: TaskDispatchedPayload;
+  AGENT_RUN_STARTED: AgentRunStartedPayload;
+  AGENT_RUN_ENDED: AgentRunEndedPayload;
   REPO_UPDATED: RepoUpdatedPayload;
   TASKS_IMPORTED: TasksImportedPayload;
   SPEC_CREATED: SpecCreatedPayload;
