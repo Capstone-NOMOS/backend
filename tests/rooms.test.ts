@@ -12,6 +12,7 @@ import { createOrganization } from '../src/domain/org/service.js';
 import { assignMember, createProject, startProject } from '../src/domain/project/service.js';
 import { connectRepos } from '../src/domain/repo/service.js';
 import { gitMirrorInspector, setCommitInspector } from '../src/domain/verification/commit-inspector.js';
+import { sweepUnresponsiveClaims } from '../src/domain/task/stall.js';
 import { assignRootOwner } from './fixtures.js';
 import { resetSchema, testPool, truncateAll } from './test-db.js';
 
@@ -154,14 +155,44 @@ describe('룸 피드 — 실행해 주세요부터 검증 결과까지', () => {
     expect(dispatched.rows).toEqual([{ on_behalf_of: 'system:dispatcher' }]);
   });
 
-  it('끝났는데 제출하지 않았으면 서버가 그렇게 적는다 — 막다른 길이 룸에 드러난다', async () => {
+  it('제출 없이 끝나면 BLOCKED(AGENT_STOPPED)로 멈추고 사유·거부 명령이 룸에 남는다 — 재시도 횟수는 그대로, 대표가 재개하면 다시 지시', async () => {
     const w = await world();
     await http('POST', `/tasks/${w.beTaskId}/runs/start`, w.beAgentToken);
     await http('POST', `/tasks/${w.beTaskId}/claim`, w.beAgentToken);
-    const ended = await http('POST', `/tasks/${w.beTaskId}/runs/end`, w.beAgentToken, { outcome: 'completed', committed: false, durationMs: 1000, exitCode: 0 });
-    expect(ended.data).toEqual({ submitted: false, taskState: 'CLAIMED' });
-    const { messages } = await feed(w.rep.token, w.projectId, 'BACKEND');
-    expect(messages[0]!.text).toBe('실행이 끝났지만 커밋이 없어 제출하지 않았습니다');
+    const ended = await http('POST', `/tasks/${w.beTaskId}/runs/end`, w.beAgentToken, {
+      outcome: 'completed', committed: false, durationMs: 48_000, exitCode: 0,
+      lastMessage: 'git merge 권한이 없어 통합 확인을 할 수 없습니다', deniedCommands: ['git fetch --all', 'npm --version'],
+    });
+    expect(ended.data).toEqual({ submitted: false, taskState: 'BLOCKED', blocked: true });
+    const { rows } = await testPool.query(`SELECT state, blocked_reason, retry_count FROM tasks WHERE id = $1`, [w.beTaskId]);
+    expect(rows[0]).toEqual({ state: 'BLOCKED', blocked_reason: 'AGENT_STOPPED', retry_count: 0 });
+
+    let { messages } = await feed(w.rep.token, w.projectId, 'BACKEND');
+    expect(messages.slice(0, 2).map((m) => m.text).reverse()).toEqual([
+      '실행을 마쳤습니다 (48초, 제출 없음)',
+      '멈췄습니다 — 제출하지 않고 끝났습니다 / 에이전트: "git merge 권한이 없어 통합 확인을 할 수 없습니다" / 거부된 명령: git fetch --all, npm --version → 대표 확인 후 재개가 필요합니다',
+    ]);
+
+    // 팀원은 재개할 수 없고, 대표가 재개하면 READY + 담당 비움 + "다시 실행해 주세요 (재개)".
+    expect((await http('POST', `/tasks/${w.beTaskId}/resume`, w.be.token, {})).status).toBe(403);
+    const resumed = await http('POST', `/tasks/${w.beTaskId}/resume`, w.rep.token, { note: '허용 명령을 늘렸습니다' });
+    expect(resumed.data).toMatchObject({ state: 'READY', assigneeAgentId: null, blockedReason: null, retryCount: 0 });
+    ({ messages } = await feed(w.rep.token, w.projectId, 'BACKEND'));
+    expect(messages.slice(0, 2).map((m) => m.text).reverse()).toEqual(['대표가 재개했습니다: 허용 명령을 늘렸습니다', 'T-1 가입 API 다시 실행해 주세요 (재개)']);
+    expect(await http('POST', `/tasks/${w.beTaskId}/resume`, w.rep.token, {})).toMatchObject({ status: 409, error: { code: 'TASK_NOT_STOPPED' } });
+    // 다시 가져갈 수 있다.
+    expect((await http('POST', `/tasks/${w.beTaskId}/claim`, w.beAgentToken)).status).toBe(200);
+  });
+
+  it('감시: 응답이 끊긴 수령은 멈춤으로 바뀐다(system:watchdog)', async () => {
+    const w = await world();
+    await http('POST', `/tasks/${w.beTaskId}/claim`, w.beAgentToken);
+    await testPool.query(`UPDATE tasks SET claimed_at = now() - interval '2 hours' WHERE id = $1`, [w.beTaskId]); // 시간 경과를 흉내 낸다(서비스 함수 없음)
+    await testPool.query(`UPDATE events SET ts = now() - interval '2 hours' WHERE payload->>'taskId' = $1`, [w.beTaskId]);
+    expect(await sweepUnresponsiveClaims(60 * 60 * 1000)).toBe(1);
+    const { rows } = await testPool.query(`SELECT on_behalf_of, payload->>'cause' AS cause FROM events WHERE type = 'TASK_BLOCKED'`);
+    expect(rows).toEqual([{ on_behalf_of: 'system:watchdog', cause: 'unresponsive' }]);
+    expect(await sweepUnresponsiveClaims(60 * 60 * 1000)).toBe(0);
   });
 });
 

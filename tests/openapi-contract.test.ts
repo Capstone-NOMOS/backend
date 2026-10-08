@@ -265,6 +265,13 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     await call('POST', `/tasks/${taskId}/runs/end`, agent, { outcome: 'completed', committed: true, durationMs: 1200, exitCode: 0 });
     await call('GET', `/projects/${projectId}/rooms`, rep);
     await call('GET', `/projects/${projectId}/rooms/BACKEND/feed?limit=20`, rep);
+    // 제출 없이 끝난 실행 → 멈춤(BLOCKED) → 대표 재개
+    const stuck = await call('POST', `/projects/${projectId}/tasks`, rep, { title: 'T-9 막히는 태스크', teamRole: 'BACKEND', kind: 'INTEGRATION', repoId });
+    const stuckId = stuck.data.id as string;
+    await call('POST', `/tasks/${stuckId}/runs/start`, agent);
+    await call('POST', `/tasks/${stuckId}/claim`, agent);
+    await call('POST', `/tasks/${stuckId}/runs/end`, agent, { outcome: 'completed', committed: false, durationMs: 1000, exitCode: 0, lastMessage: '권한이 없다', deniedCommands: ['git fetch'] });
+    await call('POST', `/tasks/${stuckId}/resume`, rep, { note: '허용함' });
     await call('GET', `/tasks/${taskId}/artifacts`, agent);
     await call('GET', `/tasks/${taskId}/artifacts`, rep);
     await call('POST', `/artifacts/${artifactId}/verifications`, agent, { stage: 'V4', result: 'PASS', durationMs: 1200 });

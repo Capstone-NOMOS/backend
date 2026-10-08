@@ -3,15 +3,17 @@ import type { TeamRole } from '../roles.js';
 
 // ── 배정 기록(task_dispatches) ───────────────────────────────────────────
 
-export type DispatchedTask = { taskId: string; title: string; teamRole: TeamRole | null; attempt: number; orgId: string };
+export type DispatchedTask = { taskId: string; title: string; teamRole: TeamRole | null; attempt: number; resumes: number; orgId: string };
 
-// 지금 가져갈 수 있는 태스크(시작한 프로젝트·READY·담당 없음·선행 전부 DONE)를 attempt(=retry_count)별로 한 번만 기록한다.
+// 지금 가져갈 수 있는 태스크(시작한 프로젝트·READY·담당 없음·선행 전부 DONE)를 (attempt=retry_count, resumes=재개 수)별로 한 번만 기록한다.
 // 조건은 task/repository.ts의 listClaimableTasks에서 역할 조건만 뺀 것이다 — 둘이 갈리면 "실행해 주세요"가 왔는데 못 가져가는 일이 생긴다.
 // 이미 기록된 (task, attempt)는 PK 충돌로 건너뛰고, 새로 들어간 행만 돌려준다(그 행에만 이벤트를 남긴다).
 export async function insertNewDispatches(db: Queryable, projectId: string): Promise<DispatchedTask[]> {
   const { rows } = await db.query(
     `WITH ready AS (
-       SELECT t.id, t.retry_count FROM tasks t
+       SELECT t.id, t.retry_count,
+              (SELECT count(*) FROM events e WHERE e.type = 'TASK_RESUMED' AND e.payload->>'taskId' = t.id::text)::int AS resumes
+         FROM tasks t
          JOIN projects p ON p.id = t.project_id
         WHERE t.project_id = $1
           AND p.started_at IS NOT NULL
@@ -21,12 +23,12 @@ export async function insertNewDispatches(db: Queryable, projectId: string): Pro
             SELECT 1 FROM task_deps d JOIN tasks dt ON dt.id = d.depends_on
              WHERE d.task_id = t.id AND dt.state <> 'DONE')
      ), inserted AS (
-       INSERT INTO task_dispatches (task_id, attempt)
-       SELECT id, retry_count FROM ready
+       INSERT INTO task_dispatches (task_id, attempt, resumes)
+       SELECT id, retry_count, resumes FROM ready
        ON CONFLICT DO NOTHING
-       RETURNING task_id, attempt
+       RETURNING task_id, attempt, resumes
      )
-     SELECT i.task_id, i.attempt, t.title, t.team_role, p.org_id
+     SELECT i.task_id, i.attempt, i.resumes, t.title, t.team_role, p.org_id
        FROM inserted i JOIN tasks t ON t.id = i.task_id JOIN projects p ON p.id = t.project_id
       ORDER BY t.created_at, t.id`,
     [projectId],
@@ -36,6 +38,7 @@ export async function insertNewDispatches(db: Queryable, projectId: string): Pro
     title: r.title as string,
     teamRole: (r.team_role as TeamRole | null) ?? null,
     attempt: Number(r.attempt),
+    resumes: Number(r.resumes),
     orgId: r.org_id as string,
   }));
 }
@@ -79,6 +82,8 @@ export const TASK_FEED_EVENTS = [
   'TASK_CLAIMED',
   'AGENT_RUN_STARTED',
   'AGENT_RUN_ENDED',
+  'TASK_BLOCKED',
+  'TASK_RESUMED',
   'ARTIFACT_SUBMITTED',
   'VERIFICATION_COMPLETED',
   // APPROVAL_REQUESTED는 넣지 않는다 — 같은 트랜잭션의 검증 결과 줄이 이미 "대표 승인을 기다립니다"라고 말한다(겹쳐 보였다).

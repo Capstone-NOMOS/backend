@@ -36,6 +36,8 @@ export type Task = {
   branchName: string | null;
   blockedReason: string | null;
   retryCount: number;
+  // 마지막 수령 시각(017). 화면의 "수령 후 경과"와 응답 없는 에이전트 감시가 쓴다. 수령한 적이 없으면 null.
+  claimedAt: string | null;
 };
 
 function toTask(row: QueryResultRow): Task {
@@ -52,6 +54,7 @@ function toTask(row: QueryResultRow): Task {
     branchName: row.branch_name,
     blockedReason: row.blocked_reason,
     retryCount: row.retry_count,
+    claimedAt: row.claimed_at ? (row.claimed_at as Date).toISOString() : null,
   };
 }
 
@@ -78,7 +81,7 @@ export async function countUnfinishedDeps(db: Queryable, taskId: string): Promis
 export async function claimTaskRow(db: Queryable, taskId: string, agentId: string): Promise<Task | null> {
   const { rows } = await db.query(
     `UPDATE tasks
-        SET state = 'CLAIMED', assignee_agent_id = $2, updated_at = now()
+        SET state = 'CLAIMED', assignee_agent_id = $2, claimed_at = now(), updated_at = now()
       WHERE id = $1 AND state = 'READY' AND assignee_agent_id IS NULL
       RETURNING *`,
     [taskId, agentId],
@@ -297,4 +300,54 @@ export async function listClaimableTasks(db: Queryable, projectId: string, teamR
     [projectId, teamRole],
   );
   return rows.map(toTask);
+}
+
+// ── 멈춘 태스크(BLOCKED · AGENT_STOPPED) ──────────────────────────────────
+
+// 에이전트가 잡고 있던(CLAIMED·IN_PROGRESS) 태스크를 BLOCKED(AGENT_STOPPED)로. 담당은 남겨 둔다(누가 멈췄는지 화면에 보인다).
+// 조건부 UPDATE라 그사이 제출로 상태가 바뀌었으면 아무것도 하지 않고 null.
+export async function blockStoppedTask(db: Queryable, taskId: string): Promise<Task | null> {
+  const { rows } = await db.query(
+    `UPDATE tasks SET state = 'BLOCKED', blocked_reason = 'AGENT_STOPPED', updated_at = now()
+      WHERE id = $1 AND state IN ('CLAIMED', 'IN_PROGRESS')
+      RETURNING *`,
+    [taskId],
+  );
+  return rows[0] ? toTask(rows[0]) : null;
+}
+
+// 대표가 재개: READY로 돌리고 담당을 비운다(같은 역할의 에이전트가 다시 가져간다). retry_count는 건드리지 않는다.
+export async function resumeStoppedTask(db: Queryable, taskId: string): Promise<Task | null> {
+  const { rows } = await db.query(
+    `UPDATE tasks SET state = 'READY', blocked_reason = NULL, assignee_agent_id = NULL, updated_at = now()
+      WHERE id = $1 AND state = 'BLOCKED' AND blocked_reason = 'AGENT_STOPPED'
+      RETURNING *`,
+    [taskId],
+  );
+  return rows[0] ? toTask(rows[0]) : null;
+}
+
+// 응답이 끊긴 수령: 잡은 지(claimed_at) threshold가 지났고, 그 뒤로 실행 보고·도구 사용이 threshold 동안 없는 태스크.
+export async function listUnresponsiveClaims(db: Queryable, thresholdMs: number): Promise<{ taskId: string; projectId: string; orgId: string; agentId: string; onBehalfOf: string }[]> {
+  const { rows } = await db.query(
+    `SELECT t.id, t.project_id, p.org_id, t.assignee_agent_id, a.user_id
+       FROM tasks t
+       JOIN projects p ON p.id = t.project_id
+       JOIN agents a ON a.id = t.assignee_agent_id
+      WHERE t.state IN ('CLAIMED', 'IN_PROGRESS')
+        AND t.claimed_at < now() - make_interval(secs => $1::float8 / 1000)
+        AND NOT EXISTS (SELECT 1 FROM agent_activity aa
+                         WHERE aa.task_id = t.id AND aa.ts > now() - make_interval(secs => $1::float8 / 1000))
+        AND NOT EXISTS (SELECT 1 FROM events e
+                         WHERE e.type IN ('AGENT_RUN_STARTED', 'AGENT_RUN_ENDED') AND e.payload->>'taskId' = t.id::text
+                           AND e.ts > now() - make_interval(secs => $1::float8 / 1000))`,
+    [thresholdMs],
+  );
+  return rows.map((r) => ({
+    taskId: r.id as string,
+    projectId: r.project_id as string,
+    orgId: r.org_id as string,
+    agentId: r.assignee_agent_id as string,
+    onBehalfOf: r.user_id as string,
+  }));
 }

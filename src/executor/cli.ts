@@ -29,7 +29,7 @@ import {
   writeCredentials,
 } from '../bridge/credentials.js';
 import { NomosApiError, NomosClient } from '../bridge/nomos-client.js';
-import { ActivityReporter, activityFromStreamLine } from './activity.js';
+import { ActivityReporter, activityFromStreamLine, RunObserver } from './activity.js';
 import { connect, DEFAULT_SERVER, serverCalls } from './connect.js';
 import { deviceLogin } from './device-login.js';
 import { cliVersion, mcpServerPath } from './paths.js';
@@ -117,13 +117,17 @@ async function handleTask(client: NomosClient, projectId: string, task: TaskSumm
       return false;
     });
   const reporter = runOpen ? new ActivityReporter(client, task.id, log) : null;
+  const observer = new RunObserver(workspace.dir);
 
   const before = headSha(workspace.dir);
   const result = await runClaude({
     workspaceDir: workspace.dir,
     prompt: buildTaskPrompt(briefing, workspace.branch),
     mcpConfigPath,
-    ...(reporter ? { onStdoutLine: (line: string) => reporter.push(activityFromStreamLine(line, workspace.dir)) } : {}),
+    onStdoutLine: (line: string) => {
+      observer.observe(line);
+      reporter?.push(activityFromStreamLine(line, workspace.dir));
+    },
   });
   const committed = headSha(workspace.dir) !== before;
 
@@ -131,7 +135,10 @@ async function handleTask(client: NomosClient, projectId: string, task: TaskSumm
     await reporter.close();
     // 제출했는지는 서버가 태스크 상태로 판단해 룸에 남긴다("끝났지만 제출하지 않았다"가 대표에게 보인다).
     await client
-      .endRun(task.id, { outcome: result.outcome, committed, durationMs: result.durationMs, exitCode: result.exitCode })
+      .endRun(task.id, { outcome: result.outcome, committed, durationMs: result.durationMs, exitCode: result.exitCode, ...observer.summary() })
+      .then((r) => {
+        if (r.blocked) log('제출 없이 끝나 태스크가 멈춤(BLOCKED)으로 바뀌었다 — 대표가 원인을 해결하고 재개하면 다시 가져간다');
+      })
       .catch((err: unknown) => log(`룸에 실행 종료를 알리지 못했다: ${err instanceof Error ? err.message : String(err)}`));
   }
 

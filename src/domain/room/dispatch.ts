@@ -20,7 +20,7 @@ export async function recordDispatches(projectId: string): Promise<number> {
         projectId,
         type: 'TASK_DISPATCHED',
         onBehalfOf: DISPATCHER,
-        payload: { taskId: d.taskId, title: d.title, teamRole: d.teamRole, attempt: d.attempt },
+        payload: { taskId: d.taskId, title: d.title, teamRole: d.teamRole, attempt: d.attempt, resumes: d.resumes },
       });
     }
     return dispatched.length;

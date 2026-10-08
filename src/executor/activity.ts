@@ -140,3 +140,55 @@ export class ActivityReporter {
     await this.flush();
   }
 }
+
+// 실행이 제출 없이 끝났을 때 대표에게 보일 사유를 모은다 — 거부된 쉘 명령과 모델의 마지막 말.
+// 거부는 Claude Code가 돌려준 도구 결과(is_error)의 문구로 가른다("requires approval" 등). 문구가 바뀌면 빠질 수 있으나 판정이 아니라 안내라 괜찮다.
+const DENIAL = /requires (manual )?approval|permission|not allowed|denied/i;
+const SHELL_TOOLS = new Set(['Bash', 'PowerShell']);
+
+export class RunObserver {
+  private readonly commands = new Map<string, string>();
+  private readonly denied: string[] = [];
+  private lastText: string | null = null;
+  private resultText: string | null = null;
+
+  constructor(private readonly cwd: string) {}
+
+  observe(line: string): void {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('{')) return;
+    let msg: { type?: unknown; result?: unknown; message?: { content?: unknown } };
+    try {
+      msg = JSON.parse(trimmed) as typeof msg;
+    } catch {
+      return;
+    }
+    if (msg.type === 'result' && typeof msg.result === 'string') this.resultText = msg.result;
+    if (!Array.isArray(msg.message?.content)) return;
+    for (const block of msg.message.content as Record<string, unknown>[]) {
+      if (msg.type === 'assistant' && block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
+        this.lastText = block.text;
+      }
+      if (msg.type === 'assistant' && block.type === 'tool_use' && typeof block.name === 'string' && SHELL_TOOLS.has(block.name)) {
+        const command = (block.input as { command?: unknown } | undefined)?.command;
+        if (typeof block.id === 'string' && typeof command === 'string') this.commands.set(block.id, command);
+      }
+      if (msg.type === 'user' && block.type === 'tool_result' && block.is_error === true && typeof block.tool_use_id === 'string') {
+        const command = this.commands.get(block.tool_use_id);
+        const content = typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? '');
+        if (command !== undefined && DENIAL.test(content)) {
+          const shown = clip(hideWorkspace(command, this.cwd));
+          if (!this.denied.includes(shown) && this.denied.length < 20) this.denied.push(shown);
+        }
+      }
+    }
+  }
+
+  summary(): { lastMessage: string | null; deniedCommands: string[] } {
+    const text = this.resultText ?? this.lastText;
+    return {
+      lastMessage: text ? hideWorkspace(text, this.cwd).trim().slice(0, 2000) : null,
+      deniedCommands: [...this.denied],
+    };
+  }
+}

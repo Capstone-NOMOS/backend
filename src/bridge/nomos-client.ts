@@ -163,9 +163,16 @@ export class NomosClient {
 
   async endRun(
     taskId: string,
-    body: { outcome: 'completed' | 'timeout' | 'failed'; committed: boolean; durationMs: number; exitCode: number | null },
-  ): Promise<{ submitted: boolean; taskState: string }> {
-    return (await this.request('POST', `/api/tasks/${taskId}/runs/end`, body)) as { submitted: boolean; taskState: string };
+    body: {
+      outcome: 'completed' | 'timeout' | 'failed';
+      committed: boolean;
+      durationMs: number;
+      exitCode: number | null;
+      lastMessage?: string | null;
+      deniedCommands?: string[];
+    },
+  ): Promise<{ submitted: boolean; taskState: string; blocked: boolean }> {
+    return (await this.request('POST', `/api/tasks/${taskId}/runs/end`, body)) as { submitted: boolean; taskState: string; blocked: boolean };
   }
 
   async postActivity(taskId: string, items: { kind: string; target: string }[]): Promise<void> {

@@ -8,6 +8,8 @@ import { assertProjectVisibleToUser, type UserContext } from '../project/visibil
 import { TEAM_ROLES, type TeamRole } from '../roles.js';
 import { findTaskById, type Task } from '../task/repository.js';
 import type { AgentContext } from '../task/service.js';
+import { tasksChanged } from '../dispatch/tasks-changed.js';
+import { blockStoppedTaskInTx } from '../task/stall.js';
 import { activityRecorded } from './activity-hub.js';
 import { parseCursor, renderFeedRow, type RoomMessage } from './render.js';
 import { findOpenRun, insertActivity, listActiveRoleTasks, listRoomFeed, type ActivityKind, type RoomTask } from './repository.js';
@@ -54,12 +56,25 @@ export async function startRun(ctx: AgentContext, taskId: string): Promise<{ tas
   });
 }
 
-export type EndRunInput = { outcome: 'completed' | 'timeout' | 'failed'; committed: boolean; durationMs: number; exitCode: number | null };
+export type EndRunInput = {
+  outcome: 'completed' | 'timeout' | 'failed';
+  committed: boolean;
+  durationMs: number;
+  exitCode: number | null;
+  // 제출하지 않고 끝났을 때 대표에게 보일 사유 — 모델의 마지막 말, 거부된 쉘 명령(Executor가 실행 기록에서 뽑는다).
+  lastMessage?: string | null;
+  deniedCommands?: string[];
+};
 
 // Claude 실행이 끝났다. 제출 여부는 Executor가 아니라 서버가 정한다 — 이 에이전트가 아직 그 태스크를 잡고 있으면(CLAIMED·IN_PROGRESS)
 // 제출하지 않은 것이다. 제출 뒤에는 검증이 상태를 이미 옮겨 두었다(VERIFYING·DONE·READY…).
-export async function endRun(ctx: AgentContext, taskId: string, input: EndRunInput): Promise<{ submitted: boolean; taskState: string }> {
-  return withTransaction(async (tx) => {
+// 제출하지 않았으면 같은 트랜잭션에서 BLOCKED(AGENT_STOPPED)로 멈추고 사유를 남긴다(task/stall.ts) — 재시도 횟수는 그대로.
+export async function endRun(
+  ctx: AgentContext,
+  taskId: string,
+  input: EndRunInput,
+): Promise<{ submitted: boolean; taskState: string; blocked: boolean }> {
+  const result = await withTransaction(async (tx) => {
     const task = await taskInProject(ctx, taskId, tx);
     const open = await findOpenRun(tx, taskId, ctx.agentId);
     if (open === null) throw new AppError('RUN_NOT_OPEN', `no open run for task ${taskId}`);
@@ -71,10 +86,28 @@ export async function endRun(ctx: AgentContext, taskId: string, input: EndRunInp
       actorAgentId: ctx.agentId,
       onBehalfOf: ctx.onBehalfOf,
       policyHash: ctx.policyHash,
-      payload: { taskId, attempt: open.attempt, ...input, submitted, taskState: task.state },
+      payload: {
+        taskId,
+        attempt: open.attempt,
+        outcome: input.outcome,
+        committed: input.committed,
+        durationMs: input.durationMs,
+        exitCode: input.exitCode,
+        submitted,
+        taskState: task.state,
+      },
     });
-    return { submitted, taskState: task.state };
+    if (submitted) return { submitted, taskState: task.state, blocked: false };
+    const blocked = await blockStoppedTaskInTx(tx, { orgId: ctx.orgId, projectId: ctx.projectId, onBehalfOf: ctx.onBehalfOf, policyHash: ctx.policyHash }, taskId, {
+      cause: input.outcome === 'completed' ? 'not_submitted' : input.outcome,
+      agentId: ctx.agentId,
+      lastMessage: input.lastMessage ?? null,
+      deniedCommands: input.deniedCommands ?? [],
+    });
+    return { submitted, taskState: blocked ? blocked.state : task.state, blocked: blocked !== null };
   });
+  if (result.blocked) tasksChanged(ctx.projectId);
+  return result;
 }
 
 // 실행 중 도구 사용 묶음. 열린 실행에만 붙는다 — 끝난 뒤 늦게 온 묶음은 받지 않는다.

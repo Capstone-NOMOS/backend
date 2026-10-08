@@ -48,6 +48,8 @@ export const TOPICS_BY_EVENT: Record<EventType, Mapping> = {
   TASK_DISPATCHED: { project: ['room'] },
   AGENT_RUN_STARTED: { project: ['room'] },
   AGENT_RUN_ENDED: { project: ['room', 'tasks'] },
+  TASK_BLOCKED: { project: ['room', 'tasks'] },
+  TASK_RESUMED: { project: ['room', 'tasks'] },
   NOTES_ACK_REQUIRED: {},
   TOOL_DENIED: {},
   PM_REVIEW_DEGRADED: {},

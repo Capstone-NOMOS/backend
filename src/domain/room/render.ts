@@ -61,6 +61,7 @@ function eventText(row: FeedRow): { speaker: RoomMessage['speaker']; text: strin
       return { speaker: 'pm', text: '계획을 적용했습니다' };
     case 'TASK_DISPATCHED': {
       const attempt = num(p.attempt);
+      if (num(p.resumes) > 0 && attempt === 0) return { speaker: 'pm', text: `${title} 다시 실행해 주세요 (재개)` };
       return attempt === 0
         ? { speaker: 'pm', text: `${title} 실행해 주세요` }
         : { speaker: 'pm', text: `${title} 다시 실행해 주세요 (재시도 ${attempt}/${MAX_RETRIES})` };
@@ -71,19 +72,9 @@ function eventText(row: FeedRow): { speaker: RoomMessage['speaker']; text: strin
     case 'TASK_CLAIMED':
       return { speaker: 'nomos', text: `태스크 수령 — ${title} · 구현을 시작합니다` };
     case 'AGENT_RUN_ENDED': {
+      // 제출하지 않았으면 바로 뒤의 TASK_BLOCKED 줄이 사유를 말한다 — 여기서는 끝났다는 사실만.
       const seconds = Math.round(num(p.durationMs) / 1000);
-      if (p.submitted === true) return { speaker: 'nomos', text: `실행을 마쳤습니다 (${seconds}초)` };
-      switch (str(p.outcome)) {
-        case 'timeout':
-          return { speaker: 'nomos', text: `시간 제한을 넘겨 중단했습니다 (${seconds}초) — 제출하지 않았습니다` };
-        case 'failed':
-          return { speaker: 'nomos', text: `비정상 종료했습니다 (exit ${p.exitCode ?? '?'}) — 제출하지 않았습니다` };
-        default:
-          return {
-            speaker: 'nomos',
-            text: p.committed === true ? '실행이 끝났지만 제출하지 않았습니다' : '실행이 끝났지만 커밋이 없어 제출하지 않았습니다',
-          };
-      }
+      return { speaker: 'nomos', text: p.submitted === true ? `실행을 마쳤습니다 (${seconds}초)` : `실행을 마쳤습니다 (${seconds}초, 제출 없음)` };
     }
     case 'ARTIFACT_SUBMITTED': {
       const sha = str(p.commitSha).slice(0, 7);
@@ -106,6 +97,19 @@ function eventText(row: FeedRow): { speaker: RoomMessage['speaker']; text: strin
           return null;
       }
     }
+    case 'TASK_BLOCKED': {
+      const why: Record<string, string> = {
+        not_submitted: '제출하지 않고 끝났습니다',
+        timeout: '시간 제한을 넘겼습니다',
+        failed: '비정상 종료했습니다',
+        unresponsive: '에이전트 응답이 끊겼습니다',
+      };
+      const denied = Array.isArray(p.deniedCommands) && p.deniedCommands.length > 0 ? ` / 거부된 명령: ${(p.deniedCommands as unknown[]).map(str).join(', ')}` : '';
+      const said = str(p.lastMessage) ? ` / 에이전트: "${str(p.lastMessage).slice(0, 200)}"` : '';
+      return { speaker: 'pm', text: `멈췄습니다 — ${why[str(p.cause)] ?? '제출하지 않았습니다'}${said}${denied} → 대표 확인 후 재개가 필요합니다` };
+    }
+    case 'TASK_RESUMED':
+      return { speaker: 'pm', text: `대표가 재개했습니다${p.note ? `: ${str(p.note)}` : ''}` };
     case 'APPROVAL_RESULT':
       return p.decision === 'APPROVE'
         ? { speaker: 'pm', text: '대표가 승인했습니다 → 완료되었습니다' }

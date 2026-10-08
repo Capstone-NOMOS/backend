@@ -2,6 +2,7 @@ import { Router, type Request } from 'express';
 import { z } from 'zod';
 import { ACTIVITY_KINDS } from '../domain/room/repository.js';
 import { endRun, getRoomFeed, listRooms, recordActivity, startRun } from '../domain/room/service.js';
+import { resumeTask } from '../domain/task/stall.js';
 import { TEAM_ROLES } from '../domain/roles.js';
 import type { UserContext } from '../domain/project/visibility.js';
 import { AppError } from '../errors.js';
@@ -26,6 +27,9 @@ const endRunBodySchema = z.object({
   committed: z.boolean(),
   durationMs: z.number().int().min(0),
   exitCode: z.number().int().nullable(),
+  // 제출하지 않았을 때 대표에게 보일 사유(선택). 모델의 마지막 말, 거부된 쉘 명령.
+  lastMessage: z.string().max(2000).nullable().optional(),
+  deniedCommands: z.array(z.string().max(300)).max(20).optional(),
 });
 
 // POST /api/tasks/:taskId/runs/end — Claude 실행 끝. 제출 여부는 서버가 태스크 상태로 정한다.
@@ -56,6 +60,21 @@ roomsRouter.post(
     const { taskId } = req.params as z.infer<typeof taskIdParamsSchema>;
     const { items } = req.body as { items: { kind: (typeof ACTIVITY_KINDS)[number]; target: string }[] };
     res.status(201).json({ data: await recordActivity(agentContextOf(req), taskId, items) });
+  },
+);
+
+const resumeBodySchema = z.object({ note: z.string().trim().max(500).nullable().optional() });
+
+// POST /api/tasks/:taskId/resume — 멈춘 태스크(BLOCKED·AGENT_STOPPED) 재개(대표 전용). READY로 돌아가 같은 역할의 에이전트가 다시 가져간다.
+// 재시도 횟수는 그대로다 — 권한·환경 탓은 에이전트 실패가 아니다.
+roomsRouter.post(
+  '/tasks/:taskId/resume',
+  validate({ params: taskIdParamsSchema, body: resumeBodySchema }),
+  authenticate,
+  async (req, res) => {
+    const { taskId } = req.params as z.infer<typeof taskIdParamsSchema>;
+    const { note } = req.body as z.infer<typeof resumeBodySchema>;
+    res.status(200).json({ data: await resumeTask(userOf(req), taskId, note ?? null) });
   },
 );
 

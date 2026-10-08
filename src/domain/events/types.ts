@@ -26,6 +26,8 @@ export type EventType =
   | 'TASK_DISPATCHED'
   | 'AGENT_RUN_STARTED'
   | 'AGENT_RUN_ENDED'
+  | 'TASK_BLOCKED'
+  | 'TASK_RESUMED'
   | 'REPO_UPDATED'
   | 'TASKS_IMPORTED'
   | 'SPEC_CREATED'
@@ -259,6 +261,8 @@ export type TaskDispatchedPayload = {
   title: string;
   teamRole: string | null;
   attempt: number;
+  // 대표가 재개한 횟수(TASK_RESUMED). 재개하면 같은 attempt라도 다시 보낸다.
+  resumes?: number;
 };
 
 // Executor가 Claude 실행을 시작했다/끝냈다. 끝은 Executor가 아는 결과(정상 종료·시간 초과·비정상)와 커밋 여부를 보고하고,
@@ -266,6 +270,24 @@ export type TaskDispatchedPayload = {
 export type AgentRunStartedPayload = {
   taskId: string;
   attempt: number;
+};
+
+// 에이전트가 제출 없이 멈췄다 → BLOCKED(AGENT_STOPPED). 재시도 횟수는 올리지 않는다 — 권한·환경 탓을 에이전트 실패로 세지 않는다.
+// cause: not_submitted(정상 종료했지만 제출 없음) · timeout · failed(비정상 종료) · unresponsive(감시: 응답이 끊김, system:watchdog).
+// lastMessage는 모델의 마지막 말, deniedCommands는 Executor가 실행 기록에서 뽑은 거부된 명령 — 대표가 무엇을 풀어야 하는지 보인다.
+export type TaskBlockedPayload = {
+  taskId: string;
+  reason: 'AGENT_STOPPED';
+  cause: 'not_submitted' | 'timeout' | 'failed' | 'unresponsive';
+  agentId: string;
+  lastMessage: string | null;
+  deniedCommands: string[];
+};
+
+// 대표가 원인을 해결하고 재개했다 → READY(담당 비움). note는 선택.
+export type TaskResumedPayload = {
+  taskId: string;
+  note: string | null;
 };
 
 export type AgentRunEndedPayload = {
@@ -401,6 +423,8 @@ export type EventPayloadMap = {
   TASK_DISPATCHED: TaskDispatchedPayload;
   AGENT_RUN_STARTED: AgentRunStartedPayload;
   AGENT_RUN_ENDED: AgentRunEndedPayload;
+  TASK_BLOCKED: TaskBlockedPayload;
+  TASK_RESUMED: TaskResumedPayload;
   REPO_UPDATED: RepoUpdatedPayload;
   TASKS_IMPORTED: TasksImportedPayload;
   SPEC_CREATED: SpecCreatedPayload;

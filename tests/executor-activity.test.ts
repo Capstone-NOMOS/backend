@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { ActivityReporter, activityFromStreamLine, toActivity, type ActivityItem } from '../src/executor/activity.js';
+import { ActivityReporter, activityFromStreamLine, RunObserver, toActivity, type ActivityItem } from '../src/executor/activity.js';
 
 // Claude stream-json → 룸 활동 한 줄. 보내는 것은 도구 종류와 대상(작업공간 기준 경로·명령 첫 줄)뿐이다.
 const cwd = path.resolve('/work/space');
@@ -87,5 +87,33 @@ describe('활동 묶어 보내기', () => {
     reporter.push(Array.from({ length: 70 }, (_, i) => ({ kind: 'read' as const, target: `f${i}` })));
     await reporter.close();
     expect(sent.map((b) => b.length)).toEqual([50, 20]);
+  });
+});
+
+describe('멈춤 사유 모으기(RunObserver)', () => {
+  it('거부된 쉘 명령(작업공간 경로 가림)과 마지막 결과 문장을 모은다 — 성공한 명령은 넣지 않는다', () => {
+    const o = new RunObserver(cwd);
+    const slash = cwd.split(path.sep).join('/');
+    o.observe(assistant({ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'git fetch --all' } }));
+    o.observe(JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', is_error: true, content: 'This command requires approval' }] } }));
+    o.observe(assistant({ type: 'tool_use', id: 't2', name: 'Bash', input: { command: 'git status' } }));
+    o.observe(JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't2', content: 'clean' }] } }));
+    o.observe(assistant({ type: 'tool_use', id: 't3', name: 'PowerShell', input: { command: `python -m unittest -s ${slash}/tests` } }));
+    o.observe(JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't3', is_error: true, content: [{ type: 'text', text: 'The following part requires approval' }] }] } }));
+    // 같은 명령은 한 번만.
+    o.observe(assistant({ type: 'tool_use', id: 't4', name: 'Bash', input: { command: 'git fetch --all' } }));
+    o.observe(JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't4', is_error: true, content: 'This command requires approval' }] } }));
+    o.observe(assistant({ type: 'text', text: '중간 설명' }));
+    o.observe(JSON.stringify({ type: 'result', subtype: 'success', result: '통합 확인에 필요한 git merge 권한이 없어 멈춥니다' }));
+    expect(o.summary()).toEqual({
+      lastMessage: '통합 확인에 필요한 git merge 권한이 없어 멈춥니다',
+      deniedCommands: ['git fetch --all', 'python -m unittest -s ./tests'],
+    });
+  });
+
+  it('결과 메시지가 없으면 마지막 assistant 문장을 쓴다', () => {
+    const o = new RunObserver(cwd);
+    o.observe(assistant({ type: 'text', text: '권한이 없어 진행할 수 없습니다' }));
+    expect(o.summary()).toEqual({ lastMessage: '권한이 없어 진행할 수 없습니다', deniedCommands: [] });
   });
 });

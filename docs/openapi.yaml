@@ -464,7 +464,7 @@ components:
         members: { type: array, items: { $ref: '#/components/schemas/ProjectMember' } }
     Task:
       type: object
-      required: [id, projectId, repoId, specId, kind, title, state, teamRole, assigneeAgentId, branchName, blockedReason, retryCount]
+      required: [id, projectId, repoId, specId, kind, title, state, teamRole, assigneeAgentId, branchName, blockedReason, retryCount, claimedAt]
       properties:
         id: { type: string, format: uuid }
         projectId: { type: string, format: uuid }
@@ -476,7 +476,14 @@ components:
         teamRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true }
         assigneeAgentId: { type: string, format: uuid, nullable: true }
         branchName: { type: string, nullable: true }
-        blockedReason: { type: string, enum: [DISPUTE, DEPENDENCY, QUESTION], nullable: true, description: 'state=BLOCKED일 때만 있다' }
+        blockedReason:
+          type: string
+          enum: [DISPUTE, DEPENDENCY, QUESTION, AGENT_STOPPED]
+          nullable: true
+          description: |
+            state=BLOCKED일 때만 있다.
+            AGENT_STOPPED = 에이전트가 제출 없이 멈췄다(권한·환경·응답 끊김). 사유는 이벤트 TASK_BLOCKED(룸 피드)에 있고, 대표가 `POST /tasks/{taskId}/resume`으로 재개한다. 재시도 횟수는 오르지 않는다
+        claimedAt: { type: string, format: date-time, nullable: true, description: '마지막 수령 시각. 화면의 "수령 후 경과"에 쓴다(CLAIMED·IN_PROGRESS일 때 의미가 있다)' }
         retryCount: { type: integer, description: 'FAIL마다 오른다. 3이면 ESCALATED' }
     Artifact:
       type: object
@@ -3305,7 +3312,7 @@ paths:
             application/json:
               schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/Task' } } }
               example:
-                data: { id: 7f3b2e5a-9c4d-4e3f-b0a1-2c3d4e5f6071, projectId: '{{PROJECT_ID}}', repoId: '{{REPO_API}}', specId: null, kind: INTEGRATION, title: T-052 대기열 신청 버튼, state: READY, teamRole: FRONTEND, assigneeAgentId: null, branchName: null, blockedReason: null, retryCount: 0 }
+                data: { id: 7f3b2e5a-9c4d-4e3f-b0a1-2c3d4e5f6071, projectId: '{{PROJECT_ID}}', repoId: '{{REPO_API}}', specId: null, kind: INTEGRATION, title: T-052 대기열 신청 버튼, state: READY, teamRole: FRONTEND, assigneeAgentId: null, branchName: null, blockedReason: null, retryCount: 0, claimedAt: null }
         '403':
           description: 대표가 아니거나 다른 조직
           content:
@@ -3415,7 +3422,9 @@ paths:
       summary: Claude 실행 종료 보고 (Executor)
       description: |
         Claude가 끝나면 부른다(이벤트 `AGENT_RUN_ENDED`). **제출 여부는 서버가 태스크 상태로 정한다** — 이 에이전트가 아직 잡고 있으면
-        제출하지 않은 것이다. 룸에 "실행을 마쳤습니다" 또는 "실행이 끝났지만 제출하지 않았습니다"가 남아, 막힌 태스크가 대표에게 보인다.
+        제출하지 않은 것이다. 그때는 같은 트랜잭션에서 태스크가 **BLOCKED(AGENT_STOPPED)**로 바뀌고(이벤트 `TASK_BLOCKED`), 룸에
+        "멈췄습니다 — 사유 / 거부된 명령 → 대표 확인 후 재개가 필요합니다"가 남는다. 재시도 횟수는 오르지 않는다.
+        Executor가 꺼져 이 보고조차 오지 않으면 서버 감시가 45분 동안 응답이 없는 수령을 같은 방식으로 멈춘다.
         열린 실행(시작하고 아직 안 끝낸 것)이 없으면 409 `RUN_NOT_OPEN`.
       security: [{ agentToken: [] }]
       parameters: [{ $ref: '#/components/parameters/TaskId' }]
@@ -3431,13 +3440,15 @@ paths:
                 committed: { type: boolean, description: '실행 동안 새 커밋이 생겼나' }
                 durationMs: { type: integer, minimum: 0 }
                 exitCode: { type: integer, nullable: true }
-            example: { outcome: completed, committed: true, durationMs: 42000, exitCode: 0 }
+                lastMessage: { type: string, maxLength: 2000, nullable: true, description: '모델의 마지막 말. 제출하지 않았으면 멈춤 사유로 룸에 보인다' }
+                deniedCommands: { type: array, maxItems: 20, items: { type: string, maxLength: 300 }, description: '실행 중 거부된 쉘 명령(Executor가 실행 기록에서 뽑는다)' }
+            example: { outcome: completed, committed: false, durationMs: 48000, exitCode: 0, lastMessage: 'git merge 권한이 없어 통합 확인을 할 수 없습니다', deniedCommands: ['git fetch --all'] }
       responses:
         '200':
           description: 종료 기록
           content:
             application/json:
-              schema: { type: object, required: [data], properties: { data: { type: object, required: [submitted, taskState], properties: { submitted: { type: boolean }, taskState: { type: string } } } } }
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [submitted, taskState, blocked], properties: { submitted: { type: boolean }, taskState: { type: string }, blocked: { type: boolean, description: '제출하지 않아 BLOCKED(AGENT_STOPPED)로 멈췄다' } } } } }
         '409':
           description: 열린 실행이 없음
           content:
@@ -3490,6 +3501,44 @@ paths:
             application/json:
               example:
                 error: { code: RUN_NOT_OPEN, message: no open run for task ... }
+
+  /tasks/{taskId}/resume:
+    post:
+      tags: [룸]
+      summary: 멈춘 태스크 재개 (대표 전용)
+      description: |
+        에이전트가 제출 없이 멈춘 태스크(BLOCKED·`AGENT_STOPPED`)를 원인을 해결한 뒤 다시 돌린다. READY로 돌아가고 담당이 비어
+        같은 역할의 에이전트가 다시 가져간다(룸에 "다시 실행해 주세요 (재개)"). **재시도 횟수는 그대로다** — 권한·환경 탓은 에이전트 실패가 아니다.
+        멈춘 상태가 아니면 409 `TASK_NOT_STOPPED`.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/TaskId' }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: { type: string, maxLength: 500, nullable: true, description: '무엇을 해결했는지(룸에 보인다)' }
+            example: { note: 'python 실행을 허용했습니다' }
+      responses:
+        '200':
+          description: 재개됨(READY)
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/Task' } } }
+        '403':
+          description: 대표가 아님
+          content:
+            application/json:
+              example:
+                error: { code: NOT_REPRESENTATIVE, message: only the representative can resume a stopped task }
+        '409':
+          description: 멈춘 태스크가 아님
+          content:
+            application/json:
+              example:
+                error: { code: TASK_NOT_STOPPED, message: 'task ... is not stopped (state CLAIMED, reason -)' }
 
   /tasks/{taskId}/branch:
     patch:
