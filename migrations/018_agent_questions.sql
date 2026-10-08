@@ -51,6 +51,12 @@ CREATE INDEX idx_agent_questions_project ON agent_questions (project_id, created
 CREATE INDEX idx_agent_questions_pending ON agent_questions (project_id) WHERE status = 'pending';
 CREATE INDEX idx_agent_questions_task ON agent_questions (task_id);
 
+-- 프로젝트별 질문 중계 스위치. 기본 켜짐(대표 결정). 끄면 에이전트가 AskUserQuestion을 쓸 수 없고(Executor가 권한 도구를 붙이지 않는다)
+-- 다른 역할 소관은 GOTCHA "가정함"으로 남기고 진행한다. 끄는 이유: 대조군 실험, 답할 사람이 없을 때, 상담 실행 비용(답할 쪽 구독), 문제 시 되돌리기.
+-- 시작(G1) 전까지만 바꿀 수 있다 — 실행 중에 바뀌면 같은 프로젝트 안에서 결과가 섞인다.
+ALTER TABLE projects ADD COLUMN question_relay boolean NOT NULL DEFAULT true;
+
 -- Down Migration
 
+ALTER TABLE projects DROP COLUMN IF EXISTS question_relay;
 DROP TABLE IF EXISTS agent_questions;

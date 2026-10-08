@@ -46,7 +46,7 @@ async function account(loginId: string) {
 }
 
 // 대표, FE 담당, BE 담당. FE 태스크를 FE 에이전트가 잡은 상태까지.
-async function world() {
+async function world(options: { questionRelay?: boolean } = {}) {
   const rep = await account('rep');
   const fe = await account('fe');
   const be = await account('be');
@@ -61,7 +61,10 @@ async function world() {
     actorOrgRole: 'REPRESENTATIVE',
     repos: [{ fullName: 'acme/web', ownerRole: 'FRONTEND' }, { fullName: 'acme/api', ownerRole: 'BACKEND' }],
   });
-  const { project } = await createProject(orgId, rep.userId, { name: 'P', autonomyPreset: 'L2', pmBudgetUsd: 5, repoIds: [web!.id, api!.id] });
+  const { project } = await createProject(orgId, rep.userId, {
+    name: 'P', autonomyPreset: 'L2', pmBudgetUsd: 5, repoIds: [web!.id, api!.id],
+    ...(options.questionRelay === undefined ? {} : { questionRelay: options.questionRelay }),
+  });
   const repActor = { userId: rep.userId, orgId, orgRole: 'REPRESENTATIVE' as const };
   const feAgent = await connectAgent({ connectKey: fe.connectKey, agentName: 'fe-mbp', harness: 'test', skills: [], maxConcurrent: 1 });
   const beAgent = await connectAgent({ connectKey: be.connectKey, agentName: 'be-mbp', harness: 'test', skills: [], maxConcurrent: 1 });
@@ -352,5 +355,73 @@ describe('만료', () => {
     const w = await world();
     const asked = await w.feClient.askQuestions(w.taskId, [Q1]);
     await expect(w.beClient.getQuestion(w.taskId, asked.id)).rejects.toMatchObject({ code: 'QUESTION_NOT_FOUND' });
+  });
+});
+
+describe('질문 중계 스위치 — 기본 켜짐, 끌 수 있게', () => {
+  it('기본은 켜짐이고 브리핑에 실린다', async () => {
+    const w = await world();
+    const { rows } = await pool.query(`SELECT question_relay FROM projects WHERE id = $1`, [w.projectId]);
+    expect(rows[0]).toEqual({ question_relay: true });
+    expect((await w.feClient.getBriefing(w.taskId)).questionRelay).toBe(true);
+  });
+
+  it('끈 프로젝트는 질문을 받지 않는다(409 QUESTION_RELAY_OFF — 가정을 GOTCHA로 남기라고 안내) — 브리핑도 꺼짐', async () => {
+    const w = await world({ questionRelay: false });
+    expect((await w.feClient.getBriefing(w.taskId)).questionRelay).toBe(false);
+    const res = await http('POST', `/tasks/${w.taskId}/questions`, await agentToken(w.feClient), { questions: [Q1] });
+    expect(res.status).toBe(409);
+    expect(res.json.error?.code).toBe('QUESTION_RELAY_OFF');
+    expect((await pool.query(`SELECT 1 FROM agent_questions`)).rowCount).toBe(0);
+  });
+
+  it('대표가 시작 전에만 바꾼다 — 바꾸면 PROJECT_SETTINGS_UPDATED, 시작 뒤 403, 팀원 403', async () => {
+    const rep = await account('rep2');
+    const { orgId } = await createOrganization(rep.userId, 'Beta');
+    const [repo] = await connectRepos({ orgId, actorUserId: rep.userId, actorOrgRole: 'REPRESENTATIVE', repos: [{ fullName: 'beta/api', ownerRole: 'BACKEND' }] });
+    const { project } = await createProject(orgId, rep.userId, { name: 'Q', autonomyPreset: 'L2', pmBudgetUsd: 5, repoIds: [repo!.id] });
+    const off = await http('PATCH', `/projects/${project.id}/settings`, (await rep.token()), { questionRelay: false });
+    expect(off.status).toBe(200);
+    expect((off.json.data as unknown as { questionRelay: boolean }).questionRelay).toBe(false);
+    const { rows } = await pool.query(`SELECT on_behalf_of, payload FROM events WHERE type = 'PROJECT_SETTINGS_UPDATED'`);
+    expect(rows).toEqual([{ on_behalf_of: rep.userId, payload: { before: { questionRelay: true }, after: { questionRelay: false } } }]);
+
+    const w = await world(); // 시작한 프로젝트
+    expect((await http('PATCH', `/projects/${w.projectId}/settings`, (await w.rep.token()), { questionRelay: false })).json.error?.code).toBe('PROJECT_STARTED');
+    expect((await http('PATCH', `/projects/${w.projectId}/settings`, (await w.fe.token()), { questionRelay: false })).status).toBe(403);
+  });
+});
+
+describe('내가 답할 질문 (GET /me/questions)', () => {
+  it('대표는 전부, 팀원은 자기 역할이 대상인 것만 — 기본은 대기 중', async () => {
+    const w = await world();
+    const toBe = await w.feClient.askQuestions(w.taskId, [Q1]); // FE → BACKEND
+    const toFe = await w.beClient.askQuestions(w.beTaskId, [Q2]); // BE → FRONTEND
+    const ids = async (token: string | Promise<string>, qs = '') =>
+      ((await http('GET', `/me/questions${qs}`, await token)).json.data as unknown as { questions: { question: { id: string }; projectName: string; taskTitle: string }[] }).questions;
+
+    expect((await ids((await w.be.token()))).map((q) => q.question.id)).toEqual([toBe.id]);
+    expect((await ids((await w.fe.token()))).map((q) => q.question.id)).toEqual([toFe.id]);
+    expect((await ids((await w.rep.token()))).map((q) => q.question.id).sort()).toEqual([toBe.id, toFe.id].sort());
+    expect((await ids((await w.be.token())))[0]).toMatchObject({ projectName: 'P', taskTitle: 'T-1 멤버 목록 화면' });
+
+    // 답하면 대기 목록에서 빠지고, status=all이면 보인다.
+    await http('POST', `/questions/${toBe.id}/answer`, (await w.be.token()), { answers: { [Q1.question]: '{ members: [...] }' } });
+    expect(await ids((await w.be.token()))).toEqual([]);
+    expect((await ids((await w.be.token()), '?status=all')).map((q) => q.question.id)).toEqual([toBe.id]);
+  });
+});
+
+describe('만료 주기 정리', () => {
+  it('아무도 읽지 않아도 기한이 지난 질문은 만료되고, 그 질문으로 멈춘 태스크는 ESCALATED', async () => {
+    const w = await world();
+    const asked = await w.feClient.askQuestions(w.taskId, [Q1]);
+    await w.feClient.detachQuestion(w.taskId, asked.id); // 답을 기다리며 내려놓음(BLOCKED·QUESTION)
+    await pool.query(`UPDATE agent_questions SET expires_at = now() - interval '1 minute' WHERE id = $1`, [asked.id]); // 시간 경과(서비스 함수 없음)
+    const { sweepExpiredQuestions } = await import('../src/domain/question/service.js');
+    expect(await sweepExpiredQuestions()).toBe(1);
+    const { rows } = await pool.query(`SELECT q.status, t.state FROM agent_questions q JOIN tasks t ON t.id = q.task_id WHERE q.id = $1`, [asked.id]);
+    expect(rows[0]).toEqual({ status: 'expired', state: 'ESCALATED' });
+    expect(await sweepExpiredQuestions()).toBe(0);
   });
 });

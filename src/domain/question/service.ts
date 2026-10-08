@@ -1,4 +1,5 @@
 import type { PoolClient } from 'pg';
+import { logger } from '../../config/logger.js';
 import { pool, withTransaction, type Queryable } from '../../config/db.js';
 import { env } from '../../config/env.js';
 import { AppError } from '../../errors.js';
@@ -27,6 +28,8 @@ import {
   type AskedQuestion,
   type ConsultRepo,
   type QuestionDraft,
+  listDueQuestions,
+  listQuestionsForAnswerer,
   type QuestionStatus,
 } from './repository.js';
 
@@ -94,6 +97,10 @@ export async function askQuestion(ctx: AgentContext, taskId: string, questions: 
     return { membership, task };
   };
   const { membership, task } = await assertAsker(pool);
+  const project = await findProjectById(pool, ctx.projectId);
+  if (project?.questionRelay === false) {
+    throw new AppError('QUESTION_RELAY_OFF', 'question relay is off for this project — record the assumption as a GOTCHA note and continue');
+  }
   const [spec, repo, members] = await Promise.all([
     task.specId ? findSpecForTask(pool, task.specId) : Promise.resolve(null),
     findRepoById(pool, task.repoId),
@@ -174,6 +181,22 @@ async function settleExpiry(question: AgentQuestion, orgId: string): Promise<Age
   return result;
 }
 
+// 주기 정리: 만료는 원래 질문을 읽을 때 처리되는데(settleExpiry), 아무도 읽지 않으면 묻는 쪽 태스크가 "답을 기다림"에 영원히 남는다.
+// 그래서 서버가 주기적으로 지난 질문을 만료시키고 그 태스크를 ESCALATED로 올린다. startServer에서만 건다(테스트·migrate에는 걸지 않는다).
+export async function sweepExpiredQuestions(): Promise<number> {
+  const due = await listDueQuestions(pool);
+  for (const d of due) await settleExpiry(d.question, d.orgId);
+  return due.length;
+}
+
+export function startQuestionExpirySweep(intervalMs = 10 * 60 * 1000): () => void {
+  const timer = setInterval(() => {
+    sweepExpiredQuestions().catch((err: unknown) => logger.warn('question expiry sweep failed', { error: String(err) }));
+  }, intervalMs);
+  timer.unref();
+  return () => clearInterval(timer);
+}
+
 // 이 태스크에 대기 중인 질문이 더 없으면 멈춘 태스크를 다시 잡을 수 있게 돌려놓는다. 답을 저장한 트랜잭션 안에서 부른다.
 async function resumeIfAnswered(tx: PoolClient, taskId: string): Promise<boolean> {
   if ((await countPendingForTask(tx, taskId)) > 0) return false;
@@ -220,6 +243,25 @@ export async function listProjectQuestions(
   await assertProjectVisibleToUser(pool, actor, projectId);
   const questions = await listQuestions(pool, projectId, status, limit);
   return Promise.all(questions.map((q) => settleExpiry(q, actor.orgId)));
+}
+
+// 내가 답할 질문(조직 전체) — 알림 배지와 "답할 질문" 목록. 대표는 전부, 팀원은 자기 에이전트가 맡은 역할을 대상으로 한 것만.
+// 만료 시각이 지난 대기 질문은 목록을 읽는 순간 만료로 정리한다(프로젝트 목록과 같은 규칙).
+export async function listMyQuestions(
+  actor: UserContext,
+  status: QuestionStatus | 'all',
+  limit: number,
+): Promise<{ question: AgentQuestion; projectName: string; taskTitle: string }[]> {
+  const rows = await listQuestionsForAnswerer(pool, {
+    orgId: actor.orgId,
+    userId: actor.userId,
+    isRepresentative: actor.orgRole === 'REPRESENTATIVE',
+    status,
+    limit,
+  });
+  const settled = await Promise.all(rows.map(async (r) => ({ ...r, question: await settleExpiry(r.question, actor.orgId) })));
+  // 읽는 사이 만료된 것은 대기 목록에서 뺀다.
+  return status === 'all' ? settled : settled.filter((r) => r.question.status === status);
 }
 
 // 상담 실행이 맡을 질문과 읽을 레포 — 대상 역할 에이전트의 Executor가 묻는다.

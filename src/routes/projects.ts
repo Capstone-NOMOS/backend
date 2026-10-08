@@ -1,6 +1,7 @@
 import { Router, type Request } from 'express';
 import { z } from 'zod';
 import {
+  updateProjectSettings,
   assignMemberWithInvites,
   retryGithubInvites,
   startProject,
@@ -40,6 +41,8 @@ const createProjectBodySchema = z.object({
   budgetUsd: z.number().positive().optional(),
   deadline: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'deadline must be YYYY-MM-DD').optional(),
   repoIds: z.array(z.string().uuid()).min(1).max(20),
+  // 질문 중계(에이전트가 다른 역할에게 묻기). 생략하면 켜짐.
+  questionRelay: z.boolean().optional(),
 });
 
 // POST /api/orgs/:orgId/projects — 프로젝트 생성(대표 전용).
@@ -113,6 +116,21 @@ projectsRouter.delete(
     const { projectId, agentId } = req.params as z.infer<typeof memberParamsSchema>;
     const members = await unassignMember(actorOf(req), projectId, agentId);
     res.status(200).json({ data: { members } });
+  },
+);
+
+const settingsBodySchema = z.object({ questionRelay: z.boolean() });
+
+// PATCH /api/projects/:projectId/settings — 프로젝트 설정(대표 전용, 시작 전에만). 지금은 질문 중계 스위치뿐.
+projectsRouter.patch(
+  '/projects/:projectId/settings',
+  validate({ params: projectIdParamsSchema, body: settingsBodySchema }),
+  authenticate,
+  requireRepresentative,
+  async (req, res) => {
+    const { projectId } = req.params as z.infer<typeof projectIdParamsSchema>;
+    const body = req.body as z.infer<typeof settingsBodySchema>;
+    res.status(200).json({ data: await updateProjectSettings(actorOf(req), projectId, body) });
   },
 );
 

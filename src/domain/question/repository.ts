@@ -192,3 +192,37 @@ export async function listRoleRepos(db: Queryable, projectId: string, role: Team
   );
   return rows.map((r) => ({ id: r.id, fullName: r.full_name, cloneUrl: r.clone_url ?? null, defaultBranch: r.default_branch }));
 }
+
+// 이 사람이 답할 질문(조직 전체) — 알림 배지·"내가 답할 질문" 목록. 답할 자격(answerQuestion과 같은 정의):
+// 그 프로젝트에서 질문의 대상 역할(target_role)을 맡은 에이전트의 주인, 또는 대표(전부).
+export async function listQuestionsForAnswerer(
+  db: Queryable,
+  input: { orgId: string; userId: string; isRepresentative: boolean; status: QuestionStatus | 'all'; limit: number },
+): Promise<{ question: AgentQuestion; projectName: string; taskTitle: string }[]> {
+  const { rows } = await db.query(
+    `SELECT q.*, p.name AS project_name, t.title AS task_title
+       FROM agent_questions q
+       JOIN projects p ON p.id = q.project_id
+       JOIN tasks t ON t.id = q.task_id
+      WHERE p.org_id = $1
+        AND ($2 = 'all' OR q.status = $2)
+        AND ($3 OR EXISTS (
+              SELECT 1 FROM project_members m JOIN agents a ON a.id = m.agent_id
+               WHERE m.project_id = q.project_id AND m.team_role = q.target_role AND a.user_id = $4))
+      ORDER BY q.created_at DESC, q.id
+      LIMIT $5`,
+    [input.orgId, input.status, input.isRepresentative, input.userId, input.limit],
+  );
+  return rows.map((r) => ({ question: toQuestion(r), projectName: r.project_name as string, taskTitle: r.task_title as string }));
+}
+
+// 만료 시각이 지난 대기 질문(조직 id와 함께) — 아무도 읽지 않아도 만료를 처리하는 주기 정리가 쓴다.
+export async function listDueQuestions(db: Queryable, limit = 100): Promise<{ question: AgentQuestion; orgId: string }[]> {
+  const { rows } = await db.query(
+    `SELECT q.*, p.org_id AS question_org_id FROM agent_questions q JOIN projects p ON p.id = q.project_id
+      WHERE q.status = 'pending' AND q.expires_at <= now()
+      ORDER BY q.expires_at LIMIT $1`,
+    [limit],
+  );
+  return rows.map((r) => ({ question: toQuestion(r), orgId: r.question_org_id as string }));
+}

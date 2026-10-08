@@ -50,6 +50,11 @@ describe('MCP 격리', () => {
     expect(args[args.indexOf('--allowedTools') + 1]).not.toContain('permission_prompt');
   });
 
+  it('질문 중계를 끈 프로젝트면 권한 도구를 붙이지 않는다 — AskUserQuestion이 없어진다(실험: 그냥 -p에는 없다)', () => {
+    expect(buildClaudeArgs({ ...OPTIONS, questionRelay: false })).not.toContain('--permission-prompt-tool');
+    expect(buildClaudeArgs({ ...OPTIONS, questionRelay: true })).toContain('--permission-prompt-tool');
+  });
+
   it('도구 이름은 설정의 서버 이름에서 파생된다', () => {
     const serverName = Object.keys(
       JSON.parse(buildMcpConfig({ serverPath: 's.js' })).mcpServers,

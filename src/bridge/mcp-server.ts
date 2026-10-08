@@ -136,7 +136,7 @@ server.registerTool(
   {
     title: 'Publish a handover note',
     description:
-      'Record what the next person needs to know about the task you claimed: what you implemented, what you decided, a gotcha you hit, or a deviation from the spec. This is a record, not a chat message — there is no reply and no recipient. Keep each key point to one short sentence; the server rejects notes that are too long instead of truncating them. Claims about another agent belong in raise_dispute, not here.',
+      'Record what the next person needs to know about the task you claimed: what you implemented, what you decided, a gotcha you hit, or a deviation from the spec. This is a record, not a chat message — there is no reply and no recipient. Keep each key point to one short sentence; the server rejects notes that are too long instead of truncating them. Claims about another agent belong in raise_dispute, not here. Do not publish DECIDED for a contract another role owns (e.g. the response shape or status codes of an API that role builds) — if you had to assume one, publish a GOTCHA saying it is an assumption that role must confirm.',
     inputSchema: {
       task_id: z.string().describe('The claimed task id'),
       kind: z.enum(['IMPLEMENTED', 'DECIDED', 'GOTCHA', 'DEVIATION']).describe('Note kind'),

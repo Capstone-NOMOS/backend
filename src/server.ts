@@ -5,6 +5,7 @@ import { logger } from './config/logger.js';
 import { assertSchemaUpToDate } from './config/migrations.js';
 import { recoverInterruptedPlans } from './domain/pm/service.js';
 import { startStallWatchdog } from './domain/task/stall.js';
+import { startQuestionExpirySweep } from './domain/question/service.js';
 import { attachRealtime } from './realtime/index.js';
 
 // 서버 기동. 로컬(index.ts, npm run dev)과 운영(boot.ts server)이 같은 경로를 탄다.
@@ -15,6 +16,8 @@ export async function startServer(): Promise<void> {
   await recoverInterruptedPlans();
   // 응답이 끊긴 에이전트가 잡고 있는 태스크를 멈춤(BLOCKED)으로 바꾼다 — Executor가 꺼지면 종료 보고조차 오지 않는다.
   startStallWatchdog();
+  // 아무도 읽지 않은 질문도 기한이 지나면 만료시킨다 — 묻는 쪽 태스크가 "답을 기다림"에 영원히 남지 않게.
+  startQuestionExpirySweep();
   const app = createApp();
   await new Promise<void>((resolve) => {
     const server = app.listen(env.PORT, () => {

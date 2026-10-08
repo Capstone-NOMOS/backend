@@ -1,6 +1,6 @@
 import { Router, type Request } from 'express';
 import { z } from 'zod';
-import { answerQuestion, askQuestion, detachFromQuestion, getQuestionForAgent, listConsultJobs, listProjectQuestions, submitDraft } from '../domain/question/service.js';
+import { answerQuestion, askQuestion, detachFromQuestion, getQuestionForAgent, listConsultJobs, listProjectQuestions, submitDraft, listMyQuestions } from '../domain/question/service.js';
 import type { UserContext } from '../domain/project/visibility.js';
 import { agentContextOf, authenticateAgent } from '../middleware/agent-auth.js';
 import { authenticate, orgIdOf } from '../middleware/auth.js';
@@ -89,6 +89,12 @@ questionsRouter.post(
 const listQuery = z.object({
   status: z.enum(['pending', 'agent_answered', 'answered', 'expired', 'self_owned', 'all']).default('pending'),
   limit: z.coerce.number().int().min(1).max(200).default(50),
+});
+
+// GET /api/me/questions — 내가 답할 질문(조직 전체). 알림 배지·목록용. 기본은 대기(pending)만.
+questionsRouter.get('/me/questions', validate({ query: listQuery }), authenticate, async (req, res) => {
+  const { status, limit } = req.query as unknown as z.infer<typeof listQuery>;
+  res.status(200).json({ data: { questions: await listMyQuestions(actorOf(req), status, limit) } });
 });
 
 // GET /api/projects/:projectId/questions — 답할 사람이 보는 목록(볼 수 있는 범위는 태스크와 같다).

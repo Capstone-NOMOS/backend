@@ -72,6 +72,7 @@ type Briefing = {
   notes: { id: string }[];
   lastRejection: { reason: string; commitSha: string | null } | null;
   answeredQuestions?: { question: string; answer: string; source: string }[];
+  questionRelay?: boolean;
   notesBlock: string;
   writablePaths: { pathPattern: string }[];
   claudeSettings: unknown;
@@ -165,6 +166,8 @@ async function handleTask(client: NomosClient, projectId: string, task: TaskSumm
     prompt: buildTaskPrompt(briefing, workspace.branch, { allowedCommands: ALLOWED_BASH_PREFIXES, setup: setup.steps }),
     mcpConfigPath,
     pathPrepend: setup.venvBin,
+    // 질문 중계가 꺼진 프로젝트(또는 옛 서버)면 권한 도구를 붙이지 않는다 — AskUserQuestion이 없어진다.
+    questionRelay: briefing.questionRelay === true,
     onStdoutLine: (line: string) => {
       observer.observe(line);
       reporter?.push(activityFromStreamLine(line, workspace.dir));

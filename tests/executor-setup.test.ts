@@ -76,3 +76,26 @@ describe('허용 명령과 프롬프트', () => {
     expect(prompt).toContain('막힌 이유를 마지막 메시지에');
   });
 });
+
+describe('질문 중계 스위치와 프롬프트', () => {
+  const brief = (questionRelay?: boolean) =>
+    buildTaskPrompt(
+      { task: { id: 't1', title: 'T', teamRole: 'FRONTEND' }, repo: { fullName: 'a/b' }, spec: null, notesBlock: '', writablePaths: [{ pathPattern: '**' }], ...(questionRelay === undefined ? {} : { questionRelay }) },
+      'task/t1',
+    );
+
+  it('켜져 있으면 AskUserQuestion으로 물으라고, 꺼져 있으면(옛 서버 포함) 가정하고 GOTCHA로 남기라고 한다', () => {
+    expect(brief(true)).toContain('AskUserQuestion으로 물어본다');
+    for (const p of [brief(false), brief()]) {
+      expect(p).not.toContain('AskUserQuestion');
+      expect(p).toContain('가장 단순한 쪽으로 가정하고 진행');
+    }
+  });
+
+  it('스위치와 상관없이 다른 역할 소관 계약은 DECIDED가 아니라 GOTCHA "가정함"으로 (실험 E6)', () => {
+    for (const p of [brief(true), brief(false)]) {
+      expect(p).toContain('DECIDED로 남기지 않는다 — 네 역할(FRONTEND)이 정할 수 있는 것이 아니다');
+      expect(p).toContain('가정함 — <그 역할> 확인 필요');
+    }
+  });
+});

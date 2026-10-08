@@ -18,6 +18,8 @@ export type Project = {
   startedAt: string | null;
   createdBy: string;
   createdAt: string;
+  // 질문 중계(018). 기본 켜짐, 시작 전까지만 바꿀 수 있다.
+  questionRelay: boolean;
 };
 
 // `date` 컬럼은 pg가 JS Date(로컬 자정)로 파싱한다. 그대로 JSON에 실으면 UTC 타임스탬프가 되어
@@ -48,6 +50,7 @@ function toProject(row: QueryResultRow): Project {
     startedAt: row.started_at,
     createdBy: row.created_by,
     createdAt: row.created_at,
+    questionRelay: row.question_relay !== false,
   };
 }
 
@@ -66,12 +69,13 @@ export async function insertProject(
     constitution: unknown;
     constitutionHash: string;
     createdBy: string;
+    questionRelay: boolean;
   },
 ): Promise<Project> {
   const { rows } = await db.query(
     `INSERT INTO projects (org_id, name, autonomy_preset, policy_hash, constitution, constitution_hash,
-                           pm_budget_usd, budget_usd, deadline, status, created_by)
-     VALUES ($1, $2, $3, 'pending', $4::jsonb, $5, $6, $7, $8, 'planning', $9)
+                           pm_budget_usd, budget_usd, deadline, status, created_by, question_relay)
+     VALUES ($1, $2, $3, 'pending', $4::jsonb, $5, $6, $7, $8, 'planning', $9, $10)
      RETURNING *`,
     [
       input.orgId,
@@ -83,6 +87,7 @@ export async function insertProject(
       input.budgetUsd,
       input.deadline,
       input.createdBy,
+      input.questionRelay,
     ],
   );
   return toProject(rows[0]!);
@@ -385,4 +390,10 @@ export async function listLatestInvites(db: Queryable, projectId: string): Promi
     );
   }
   return byAgent;
+}
+
+// 질문 중계 스위치(시작 전에만 — 호출부가 확인한다).
+export async function updateQuestionRelay(db: Queryable, projectId: string, enabled: boolean): Promise<Project> {
+  const { rows } = await db.query(`UPDATE projects SET question_relay = $2 WHERE id = $1 RETURNING *`, [projectId, enabled]);
+  return toProject(rows[0]!);
 }

@@ -461,6 +461,25 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
 - 결정 뒤 `tasksChanged` — 승인이면 뒤 태스크가 풀리고 반려면 이 태스크가 다시 READY다.
 - 015는 이미 `AWAITING_APPROVAL`에 멈춰 있던 태스크에 **지금 DB 값으로** 카드를 만든다(`payload.backfilled: true`, 단계 결과 없음).
 
+### 질문 중계 (`domain/question`, 018) — 실험 브랜치
+
+에이전트가 다른 역할이 정할 결정을 AskUserQuestion으로 묻고, 답을 받아 같은 실행에서 이어 간다. 근거는 헤드리스 실험(E1~E6, 메모리 `headless-askuserquestion`).
+
+- **AskUserQuestion은 `--permission-prompt-tool`을 붙여야 생긴다**(그냥 `-p`에는 없다). 권한 도구(`bridge/permission.ts`)는 **AskUserQuestion만 처리하고 나머지는 전부 거부**한다 —
+  도구가 허용하면 셸·폴더 밖 쓰기가 실제로 실행된다(E2). 오류·종료도 거부다(fail closed). settings.json deny는 도구까지 오지도 않는다.
+- 답은 `{질문 문장: 답}`이고 **키가 글자까지 같아야** 한다(E3) — 사람 답 API가 422로 막는다. 답이 없을 때의 거부 문구는 "커밋하지 말고 멈춰라"를 담는다(E4: 지시가 없으면 추측해 커밋한다).
+- 실행 안에서 `NOMOS_QUESTION_INLINE_WAIT_MS`(3분)만 기다리고, 넘으면 태스크를 내려놓는다(BLOCKED·`QUESTION`, 담당 비움). 답이 다 오면 READY → 다시 가져가며 브리핑의 `answeredQuestions`로 받는다.
+  30분 MCP 무응답 한도(E1)를 실행이 붙잡고 기다리지 않는 이유다.
+- **상담 실행**: 답할 역할의 Executor가 자기 작업공간을 `--tools Read,Grep,Glob` + 빈 MCP + `--strict-mcp-config`로 읽어 초안을 낸다(쓰기·셸·웹 없음).
+  질문 전부가 코드·명세에 정해져 있으면(decided) 초안이 곧 답(`agent_answered`, 사람 미확인) — 아니면 사람이 답한다(대상 역할 담당 또는 대표). 상담은 읽은 순간의 스냅샷이다.
+- **만료 3일** — 읽을 때(settleExpiry)와 **주기 정리**(`startQuestionExpirySweep`, `startServer`에서만)가 만료시키고 그 질문으로 멈춘 태스크를 ESCALATED로 올린다.
+  주기 정리가 없으면 아무도 읽지 않은 질문 때문에 태스크가 영원히 기다린다.
+- **프로젝트 스위치 `projects.question_relay`(기본 켜짐)**: 끄면 서버가 질문을 409 `QUESTION_RELAY_OFF`로 거부하고, 브리핑의 `questionRelay=false`를 보고 Executor가 권한 도구를 붙이지 않으며
+  프롬프트는 "가정하고 GOTCHA로 남겨라"가 된다(옛 서버라 필드가 없으면 꺼짐으로 본다). **시작(G1) 전에만** 바꾼다(`PATCH /projects/:id/settings`, `PROJECT_SETTINGS_UPDATED`) —
+  끄는 이유: 대조군 실험, 답할 사람이 없을 때, 상담 실행 비용(답할 쪽 구독), 문제 시 되돌리기.
+- **다른 역할 소관 계약은 DECIDED로 남기지 않는다**(스위치와 무관, E6: 지어낸 BE 계약을 DECIDED로 발행했다) — 가정했다면 GOTCHA "가정함 — <역할> 확인 필요".
+- **`GET /me/questions`**: 내가 답할 질문(대표는 전부, 팀원은 자기 역할이 대상인 것) — 알림 배지용. 답할 자격 정의는 `answerQuestion`과 같아야 한다.
+
 ### 룸 (`domain/room`, 017) — 보기 전용
 
 룸 = **프로젝트 × 역할**. 테이블이 없다(역할당 에이전트가 하나라 구성이 저절로 정해진다). 피드는 세 가지를 시각순으로 섞은 한 줄씩이고 **문장은 서버가 만든다**(`room/render.ts`).

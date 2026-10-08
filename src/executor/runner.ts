@@ -45,6 +45,7 @@ export type RunInput = {
   mcpConfigPath: string;
   model?: string;
   timeoutMs?: number;
+  questionRelay?: boolean;
   // stdout(stream-json) 한 줄씩 실시간으로. 룸 활동 보고가 쓴다. 던져도 실행은 계속된다.
   onStdoutLine?: (line: string) => void;
   // PATH 앞에 붙일 폴더(작업공간의 파이썬 가상환경) — 모델의 `python -m pytest`가 미리 설치한 의존성을 쓰게.
@@ -57,6 +58,7 @@ export async function runClaude(input: RunInput): Promise<RunResult> {
     mcpConfigPath: input.mcpConfigPath,
     cwd: input.workspaceDir,
     ...(input.model === undefined ? {} : { model: input.model }),
+    ...(input.questionRelay === undefined ? {} : { questionRelay: input.questionRelay }),
   });
   const { command, commandArgs } = resolveClaudeCommand(args);
   const logPath = path.join(input.workspaceDir, '.nomos-run.log');

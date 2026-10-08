@@ -114,7 +114,7 @@ components:
             teamRole: { type: string, enum: [FRONTEND, BACKEND] }
     Project:
       type: object
-      required: [id, orgId, name, autonomyPreset, policyHash, constitutionHash, pmBudgetUsd, budgetUsd, deadline, status, startedAt, createdBy, createdAt]
+      required: [id, orgId, name, autonomyPreset, policyHash, constitutionHash, pmBudgetUsd, budgetUsd, deadline, status, startedAt, createdBy, createdAt, questionRelay]
       properties:
         id: { type: string, format: uuid }
         orgId: { type: string, format: uuid }
@@ -132,6 +132,11 @@ components:
         startedAt: { type: string, format: date-time, nullable: true, description: 'G1 승인 시각. 지금은 항상 null' }
         createdBy: { type: string, format: uuid }
         createdAt: { type: string, format: date-time }
+        questionRelay:
+          type: boolean
+          description: |
+            질문 중계(에이전트가 다른 역할에게 AskUserQuestion으로 묻기). 기본 켜짐. 끄면 에이전트는 묻지 않고 가정을 GOTCHA 노트("가정함 — <역할> 확인 필요")로 남기고 진행한다.
+            대표가 시작(G1) 전까지 `PATCH /projects/{projectId}/settings`로 바꿀 수 있다.
     RepoListItem:
       type: object
       required: [id, fullName, githubRepoId, defaultBranch, devBranch, cloneUrl, ownershipAssigned, activeProjectId, activeProjectName]
@@ -832,7 +837,7 @@ components:
         ownerRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true }
     TaskBriefing:
       type: object
-      required: [task, repo, spec, notes, notesBlock, writablePaths, claudeSettings, specTests, policyHash, lastRejection, answeredQuestions]
+      required: [task, repo, spec, notes, notesBlock, writablePaths, claudeSettings, specTests, policyHash, lastRejection, answeredQuestions, questionRelay]
       properties:
         task: { $ref: '#/components/schemas/Task' }
         repo:
@@ -859,6 +864,7 @@ components:
                 deny: { type: array, items: { type: string } }
         specTests: { type: array, items: { $ref: '#/components/schemas/SpecTest' } }
         policyHash: { type: string }
+        questionRelay: { type: boolean, description: '프로젝트의 질문 중계 스위치. 꺼져 있으면 Executor가 권한 도구(AskUserQuestion)를 붙이지 않는다' }
         answeredQuestions:
           type: array
           description: '이 태스크에서 물어 받은 답 — 질문 때문에 멈췄다 재개한 실행이 읽는다. source=agent는 상대 에이전트가 코드에서 찾은 답(사람 미확인)'
@@ -2347,6 +2353,7 @@ paths:
                 budgetUsd: { type: number, description: 프로젝트 전체 상한 (선택) }
                 deadline: { type: string, example: '2026-12-31' }
                 repoIds: { type: array, minItems: 1, items: { type: string, format: uuid } }
+                questionRelay: { type: boolean, description: '질문 중계. 생략하면 켜짐' }
             example:
               name: 스터디 관리 웹앱 v2
               autonomyPreset: L2
@@ -2452,6 +2459,38 @@ paths:
             application/json:
               example:
                 error: { code: PROJECT_NOT_FOUND, message: project not found }
+
+  /projects/{projectId}/settings:
+    patch:
+      tags: [프로젝트]
+      summary: 프로젝트 설정 (대표 전용, 시작 전에만)
+      description: |
+        지금은 질문 중계 스위치(`questionRelay`)뿐이다. **시작(G1) 뒤에는 403 `PROJECT_STARTED`** — 실행 중에 바뀌면 같은 프로젝트 안에서 결과가 섞인다.
+        바뀌면 이벤트 `PROJECT_SETTINGS_UPDATED`(before·after). 같은 값이면 그대로 돌려준다.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/ProjectId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [questionRelay]
+              properties:
+                questionRelay: { type: boolean }
+            example: { questionRelay: false }
+      responses:
+        '200':
+          description: 바뀐 프로젝트
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/Project' } } }
+        '403':
+          description: 대표가 아니거나 시작한 프로젝트
+          content:
+            application/json:
+              example:
+                error: { code: PROJECT_STARTED, message: project has started; settings are frozen }
 
   /projects/{projectId}/start:
     post:
@@ -2777,6 +2816,41 @@ paths:
           content:
             application/json:
               schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/AgentQuestion' } } }
+  /me/questions:
+    get:
+      tags: [질문]
+      summary: 내가 답할 질문 (조직 전체, 실험)
+      description: |
+        알림 배지와 "답할 질문" 목록용. **대표는 조직의 모든 질문, 팀원은 자기 에이전트가 맡은 역할을 대상으로 한 질문만**(답할 수 있는 사람과 같은 정의).
+        기본은 대기(pending) — 사람이 답해야 하는 것. `agent_answered`는 상대 에이전트가 코드에서 찾아 이미 답한 것(사람이 확인·뒤집기 가능).
+        실시간: `/api/stream`의 조직 토픽 `questions`가 오면 다시 읽는다.
+      security: [{ userToken: [] }]
+      parameters:
+        - { name: status, in: query, required: false, schema: { type: string, enum: [pending, agent_answered, answered, expired, self_owned, all], default: pending } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+      responses:
+        '200':
+          description: 최신순. 질문과 그 프로젝트·태스크 이름
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [questions]
+                    properties:
+                      questions:
+                        type: array
+                        items:
+                          type: object
+                          required: [question, projectName, taskTitle]
+                          properties:
+                            question: { $ref: '#/components/schemas/AgentQuestion' }
+                            projectName: { type: string }
+                            taskTitle: { type: string }
+
   /projects/{projectId}/questions:
     get:
       tags: [질문]

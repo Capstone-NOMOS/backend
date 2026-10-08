@@ -228,6 +228,9 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     const projectId = (created.data.project as { id: string }).id;
     await call('GET', `/orgs/${orgId}/projects`, rep);
     await call('GET', `/projects/${projectId}`, rep);
+    // 질문 중계 스위치(시작 전) — 껐다가 다시 켠다(아래에서 질문 흐름을 쓴다).
+    await call('PATCH', `/projects/${projectId}/settings`, rep, { questionRelay: false });
+    await call('PATCH', `/projects/${projectId}/settings`, rep, { questionRelay: true });
     const beAgentId = beConn.data.agentId as string;
     const repAgentId = repConn.data.agentId as string;
     await call('POST', `/projects/${projectId}/members`, rep, { agentId: repAgentId, teamRole: 'FRONTEND' });
@@ -273,6 +276,7 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     });
     const questionId = asked.data.id as string;
     await call('GET', `/projects/${projectId}/questions`, rep);
+    await call('GET', '/me/questions', rep);
     await call('POST', `/questions/${questionId}/answer`, rep, { answers: { [question]: '{ members: [...] }' } });
     await call('GET', `/tasks/${taskId}/questions/${questionId}`, agent);
     await call('POST', `/tasks/${taskId}/questions/${questionId}/detach`, agent); // 이미 답이 있어 아무것도 바꾸지 않는다

@@ -33,6 +33,7 @@ export type EventType =
   | 'AGENT_RUN_ENDED'
   | 'TASK_BLOCKED'
   | 'TASK_RESUMED'
+  | 'PROJECT_SETTINGS_UPDATED'
   | 'RELEASE_REQUESTED'
   | 'RELEASE_DECIDED'
   | 'ACTION_DETECTED'
@@ -286,6 +287,14 @@ export type ProjectCreatedPayload = {
   repoIds: string[];
   policyHash: string;
   constitutionHash: string;
+  // 질문 중계 스위치(018). 이전 행에는 없다(그때는 기능이 없었다).
+  questionRelay?: boolean;
+};
+
+// 시작 전 프로젝트 설정 변경 — 지금은 질문 중계 스위치뿐. 대조군 실험의 근거라 바뀐 사실을 남긴다.
+export type ProjectSettingsUpdatedPayload = {
+  before: { questionRelay: boolean };
+  after: { questionRelay: boolean };
 };
 
 // G1 — 이 시점의 멤버·태스크 수·승인한 계획을 남긴다. 이후 지표("이 구성으로 시작해서 어땠나")의 기준점이다.
@@ -523,6 +532,7 @@ export type EventPayloadMap = {
   AGENT_RUN_ENDED: AgentRunEndedPayload;
   TASK_BLOCKED: TaskBlockedPayload;
   TASK_RESUMED: TaskResumedPayload;
+  PROJECT_SETTINGS_UPDATED: ProjectSettingsUpdatedPayload;
   RELEASE_REQUESTED: ReleaseRequestedPayload;
   RELEASE_DECIDED: ReleaseDecidedPayload;
   ACTION_DETECTED: ActionDetectedPayload;

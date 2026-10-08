@@ -34,6 +34,7 @@ import {
   listProjectsByOrg,
   markProjectStarted,
   summarizeProjectTasks,
+  updateQuestionRelay,
   type AutonomyPreset,
   type Project,
   type MemberInviteStatus,
@@ -52,6 +53,8 @@ export type CreateProjectInput = {
   budgetUsd?: number;
   deadline?: string;
   repoIds: string[];
+  // 질문 중계(018). 생략하면 켜짐.
+  questionRelay?: boolean;
 };
 
 // 응답에 나가는 멤버 — 레포별 마지막 GitHub 초대 결과를 붙인다(초대한 적 없으면 빈 목록).
@@ -151,6 +154,7 @@ export async function createProject(
       constitution,
       constitutionHash,
       createdBy: actorUserId,
+      questionRelay: input.questionRelay ?? true,
     });
 
     await linkProjectRepos(tx, project.id, repoIds);
@@ -172,6 +176,7 @@ export async function createProject(
         repoIds,
         policyHash,
         constitutionHash,
+        questionRelay: project.questionRelay,
       },
     });
 
@@ -180,6 +185,27 @@ export async function createProject(
       repos: await listProjectRepos(tx, project.id),
       members: [],
     };
+  });
+}
+
+// 프로젝트 설정 변경(대표 전용) — 지금은 질문 중계 스위치뿐. 시작(G1) 전에만 바꿀 수 있다:
+// 실행 중에 바뀌면 같은 프로젝트 안에서 "중계 있음/없음" 실행이 섞여 대조 실험이 성립하지 않는다.
+export async function updateProjectSettings(actor: Actor, projectId: string, input: { questionRelay: boolean }): Promise<Project> {
+  if (actor.orgRole !== 'REPRESENTATIVE') throw new AppError('NOT_REPRESENTATIVE', 'only the representative can change project settings');
+  return withTransaction(async (tx) => {
+    const project = await assertProjectInOrg(tx, actor.orgId, projectId, 'update');
+    if (project.startedAt !== null) throw new AppError('PROJECT_STARTED', 'project has started; settings are frozen');
+    if (project.questionRelay === input.questionRelay) return project;
+    const updated = await updateQuestionRelay(tx, projectId, input.questionRelay);
+    await appendEvent(tx, {
+      orgId: actor.orgId,
+      projectId,
+      type: 'PROJECT_SETTINGS_UPDATED',
+      onBehalfOf: actor.userId,
+      policyHash: project.policyHash,
+      payload: { before: { questionRelay: project.questionRelay }, after: { questionRelay: updated.questionRelay } },
+    });
+    return updated;
   });
 }
 
