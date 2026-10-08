@@ -356,3 +356,33 @@ export async function isProjectMember(db: Queryable, projectId: string, agentId:
   const { rows } = await db.query(`SELECT 1 FROM project_members WHERE project_id = $1 AND agent_id = $2`, [projectId, agentId]);
   return rows.length > 0;
 }
+
+// 멤버별 마지막 GitHub 협업자 초대 결과(GITHUB_COLLABORATORS_INVITED). 이벤트가 유일한 진실이라 따로 저장하지 않고 여기서 읽는다.
+// 배정·재초대 응답에만 있던 결과가 새로고침하면 사라졌다(FE 보고) — 프로젝트 조회의 멤버 정보에 붙인다.
+export type MemberInviteStatus = {
+  repoId: string;
+  fullName: string;
+  status: 'invited' | 'already_collaborator' | 'skipped' | 'failed';
+  reason?: string;
+  at: string;
+};
+
+export async function listLatestInvites(db: Queryable, projectId: string): Promise<Map<string, MemberInviteStatus[]>> {
+  const { rows } = await db.query(
+    `SELECT DISTINCT ON (payload->>'agentId') payload->>'agentId' AS agent_id, payload->'results' AS results, ts
+       FROM events
+      WHERE project_id = $1 AND type = 'GITHUB_COLLABORATORS_INVITED'
+      ORDER BY payload->>'agentId', id DESC`,
+    [projectId],
+  );
+  const byAgent = new Map<string, MemberInviteStatus[]>();
+  for (const r of rows) {
+    const at = (r.ts as Date).toISOString();
+    const results = (r.results ?? []) as { repoId: string; fullName: string; status: MemberInviteStatus['status']; reason?: string }[];
+    byAgent.set(
+      r.agent_id as string,
+      results.map((x) => ({ repoId: x.repoId, fullName: x.fullName, status: x.status, ...(x.reason ? { reason: x.reason } : {}), at })),
+    );
+  }
+  return byAgent;
+}
