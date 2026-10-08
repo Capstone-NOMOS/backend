@@ -28,6 +28,8 @@ export type EventType =
   | 'AGENT_RUN_ENDED'
   | 'TASK_BLOCKED'
   | 'TASK_RESUMED'
+  | 'RELEASE_REQUESTED'
+  | 'RELEASE_DECIDED'
   | 'REPO_UPDATED'
   | 'TASKS_IMPORTED'
   | 'SPEC_CREATED'
@@ -284,6 +286,22 @@ export type TaskBlockedPayload = {
   deniedCommands: string[];
 };
 
+// 모든 태스크가 DONE이 됐다 → 대표의 통합 확인·완료 승인 카드(G3). 통합 확인은 에이전트가 아니라 사람이 한다(운영 테스트 4-3, 대표 결정).
+// checks는 적용된 계획의 integrationChecks. on_behalf_of는 'system:pm'.
+export type ReleaseRequestedPayload = {
+  approvalId: string;
+  checkCount: number;
+  taskCount: number;
+};
+
+// 대표가 G3를 결정했다. 승인이면 프로젝트 completed, 반려면 그대로 진행 중(고칠 태스크는 대표가 만든다).
+export type ReleaseDecidedPayload = {
+  approvalId: string;
+  decision: 'APPROVE' | 'REJECT';
+  reason: string | null;
+  projectStatus: string;
+};
+
 // 대표가 원인을 해결하고 재개했다 → READY(담당 비움). note는 선택.
 export type TaskResumedPayload = {
   taskId: string;
@@ -425,6 +443,8 @@ export type EventPayloadMap = {
   AGENT_RUN_ENDED: AgentRunEndedPayload;
   TASK_BLOCKED: TaskBlockedPayload;
   TASK_RESUMED: TaskResumedPayload;
+  RELEASE_REQUESTED: ReleaseRequestedPayload;
+  RELEASE_DECIDED: ReleaseDecidedPayload;
   REPO_UPDATED: RepoUpdatedPayload;
   TASKS_IMPORTED: TasksImportedPayload;
   SPEC_CREATED: SpecCreatedPayload;

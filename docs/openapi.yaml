@@ -160,8 +160,13 @@ components:
         id: { type: string, format: uuid }
         projectId: { type: string, format: uuid }
         projectName: { type: string }
-        gate: { type: string, enum: [G1, G2, G3, ACTION], description: '지금은 ACTION(정책 판정이 HUMAN·PM_REVIEW인 산출물)만 생긴다' }
-        taskId: { type: string, format: uuid }
+        gate:
+          type: string
+          enum: [G1, G2, G3, ACTION]
+          description: |
+            - ACTION: 검증은 통과했지만 정책 판정이 HUMAN·PM_REVIEW인 산출물(태스크 하나)
+            - G3: **통합 확인·완료 승인**(프로젝트 전체). 모든 태스크가 DONE이 되면 생긴다. 승인하면 프로젝트 completed, 반려하면 진행 중 그대로(고칠 태스크를 대표가 만든다)
+        taskId: { type: string, format: uuid, nullable: true, description: 'ACTION이면 그 태스크, G3면 null(프로젝트 전체)' }
         taskTitle: { type: string, nullable: true, description: '지금 태스크 제목(카드의 스냅샷은 payload.taskTitle)' }
         taskState: { type: string, nullable: true, description: '지금 태스크 상태' }
         artifactId: { type: string, format: uuid, nullable: true }
@@ -174,7 +179,9 @@ components:
           type: object
           additionalProperties: true
           description: |
-            요청 시점의 카드 스냅샷 — taskTitle, artifactId, attempt, commitSha, changedPaths, triggeredActions, gateMode, stages, submittedByAgentId.
+            요청 시점의 카드 스냅샷.
+            - ACTION: taskTitle, artifactId, attempt, commitSha, changedPaths, triggeredActions, gateMode, stages, submittedByAgentId.
+            - G3: integrationChecks(PM이 쓴 확인 항목 문자열 목록), tasks([{ taskId, title, teamRole, repo, branchName, commitSha }] — 머지·실행해 볼 브랜치와 마지막 커밋).
             **backfilled: true**면 승인 기능 이전부터 멈춰 있던 태스크라 지금 DB에서 알 수 있는 값만 있다(stages 등 없음) — "정보 일부 없음"을 표시한다.
         decision: { type: string, enum: [APPROVE, REJECT, null], nullable: true, description: 'null이면 대기 중' }
         decidedBy: { type: string, format: uuid, nullable: true }
@@ -623,9 +630,15 @@ components:
               title: { type: string }
               repo: { type: string, description: '레포 fullName' }
               teamRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true }
-              kind: { type: string, enum: [IMPLEMENT, INTEGRATION, REWORK] }
+              kind: { type: string, enum: [IMPLEMENT, INTEGRATION, REWORK], description: 'PM은 INTEGRATION을 내지 않는다(내면 교정 대상). 옛 초안에는 있을 수 있다' }
               spec: { type: string, nullable: true, description: '명세 featureKey' }
               dependsOn: { type: array, items: { type: string }, description: '먼저 끝나야 하는 태스크의 ref' }
+        integrationChecks:
+          type: array
+          items: { type: string }
+          description: |
+            통합 확인 항목. PM은 INTEGRATION 태스크를 만들지 않고(에이전트에게는 선행 코드·상대 레포·실행 수단이 없다) 여기에 적는다.
+            모든 태스크가 DONE이 되면 대표의 **G3 카드**(통합 확인·완료 승인)에 그대로 들어간다. 이 필드 이전에 만든 초안에는 없다.
     PmRelayJob:
       type: object
       description: '중계 모드에서 pm-worker가 실행할 모델 호출 한 건. 서버가 만든 지침·프롬프트·출력 스키마를 그대로 실행한다'

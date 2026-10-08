@@ -90,7 +90,7 @@ export const TASK_FEED_EVENTS = [
   'APPROVAL_RESULT',
   'NOTE_PUBLISHED',
 ] as const;
-export const PROJECT_FEED_EVENTS = ['PROJECT_STARTED', 'PLAN_APPLIED'] as const;
+export const PROJECT_FEED_EVENTS = ['PROJECT_STARTED', 'PLAN_APPLIED', 'RELEASE_REQUESTED', 'RELEASE_DECIDED'] as const;
 
 export type FeedRow = {
   source: 'e' | 'a';

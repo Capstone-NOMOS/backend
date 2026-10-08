@@ -178,7 +178,9 @@ describe('승인 카드 생성과 조회', () => {
     const { approvalId } = await submitToApproval(ctx);
     await call('POST', `/approvals/${approvalId}/approve`, ctx.repToken);
 
-    expect((await call('GET', `/orgs/${ctx.orgId}/approvals`, ctx.repToken)).json.data.approvals).toEqual([]);
+    // 이 승인으로 프로젝트의 마지막 태스크가 DONE이 되어 G3(통합 확인) 카드가 대기에 생긴다 — ACTION 카드는 대기에 없다.
+    const pending = (await call('GET', `/orgs/${ctx.orgId}/approvals`, ctx.repToken)).json.data.approvals as { gate: string }[];
+    expect(pending.map((a) => a.gate)).toEqual(['G3']);
     const decided = await call('GET', `/orgs/${ctx.orgId}/approvals?status=decided`, ctx.repToken);
     expect(decided.json.data.approvals).toHaveLength(1);
     expect(decided.json.data.approvals[0]).toMatchObject({ decision: 'APPROVE', taskState: 'DONE' });

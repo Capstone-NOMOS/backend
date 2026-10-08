@@ -17,7 +17,7 @@ const nullable = (schema: Record<string, unknown>) => ({ anyOf: [schema, { type:
 export const PLAN_DRAFT_JSON_SCHEMA: Record<string, unknown> = {
   type: 'object',
   additionalProperties: false,
-  required: ['mode', 'rationale', 'estimate', 'specs', 'tasks'],
+  required: ['mode', 'rationale', 'estimate', 'specs', 'tasks', 'integrationChecks'],
   properties: {
     mode: { type: 'string', enum: [...PLAN_MODES] },
     rationale: { type: 'string' },
@@ -57,6 +57,8 @@ export const PLAN_DRAFT_JSON_SCHEMA: Record<string, unknown> = {
         },
       },
     },
+    // 통합 확인 항목 — 모든 태스크가 끝난 뒤 대표가 G3(통합 확인·완료 승인)에서 하나씩 확인한다. 에이전트에게 통합 태스크를 맡기지 않는다.
+    integrationChecks: { type: 'array', items: { type: 'string' } },
   },
 };
 
@@ -88,7 +90,17 @@ export const planDraftSchema = z.object({
     )
     .min(1)
     .max(AUTHORING_LIMITS.tasks),
+  // 옛 초안(이 필드 이전에 저장된 것)에는 없다 — 없으면 빈 목록.
+  integrationChecks: z.array(z.string().trim().min(1).max(300)).max(20).default([]),
 });
+
+// PM은 INTEGRATION 태스크를 만들지 않는다(운영 테스트 4-3: 통합 태스크는 선행 코드·상대 레포·실행 수단이 없어 늘 멈췄다).
+// 통합 확인은 integrationChecks로 적고, 대표가 G3에서 확인한다. 형식(zod)이 아니라 위반으로 돌려줘 교정 1회에 싣는다.
+export function pmOnlyProblems(draft: PlanDraft): string[] {
+  return draft.tasks
+    .filter((t) => t.kind === 'INTEGRATION')
+    .map((t) => `tasks[${t.ref}] INTEGRATION 태스크를 만들지 않는다 — 통합 확인은 integrationChecks에 확인 항목으로 적는다(대표가 모든 태스크가 끝난 뒤 확인한다)`);
+}
 
 export type PlanDraft = z.infer<typeof planDraftSchema>;
 

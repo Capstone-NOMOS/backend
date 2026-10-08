@@ -9,7 +9,7 @@ import { authorInTransaction } from '../authoring/apply.js';
 import { findActor, lockProjectForAuthoring } from '../authoring/repository.js';
 import { tasksChanged } from '../dispatch/tasks-changed.js';
 import { appendEvent } from '../events/append.js';
-import { dagHashOf, draftToAuthoring, PLAN_DRAFT_JSON_SCHEMA, planDraftSchema, planStructure, type PlanDraft } from './draft.js';
+import { dagHashOf, draftToAuthoring, PLAN_DRAFT_JSON_SCHEMA, planDraftSchema, planStructure, pmOnlyProblems, type PlanDraft } from './draft.js';
 import { getPmModel, type PmModel } from './model.js';
 import {
   completeJob,
@@ -520,6 +520,9 @@ async function judge(
   if (!parsed.success) {
     return { kind: 'fix', problems: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`), draft: null };
   }
+
+  const pmProblems = pmOnlyProblems(parsed.data);
+  if (pmProblems.length > 0) return { kind: 'fix', problems: pmProblems, draft: parsed.data };
 
   const client = await pool.connect();
   try {

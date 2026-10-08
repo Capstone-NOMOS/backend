@@ -2,7 +2,7 @@ import type { PoolClient } from 'pg';
 import { withTransaction, type Queryable } from '../../config/db.js';
 import { tasksChanged } from '../dispatch/tasks-changed.js';
 import { MAX_RETRIES } from '../task/retry.js';
-import { requestActionApproval } from '../approval/service.js';
+import { requestActionApproval, requestReleaseIfComplete } from '../approval/service.js';
 import { AppError } from '../../errors.js';
 import { logger } from '../../config/logger.js';
 import { appendEvent } from '../events/append.js';
@@ -268,6 +268,8 @@ async function recordSummary(
       ...(summary.outcome === 'RETRY' || summary.outcome === 'ESCALATED' ? { retryCause: 'VERIFICATION_FAILED' as const } : {}),
     },
   });
+  // 이 결론으로 마지막 태스크가 DONE이 됐으면 통합 확인(G3)을 요청한다 — 검증 결과 줄 뒤에 오게 이벤트 다음에 부른다.
+  if (summary.taskState === 'DONE') await requestReleaseIfComplete(tx, { orgId: ctx.orgId, projectId: ctx.projectId });
 }
 
 // ── 서버 단계 실행 ────────────────────────────────────────────────────────

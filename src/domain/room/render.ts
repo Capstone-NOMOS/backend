@@ -59,6 +59,14 @@ function eventText(row: FeedRow): { speaker: RoomMessage['speaker']; text: strin
       return { speaker: 'pm', text: '프로젝트를 시작합니다' };
     case 'PLAN_APPLIED':
       return { speaker: 'pm', text: '계획을 적용했습니다' };
+    case 'RELEASE_REQUESTED': {
+      const checks = num(p.checkCount);
+      return { speaker: 'pm', text: `모든 태스크가 완료되었습니다 → 대표의 통합 확인을 기다립니다${checks > 0 ? ` (확인 항목 ${checks}개)` : ''}` };
+    }
+    case 'RELEASE_DECIDED':
+      return p.decision === 'APPROVE'
+        ? { speaker: 'pm', text: '대표가 통합 확인을 마쳤습니다 → 프로젝트 완료' }
+        : { speaker: 'pm', text: `대표가 통합 확인에서 반려했습니다${p.reason ? `: ${str(p.reason)}` : ''}` };
     case 'TASK_DISPATCHED': {
       const attempt = num(p.attempt);
       if (num(p.resumes) > 0 && attempt === 0) return { speaker: 'pm', text: `${title} 다시 실행해 주세요 (재개)` };

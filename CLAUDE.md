@@ -421,6 +421,7 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
   바뀌고 나머지 흐름은 같다(`domain/pm/relay.ts`, 대기열은 메모리). 작업은 **그 조직 대표 본인의 에이전트만** 가져간다(`GET /pm/jobs/next`) —
   작업에 프로젝트 맥락이 들어 있고 결과가 곧 초안이다. 아무도 안 가져가면 `PM_TIMEOUT_MS`로 `failed(timeout)`. 개인 구독을 여러 사용자의 PM으로
   쓰지 말 것 — 운영은 API 모드(기본)다. 워커는 지침을 파일·프롬프트를 stdin으로 넘긴다(Windows 명령줄 32k자 제한).
+- **PM은 INTEGRATION 태스크를 만들지 않는다** — 통합 확인 항목(`integrationChecks`)을 쓰고 대표가 G3에서 확인한다(위 "승인 대기열").
 - **PM 지침의 선행(dependsOn)**: 계약만 보고 만들 수 있으면 걸지 않는다(병행). 상대가 구현하며 정할 것·실제 동작하는 상대 API에 기대면 건다.
   계약을 먼저 정해야 하는데 명세에 다 못 적으면 "계약 확정"(DECIDED 노트) 태스크로 쪼개고 상대는 거기에만 건다. 선행을 거는 것 = 그 결과와 노트를 받고 시작한다는 뜻이다.
 - **PM은 시험지(spec_tests)를 쓰지 않는다 — 의도된 결정이다. PM 명세의 `tests: []`는 버그가 아니다.** 명세 content에 계약(API: 메서드·경로·상태코드·응답 필드 /
@@ -435,9 +436,17 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
     그 전에 레포별 시험 하네스(기동·시드·인증)를 헌법에 먼저 정할 것.
 - 모델·노력·한도는 설정값(`PM_MODEL` 기본 `claude-sonnet-5-5`, `PM_EFFORT` 기본 `high`, `PM_MAX_TOKENS`). 생각 토큰도 출력으로 과금되니 실제 비용을 보고 조정한다.
 
-### 승인 대기열 (`domain/approval`, 015) — ACTION 게이트만
+### 승인 대기열 (`domain/approval`, 015) — ACTION 게이트 + G3
 
-검증은 통과했지만 정책 판정이 HUMAN·PM_REVIEW라 `AWAITING_APPROVAL`에 멈춘 산출물을 사람이 결정한다. G1·G2·G3 카드와 PM 예산 초과 승인은 아직 없다.
+검증은 통과했지만 정책 판정이 HUMAN·PM_REVIEW라 `AWAITING_APPROVAL`에 멈춘 산출물을 사람이 결정한다(ACTION). G1·G2 카드와 PM 예산 초과 승인은 아직 없다.
+
+- **G3 = 통합 확인·완료 승인**(운영 테스트 4-3, 대표 결정). 통합 확인은 에이전트가 아니라 대표가 한다 — 에이전트에게는 선행 태스크 코드(main에 머지되지 않는다)·
+  상대 역할의 레포·서버 실행 수단이 없어 통합 태스크가 늘 멈췄다. **PM은 INTEGRATION 태스크를 만들지 않고**(`pmOnlyProblems` → 교정) `integrationChecks`를 쓴다.
+  태스크가 DONE이 되는 같은 트랜잭션(검증 결론·ACTION 승인)에서 `requestReleaseIfComplete`가 "모든 태스크 DONE"이면 카드를 하나 만든다
+  (확인 항목 + 태스크별 레포·브랜치·마지막 커밋 스냅샷, `RELEASE_REQUESTED`·`system:pm`). 프로젝트 행을 `FOR NO KEY UPDATE`로 잠근 **뒤 다음 문장에서** 다시 읽는다 —
+  두 태스크가 동시에 끝나면 서로의 DONE이 안 보여 둘 다 카드를 안 만든다. 대기 카드는 `ON CONFLICT DO NOTHING`(상태 변경을 롤백시키지 않는다).
+  승인 → 프로젝트 `completed`, 반려 → 진행 중 그대로(고칠 태스크는 대표가 만든다, 다시 전부 DONE이면 새 카드). `RELEASE_DECIDED`. 응답의 `taskId`는 G3면 null.
+  사람이 API로 만드는 INTEGRATION 태스크는 아직 막지 않는다(기존 데이터·테스트가 명세 없는 종류로 쓴다).
 
 - **결정은 대표만 한다.** "해당 역할의 사람"은 곧 제출한 에이전트의 주인이라 자기 승인이 된다. 대표가 자기 에이전트의 산출물을
   승인하는 것은 지금은 허용하되(다른 승인자가 없다) `APPROVAL_RESULT.payload.selfApproval: true`로 남긴다 — 다른 승인자 규칙을 만들 때의 근거.

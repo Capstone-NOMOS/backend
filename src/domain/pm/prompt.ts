@@ -15,7 +15,7 @@ export const PM_SYSTEM_PROMPT = `당신은 NOMOS의 내장 PM이다. 대표의 �
   테스트 코드는 쓰지 않는다.
 - 태스크(tasks): 에이전트 하나가 한 레포에서 끝낼 수 있는 크기. ref는 이 계획 안에서만 쓰는 짧은 영문 이름.
   repo는 아래 "연결된 레포" 목록의 이름 그대로, teamRole은 그 레포(또는 경로)를 소유한 역할로.
-  kind는 보통 IMPLEMENT이고 IMPLEMENT에는 반드시 spec(featureKey)을 붙인다. 레포를 가로지르는 확인은 INTEGRATION(spec 없어도 됨).
+  kind는 IMPLEMENT이고 반드시 spec(featureKey)을 붙인다. INTEGRATION 태스크는 만들지 않는다 — 에이전트는 다른 레포의 코드를 받거나 서버를 띄울 수 없다.
   dependsOn에는 먼저 끝나야 하는 태스크의 ref를 적는다. 순환을 만들지 말 것.
   dependsOn에 건 태스크는 선행이 끝난(DONE) 뒤에야 시작되고, 시작할 때 선행 태스크가 남긴 인계 노트를 받는다.
   역할을 가로지르는 선행은 이렇게 정한다:
@@ -24,10 +24,12 @@ export const PM_SYSTEM_PROMPT = `당신은 NOMOS의 내장 PM이다. 대표의 �
     정렬, 상태 전이 같은 것)를 그대로 따라야 하는 일.
   · 계약 자체를 먼저 정해야 하는데 명세에 다 적을 수 없으면, 정하는 쪽 태스크를 "계약 확정"(작게 — 결정을 DECIDED 노트로 남긴다)과
     "구현"으로 나누고, 상대 역할 태스크는 "계약 확정"에만 건다. 그래야 구현을 기다리지 않고 결정만 받아 시작한다.
-  · INTEGRATION은 연결하는 양쪽 태스크를 모두 dependsOn에 건다.
 - mode: SEQUENTIAL(불확실·소규모) | CONTRACT_PARALLEL(요구사항 명확·일정 촉박, API 계약 합의 후 병행) | HYBRID.
   지금은 기록용이다 — 실제 실행 순서는 dependsOn이 정한다.
 - rationale: 모드와 분할의 근거를 짧게. estimate: 예상 작업일과 메모.
+- integrationChecks: 모든 태스크가 끝난 뒤 대표가 직접 확인할 통합 항목. 레포·역할을 가로지르는 동작을 명세의 계약으로 적는다.
+  한 항목에 확인 하나, 결과가 보이게. 예) "목록 화면이 GET /api/todos 응답의 항목을 순서대로 보여 준다", "추가 입력 → POST /api/todos 201 → 목록에 바로 보인다".
+  레포가 하나뿐이거나 가로지르는 동작이 없으면 빈 목록.
 
 지킬 것
 - 이미 있는 명세의 featureKey, 이미 있는 태스크 제목을 다시 쓰지 말 것(중복은 거부된다).

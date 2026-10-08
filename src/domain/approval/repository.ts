@@ -25,7 +25,8 @@ export type ApprovalRow = {
 // 목록용 — 지금 상태(태스크 제목·상태, 프로젝트 이름)를 함께 붙인다. 카드의 스냅샷은 payload에 따로 있다.
 export type ApprovalView = Omit<ApprovalRow, 'subjectId'> & {
   projectName: string;
-  taskId: string;
+  // ACTION은 그 태스크, G3(통합 확인·완료)는 프로젝트 전체라 null.
+  taskId: string | null;
   taskTitle: string | null;
   taskState: string | null;
 };
@@ -51,7 +52,7 @@ function toApproval(row: QueryResultRow): ApprovalRow {
 
 export async function insertApproval(
   db: Queryable,
-  input: { projectId: string; gate: ApprovalGate; subjectId: string; artifactId: string; gateMode: string; payload: Record<string, unknown> },
+  input: { projectId: string; gate: ApprovalGate; subjectId: string; artifactId: string | null; gateMode: string | null; payload: Record<string, unknown> },
 ): Promise<ApprovalRow> {
   const { rows } = await db.query(
     `INSERT INTO approvals (project_id, gate, subject_id, artifact_id, gate_mode, payload)
@@ -121,12 +122,12 @@ export async function listApprovals(
     [filter.orgId ?? null, filter.projectId ?? null, filter.status, filter.limit],
   );
   return rows.map((row) => {
-    // subject_id는 ACTION 게이트에서 태스크 id다 — 응답에는 taskId로만 낸다.
+    // subject_id는 ACTION 게이트에서 태스크 id, G3에서는 프로젝트 id다 — 응답에는 태스크일 때만 taskId로 낸다.
     const { subjectId: _subject, ...approval } = toApproval(row);
     return {
     ...approval,
     projectName: row.project_name as string,
-    taskId: row.subject_id as string,
+    taskId: approval.gate === 'ACTION' ? (row.subject_id as string) : null,
     taskTitle: (row.task_title as string | null) ?? null,
     taskState: (row.task_state as string | null) ?? null,
     };
@@ -156,4 +157,72 @@ export async function findLatestRejection(
         commitSha: (row.commit_sha as string | null) ?? null,
       }
     : null;
+}
+
+// ── G3: 통합 확인·완료 승인 ──────────────────────────────────────────────
+
+// 모든 태스크가 DONE인가(하나 이상 있을 때). 프로젝트가 진행 중(active)일 때만 의미가 있다.
+// 프로젝트 행을 먼저 잠그고(FOR NO KEY UPDATE — FOR UPDATE는 외래 키 검사와 충돌한다) **다음 문장에서** 다시 읽는다:
+// 두 태스크가 동시에 DONE이 되면 서로의 DONE이 안 보여 둘 다 카드를 안 만들 수 있다. 잠금 뒤 새 문장은 먼저 커밋된 쪽을 본다.
+export async function isProjectReadyForRelease(db: Queryable, projectId: string): Promise<boolean> {
+  await db.query(`SELECT 1 FROM projects WHERE id = $1 FOR NO KEY UPDATE`, [projectId]);
+  const { rows } = await db.query(
+    `SELECT p.status = 'active'
+            AND EXISTS (SELECT 1 FROM tasks t WHERE t.project_id = p.id)
+            AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.project_id = p.id AND t.state <> 'DONE')
+            AND NOT EXISTS (SELECT 1 FROM approvals a WHERE a.project_id = p.id AND a.gate = 'G3'
+                             AND (a.decision IS NULL OR a.decision = 'APPROVE')) AS ready
+       FROM projects p WHERE p.id = $1`,
+    [projectId],
+  );
+  return rows[0]?.ready === true;
+}
+
+// 적용된 계획들의 통합 확인 항목(PM이 쓴 것). 옛 초안에는 없다.
+export async function listIntegrationChecks(db: Queryable, projectId: string): Promise<string[]> {
+  const { rows } = await db.query(
+    `SELECT jsonb_array_elements_text(COALESCE(dag_snapshot->'integrationChecks', '[]'::jsonb)) AS check_text
+       FROM plans WHERE project_id = $1 AND applied_at IS NOT NULL
+      ORDER BY applied_at, id`,
+    [projectId],
+  );
+  return rows.map((r) => r.check_text as string);
+}
+
+// 카드에 붙일 태스크 요약 — 사람이 머지·실행해 볼 브랜치와 마지막 커밋.
+export async function listReleaseTasks(
+  db: Queryable,
+  projectId: string,
+): Promise<{ taskId: string; title: string; teamRole: string | null; repo: string; branchName: string | null; commitSha: string | null }[]> {
+  const { rows } = await db.query(
+    `SELECT t.id, t.title, t.team_role, r.full_name, t.branch_name,
+            (SELECT ar.commit_sha FROM artifacts ar WHERE ar.task_id = t.id ORDER BY ar.attempt DESC LIMIT 1) AS commit_sha
+       FROM tasks t JOIN repos r ON r.id = t.repo_id
+      WHERE t.project_id = $1
+      ORDER BY t.created_at, t.id`,
+    [projectId],
+  );
+  return rows.map((r) => ({
+    taskId: r.id as string,
+    title: r.title as string,
+    teamRole: (r.team_role as string | null) ?? null,
+    repo: r.full_name as string,
+    branchName: (r.branch_name as string | null) ?? null,
+    commitSha: (r.commit_sha as string | null) ?? null,
+  }));
+}
+
+// 대기 중인 G3는 프로젝트당 하나(uq_approvals_pending_subject). 이미 있으면 아무것도 하지 않고 null — 상태 변경을 롤백시키지 않는다.
+export async function insertReleaseApproval(db: Queryable, projectId: string, payload: Record<string, unknown>): Promise<string | null> {
+  const { rows } = await db.query(
+    `INSERT INTO approvals (project_id, gate, subject_id, payload) VALUES ($1, 'G3', $1, $2)
+     ON CONFLICT (subject_id) WHERE decision IS NULL DO NOTHING
+     RETURNING id`,
+    [projectId, payload],
+  );
+  return (rows[0]?.id as string | undefined) ?? null;
+}
+
+export async function markProjectCompleted(db: Queryable, projectId: string): Promise<void> {
+  await db.query(`UPDATE projects SET status = 'completed' WHERE id = $1 AND status = 'active'`, [projectId]);
 }
