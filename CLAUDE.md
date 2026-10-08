@@ -44,7 +44,7 @@ npx vitest run -t "기본 경로 규칙"    # 이름으로 단일 테스트
 
 - **이미 설정된 환경변수가 `.env`보다 우선한다**(`loadEnvFile`의 동작, 실측 확인). `DATABASE_URL=... npm run seed`로 한 번만 덮어쓸 수 있다.
 - `NODE_ENV`가 `production` 또는 **`test`**면 `.env`를 읽지 않는다. 테스트는 `vitest.config.ts`의 `test.env`만 쓴다 —
-  읽으면 개발용 `DATABASE_URL`·`GITHUB_TOKEN`이 테스트로 새어 **테스트가 개발 DB를 TRUNCATE**하거나 실제 네트워크를 호출한다.
+  읽으면 개발용 `DATABASE_URL`·`ANTHROPIC_API_KEY`가 테스트로 새어 **테스트가 개발 DB를 TRUNCATE**하거나 실제 네트워크를 호출한다.
   `tests/env-loading.test.ts`가 이 격리를 고정한다.
 - `npm run migrate`는 node-pg-migrate라는 **별도 프로세스**라 `env.ts`를 거치지 않는다. 그래서 npm 스크립트에서
   Node의 `--env-file-if-exists=.env`로 같은 파일을 읽힌다. 새 CLI 진입점을 추가하면 같은 처리를 해줄 것.
@@ -144,7 +144,10 @@ await withTransaction(async (tx) => {
 
 ### GitHub 레포 만들기·협업자 초대 (`domain/github/rep-api.ts`)
 
-대표 본인의 GitHub 토큰(`oauth_sessions`)으로 GitHub를 **바꾸는** 호출은 여기 한 곳이다. 읽기 전용인 `github/client.ts`(서버의 `GITHUB_TOKEN`)와 섞지 말 것.
+GitHub API는 **그 조직 대표의 GitHub 토큰(`oauth_sessions`)으로만** 부른다 — 레포 목록·조회·협업자 확인(읽기)과 레포 만들기·초대(쓰기) 모두 여기 한 곳.
+**서버 공용 PAT(`GITHUB_TOKEN`)를 다시 두지 말 것** — PAT 하나로 읽으면 모든 조직이 그 PAT 주인의 레포 목록을 보게 된다(운영 테스트 보고서가 "PAT 추가"를 제안했다가 되돌림).
+대표가 GitHub를 연결하지 않았으면 목록은 빈 배열, 협업자 표시는 생략(`false`로 채우지 않는다). 직접 입력(fullName)으로 연결해도 대표 토큰으로 레포를 찾아
+`github_repo_id`·기본 브랜치·`clone_url`을 채운다(비어 있으면 V3가 SKIPPED였다). 못 찾으면 예전처럼 비워 두고 연결은 막지 않는다.
 
 - **레포는 GitHub 조직에만, 비공개로 만든다**(`POST /orgs/:orgId/github/repos`, 대표 전용). 팀 프로젝트라 개인 계정에는 만들지 않는다(대표 결정).
   만들면서 바로 연결한다 — 기존 연결과 같은 `connectOneRepo` 한 벌이고, `ownerRole`(필수)·`github_repo_id`·`clone_url`이 채워져 V3가 처음부터 돈다.
@@ -531,7 +534,7 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
 도메인 코드는 `src/errors.ts`의 `AppError`만 던진다. 상세(`details`)는 `PUBLIC_DETAIL_CODES`에 있는 코드만 응답에 싣고, 배열이든 객체든 `error.details`에 담는다
 (`POLICY_STALE`만 예전 모양대로 `error.reason`으로 펼친다 — 배포된 브릿지가 읽는다). HTTP 상태는 `STATUS_BY_CODE` 테이블이 code로부터 결정하므로 서비스는 상태 코드를 몰라도 된다. `error-handler`는 항상 마지막에 등록하고, AppError가 아닌 예외는 500으로 감추고 상세는 로그로만 남긴다.
 
-**GitHub API 실패가 우리 기능을 멈추면 안 된다.** collaborator 조회가 실패해도 members 목록은 반환된다 — try/catch로 감싸고 `isCollaborator` 필드를 **생략**한다. `false`로 채우지 말 것: "확인 안 됨"과 "권한 없음"은 다르다. 토큰이 없을 때 레포 목록 조회는 500이 아니라 빈 배열 + 경고 로그를 반환한다.
+**GitHub API 실패가 우리 기능을 멈추면 안 된다.** collaborator 조회가 실패해도 members 목록은 반환된다 — try/catch로 감싸고 `isCollaborator` 필드를 **생략**한다. `false`로 채우지 말 것: "확인 안 됨"과 "권한 없음"은 다르다. 대표가 GitHub를 연결하지 않았을 때 레포 목록 조회는 500이 아니라 빈 배열 + 경고 로그를 반환한다.
 
 ## 배포
 

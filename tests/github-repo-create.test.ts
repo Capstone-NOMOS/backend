@@ -43,6 +43,19 @@ function fakeApi(overrides: Partial<GithubRepApi> = {}): GithubRepApi {
       calls.push({ method: 'inviteCollaborator', args });
       return 'invited';
     },
+    async listRepos(...args) {
+      calls.push({ method: 'listRepos', args });
+      return [{ fullName: 'acme-gh/existing', githubRepoId: 4242, defaultBranch: 'develop' }];
+    },
+    async getRepo(...args) {
+      calls.push({ method: 'getRepo', args });
+      const [, fullName] = args;
+      return fullName.toLowerCase() === 'acme-gh/existing' ? { fullName: 'acme-gh/existing', githubRepoId: 4242, defaultBranch: 'develop' } : null;
+    },
+    async isCollaborator(...args) {
+      calls.push({ method: 'isCollaborator', args });
+      return args[2] === 'octo-be';
+    },
     ...overrides,
   };
 }
@@ -309,5 +322,41 @@ describe('GitHub 호출 모양 (rep-api)', () => {
     await expect(invited.api.inviteCollaborator('tok', 'acme-gh/shop', 'octo')).resolves.toBe('invited');
     expect(invited.reqs[0]).toMatchObject({ method: 'PUT', url: 'https://gh.test/repos/acme-gh/shop/collaborators/octo', body: { permission: 'push' } });
     await expect(recorder([[204, null]]).api.inviteCollaborator('tok', 'acme-gh/shop', 'octo')).resolves.toBe('already_collaborator');
+  });
+});
+
+describe('GitHub 읽기는 그 조직 대표의 토큰으로 — 서버 공용 PAT를 쓰지 않는다', () => {
+  it('연결 드롭다운: 대표가 GitHub를 연결했으면 대표 토큰으로 읽고, 안 했으면 빈 배열', async () => {
+    const w = await world();
+    expect((await http('GET', `/orgs/${w.orgId}/github/repos`, w.be.token)).body.data).toEqual({ repos: [] });
+    expect(calls).toEqual([]);
+    await linkGithub(w.rep.userId, 1, 'octo-rep');
+    const listed = await http('GET', `/orgs/${w.orgId}/github/repos`, w.be.token);
+    expect(listed.body.data).toEqual({ repos: [{ fullName: 'acme-gh/existing', githubRepoId: 4242, defaultBranch: 'develop' }] });
+    expect(calls).toEqual([{ method: 'listRepos', args: ['gho_octo-rep'] }]);
+  });
+
+  it('직접 입력으로 연결해도 github_repo_id·기본 브랜치·clone_url이 채워지고 이름은 GitHub 정본으로 — 못 찾으면 예전처럼 빈 채로', async () => {
+    const w = await world();
+    await linkGithub(w.rep.userId, 1, 'octo-rep');
+    const res = await http('POST', `/orgs/${w.orgId}/repos`, w.be.token, { repos: [{ fullName: 'ACME-GH/existing' }, { fullName: 'acme-gh/unknown' }] });
+    expect(res.status).toBe(201);
+    const { rows } = await testPool.query(`SELECT full_name, github_repo_id, default_branch, clone_url FROM repos ORDER BY full_name`);
+    expect(rows.map((r) => ({ ...r, github_repo_id: r.github_repo_id === null ? null : Number(r.github_repo_id) }))).toEqual([
+      { full_name: 'acme-gh/existing', github_repo_id: 4242, default_branch: 'develop', clone_url: 'https://github.com/acme-gh/existing' },
+      { full_name: 'acme-gh/unknown', github_repo_id: null, default_branch: 'main', clone_url: null },
+    ]);
+  });
+
+  it('멤버 목록의 협업자 표시도 대표 토큰으로 — 대표가 연결하지 않았으면 생략', async () => {
+    const w = await world();
+    await linkGithub(w.be.userId, 2, 'octo-be');
+    await connectRepos({ orgId: w.orgId, actorUserId: w.rep.userId, repos: [{ fullName: 'acme-gh/existing', githubRepoId: 4242 }] });
+    const before = (await http('GET', `/orgs/${w.orgId}/members`, w.rep.token)).body.data!.members as { githubLogin: string | null; isCollaborator?: boolean }[];
+    expect(before.find((m) => m.githubLogin === 'octo-be')).not.toHaveProperty('isCollaborator');
+    await linkGithub(w.rep.userId, 1, 'octo-rep');
+    const after = (await http('GET', `/orgs/${w.orgId}/members`, w.rep.token)).body.data!.members as { githubLogin: string | null; isCollaborator?: boolean }[];
+    expect(after.find((m) => m.githubLogin === 'octo-be')).toMatchObject({ isCollaborator: true });
+    expect(after.find((m) => m.githubLogin === 'octo-rep')).toMatchObject({ isCollaborator: false });
   });
 });

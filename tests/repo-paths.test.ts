@@ -182,7 +182,7 @@ describe('레포 연결 권한 (HTTP)', () => {
     expect(connected.status).toBe(201);
 
     // 드롭다운을 채우는 목록도 함께 열려 있어야 연결 화면이 성립한다.
-    // GITHUB_TOKEN이 없는 테스트 환경에서는 빈 배열이 정상이다(500이 아니다).
+    // 대표가 GitHub를 연결하지 않았으면 빈 배열이 정상이다(500이 아니다).
     const listed = await send('GET', `/api/orgs/${orgId}/github/repos`, member.token);
     expect(listed.status).toBe(200);
     expect(listed.body).toMatchObject({ data: { repos: [] } });

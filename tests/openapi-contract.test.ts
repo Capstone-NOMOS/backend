@@ -98,6 +98,15 @@ const fakeGithubRep: GithubRepApi = {
   async inviteCollaborator() {
     return 'invited';
   },
+  async listRepos() {
+    return [{ fullName: 'acme/study-api', githubRepoId: 987654321, defaultBranch: 'main' }];
+  },
+  async getRepo() {
+    return null;
+  },
+  async isCollaborator() {
+    return true;
+  },
 };
 
 const fakeGithub: GithubDeviceApi = {

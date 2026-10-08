@@ -5,6 +5,7 @@ import { AppError } from '../../errors.js';
 import { appendEvent } from '../events/append.js';
 import { recomputePolicyHashesForRepo } from '../policy/policy-hash.js';
 import { githubRepApi } from '../github/rep-api.js';
+import { isGithubFullName, representativeGithubToken } from '../github/rep-token.js';
 import { findLatestOauthSession } from '../oauth/repository.js';
 import { findRepoUsage } from '../project/repository.js';
 import { decryptSecret } from '../../utils/secret-box.js';
@@ -60,13 +61,49 @@ export async function connectRepos(input: {
   if (input.repos.some((r) => r.ownerRole !== undefined) && input.actorOrgRole !== 'REPRESENTATIVE') {
     throw new AppError('NOT_REPRESENTATIVE', 'only the organization representative can assign path ownership (ownerRole)');
   }
+  // GitHub 호출은 트랜잭션 밖에서 끝낸다.
+  const repos = await fillFromGithub(input.orgId, input.repos);
   return withTransaction(async (tx) => {
     const results: ConnectRepoResult[] = [];
-    for (const r of input.repos) {
+    for (const r of repos) {
       results.push(await connectOneRepo(tx, input.orgId, input.actorUserId, r));
     }
     return results;
   });
+}
+
+// 직접 입력(fullName만)으로 연결해도 대표의 GitHub 토큰으로 레포를 찾아 github_repo_id·기본 브랜치·clone_url을 채운다 —
+// 비어 있으면 V3가 SKIPPED로 남는다(운영 테스트에서 그랬다). 대표가 GitHub를 연결하지 않았거나 레포가 안 보이면 예전처럼 비워 둔다(연결은 막지 않는다).
+// 이름은 GitHub의 정본(full_name)으로 맞춘다 — 대소문자가 다르게 입력되면 같은 레포가 두 번 연결될 수 있다.
+async function fillFromGithub(orgId: string, repos: ConnectRepoInput[]): Promise<(ConnectRepoInput & { cloneUrl?: string })[]> {
+  if (repos.every((r) => r.githubRepoId !== undefined)) return repos;
+  const token = await representativeGithubToken(pool, orgId);
+  if (token === null) return repos;
+  const filled: (ConnectRepoInput & { cloneUrl?: string })[] = [];
+  for (const r of repos) {
+    if (r.githubRepoId !== undefined || !isGithubFullName(r.fullName)) {
+      filled.push(r);
+      continue;
+    }
+    try {
+      const found = await githubRepApi().getRepo(token, r.fullName);
+      filled.push(
+        found === null
+          ? r
+          : {
+              ...r,
+              fullName: found.fullName,
+              githubRepoId: found.githubRepoId,
+              defaultBranch: r.defaultBranch ?? found.defaultBranch,
+              cloneUrl: validateCloneUrl(`https://github.com/${found.fullName}`, env.COMMIT_INSPECTOR),
+            },
+      );
+    } catch (err) {
+      logger.warn('GitHub repo lookup failed; connecting without github_repo_id', { fullName: r.fullName, error: String(err) });
+      filled.push(r);
+    }
+  }
+  return filled;
 }
 
 // 레포 하나 연결: INSERT repos → 기본 경로 규칙 시드 → REPO_CONNECTED → (ownerRole이 있으면) '**' 소유 역할 지정.

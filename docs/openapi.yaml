@@ -1281,7 +1281,8 @@ paths:
       description: |
         레포 연결이 조직 멤버 누구나 할 수 있으므로, 그 드롭다운을 채우는 이 목록도 함께 열려 있다.
 
-        `GITHUB_TOKEN`이 없으면 **500이 아니라 빈 배열**을 반환한다.
+        **그 조직 대표의 GitHub 토큰으로** 읽는다(서버 공용 토큰은 없다 — 있으면 모든 조직이 그 주인의 레포를 보게 된다).
+        대표가 GitHub를 연결하지 않았으면 **500이 아니라 빈 배열**을 반환한다(직접 입력으로 연결할 수 있다).
         GitHub 실패가 우리 기능을 멈추게 하지 않는다.
       security: [{ userToken: [] }]
       parameters: [{ $ref: '#/components/parameters/OrgId' }]
@@ -1393,7 +1394,7 @@ paths:
       tags: [조직]
       summary: 조직 멤버 목록
       description: |
-        GitHub collaborator 조회가 실패하면 `isCollaborator` 필드를 **생략**한다.
+        협업자 여부는 그 조직 대표의 GitHub 토큰으로 확인한다. 대표가 GitHub를 연결하지 않았거나 조회가 실패하면 `isCollaborator` 필드를 **생략**한다.
         `false`로 채우지 않는다 — "확인 안 됨"과 "권한 없음"은 다르다.
       security: [{ userToken: [] }]
       parameters: [{ $ref: '#/components/parameters/OrgId' }]
