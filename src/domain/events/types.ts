@@ -23,6 +23,14 @@ export type EventType =
   | 'APPROVAL_RESULT'
   | 'MEMBER_UNASSIGNED'
   | 'GITHUB_COLLABORATORS_INVITED'
+  | 'TASK_DISPATCHED'
+  | 'AGENT_RUN_STARTED'
+  | 'AGENT_RUN_ENDED'
+  | 'TASK_BLOCKED'
+  | 'TASK_RESUMED'
+  | 'RELEASE_REQUESTED'
+  | 'RELEASE_DECIDED'
+  | 'ACTION_DETECTED'
   | 'REPO_UPDATED'
   | 'TASKS_IMPORTED'
   | 'SPEC_CREATED'
@@ -249,6 +257,82 @@ export type GithubCollaboratorsInvitedPayload = {
   results: GithubInviteResult[];
 };
 
+// 서버가 "이 태스크를 실행해 주세요"를 보냈다 — 가져갈 수 있게 된 순간(시작됨·READY·담당 없음·선행 완료) attempt마다 한 번.
+// on_behalf_of는 'system:dispatcher'. 실제 전달은 에이전트 스트림(tasksChanged)이 하고, 이건 룸에 남는 기록이다.
+export type TaskDispatchedPayload = {
+  taskId: string;
+  title: string;
+  teamRole: string | null;
+  attempt: number;
+  // 대표가 재개한 횟수(TASK_RESUMED). 재개하면 같은 attempt라도 다시 보낸다.
+  resumes?: number;
+};
+
+// Executor가 Claude 실행을 시작했다/끝냈다. 끝은 Executor가 아는 결과(정상 종료·시간 초과·비정상)와 커밋 여부를 보고하고,
+// 제출 여부(submitted)는 서버가 태스크 상태로 정한다 — "끝났는데 제출하지 않았다"(막다른 길)를 서버가 알게 된다.
+export type AgentRunStartedPayload = {
+  taskId: string;
+  attempt: number;
+};
+
+// 에이전트가 제출 없이 멈췄다 → BLOCKED(AGENT_STOPPED). 재시도 횟수는 올리지 않는다 — 권한·환경 탓을 에이전트 실패로 세지 않는다.
+// cause: not_submitted(정상 종료했지만 제출 없음) · timeout · failed(비정상 종료) · unresponsive(감시: 응답이 끊김, system:watchdog).
+// lastMessage는 모델의 마지막 말, deniedCommands는 Executor가 실행 기록에서 뽑은 거부된 명령 — 대표가 무엇을 풀어야 하는지 보인다.
+export type TaskBlockedPayload = {
+  taskId: string;
+  reason: 'AGENT_STOPPED';
+  cause: 'not_submitted' | 'timeout' | 'failed' | 'unresponsive';
+  agentId: string;
+  lastMessage: string | null;
+  deniedCommands: string[];
+};
+
+// 제출 뒤 검증에서 행동 키가 새로 드러났다 — 지금은 package.json의 의존성 추가(dep:add)뿐이다. 경로로는 잡을 수 없어(scripts만 고친 변경까지 걸린다)
+// 커밋 전후 내용을 읽어 판정한다. 산출물의 행동 키와 판정(gate_mode)이 더 엄격한 쪽으로 바뀐다. unreadable이면 못 읽어서 fail closed로 건 것.
+export type ActionDetectedPayload = {
+  taskId: string;
+  artifactId: string;
+  actionKey: 'dep:add';
+  paths: string[];
+  changes: { path: string; section: string; name: string; from: string | null; to: string }[];
+  unreadable: string[];
+  gateModeBefore: string;
+  gateModeAfter: string;
+};
+
+// 모든 태스크가 DONE이 됐다 → 대표의 통합 확인·완료 승인 카드(G3). 통합 확인은 에이전트가 아니라 사람이 한다(운영 테스트 4-3, 대표 결정).
+// checks는 적용된 계획의 integrationChecks. on_behalf_of는 'system:pm'.
+export type ReleaseRequestedPayload = {
+  approvalId: string;
+  checkCount: number;
+  taskCount: number;
+};
+
+// 대표가 G3를 결정했다. 승인이면 프로젝트 completed, 반려면 그대로 진행 중(고칠 태스크는 대표가 만든다).
+export type ReleaseDecidedPayload = {
+  approvalId: string;
+  decision: 'APPROVE' | 'REJECT';
+  reason: string | null;
+  projectStatus: string;
+};
+
+// 대표가 원인을 해결하고 재개했다 → READY(담당 비움). note는 선택.
+export type TaskResumedPayload = {
+  taskId: string;
+  note: string | null;
+};
+
+export type AgentRunEndedPayload = {
+  taskId: string;
+  attempt: number;
+  outcome: 'completed' | 'timeout' | 'failed';
+  committed: boolean;
+  submitted: boolean;
+  durationMs: number;
+  exitCode: number | null;
+  taskState: string;
+};
+
 export type GithubInviteResult = {
   repoId: string;
   fullName: string;
@@ -368,6 +452,14 @@ export type EventPayloadMap = {
   APPROVAL_RESULT: ApprovalResultPayload;
   MEMBER_UNASSIGNED: MemberUnassignedPayload;
   GITHUB_COLLABORATORS_INVITED: GithubCollaboratorsInvitedPayload;
+  TASK_DISPATCHED: TaskDispatchedPayload;
+  AGENT_RUN_STARTED: AgentRunStartedPayload;
+  AGENT_RUN_ENDED: AgentRunEndedPayload;
+  TASK_BLOCKED: TaskBlockedPayload;
+  TASK_RESUMED: TaskResumedPayload;
+  RELEASE_REQUESTED: ReleaseRequestedPayload;
+  RELEASE_DECIDED: ReleaseDecidedPayload;
+  ACTION_DETECTED: ActionDetectedPayload;
   REPO_UPDATED: RepoUpdatedPayload;
   TASKS_IMPORTED: TasksImportedPayload;
   SPEC_CREATED: SpecCreatedPayload;

@@ -146,7 +146,8 @@ describe('계획 요청 → 초안 → 적용', () => {
     const plan = await requestAndWait(w);
 
     expect(plan).toMatchObject({ status: 'ready', error: null });
-    expect(plan.draft).toEqual(DRAFT);
+    // 확인 항목(integrationChecks)이 없으면 빈 목록으로 저장된다.
+    expect(plan.draft).toEqual({ ...DRAFT, integrationChecks: [] });
     expect(plan.costUsd).toBeCloseTo(costOfAttempts(USAGE), 6);
     // 지시와 연결된 레포가 PM에게 간다. 지침(system)은 바뀌지 않는 부분이다.
     expect(calls[0]!.user).toContain('참여 신청 기능');

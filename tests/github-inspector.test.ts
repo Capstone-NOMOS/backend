@@ -183,3 +183,27 @@ describe('githubInspector', () => {
     );
   });
 });
+
+describe('githubInspector — 파일 내용(dep:add 판정용)', () => {
+  it('부모 커밋과 그 커밋의 package.json을 raw로 읽고, 그 시점에 없던 파일은 null', async () => {
+    const { input } = await setup();
+    const urls: string[] = [];
+    const fetchImpl = async (url: string, init?: RequestInit): Promise<Response> => {
+      urls.push(url);
+      expect(new Headers(init?.headers).get('Authorization')).toBe(`Bearer ${TOKEN}`);
+      if (url === COMMIT_URL) return new Response(JSON.stringify({ parents: [{ sha: 'parent0' }] }), { status: 200 });
+      if (url === `${API}/repositories/${REPO_ID}/contents/apps/web/package.json?ref=parent0`) return new Response('', { status: 404 });
+      if (url === `${API}/repositories/${REPO_ID}/contents/apps/web/package.json?ref=${SHA}`) return new Response('{"dependencies":{"react":"^19"}}', { status: 200 });
+      return new Response('not routed', { status: 500 });
+    };
+    const inspector = githubInspector({ db: pool, fetchImpl, apiBase: API });
+    await expect(inspector.fileVersions!(input, 'apps/web/package.json')).resolves.toEqual({ before: null, after: '{"dependencies":{"react":"^19"}}' });
+    expect(urls).toHaveLength(3);
+  });
+
+  it('GitHub가 실패하면 던진다 — 호출부는 dep:add로 본다(fail closed)', async () => {
+    const { input } = await setup();
+    const inspector = githubInspector({ db: pool, fetchImpl: async () => new Response('', { status: 502 }), apiBase: API });
+    await expect(inspector.fileVersions!(input, 'package.json')).rejects.toThrow('502');
+  });
+});

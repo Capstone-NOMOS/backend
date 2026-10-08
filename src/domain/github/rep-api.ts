@@ -1,7 +1,8 @@
 import { AppError } from '../../errors.js';
 
-// 대표의 GitHub 토큰(oauth_sessions)으로 부르는 쓰기 API — GitHub 조직에 레포 만들기, 협업자 초대.
-// 읽기 전용인 client.ts(서버의 GITHUB_TOKEN)와 따로 둔다: 누구의 권한으로 무엇을 바꾸는지가 다르다.
+// 대표의 GitHub 토큰(oauth_sessions)으로 부르는 GitHub API — 레포 목록·조회, 협업자 확인(읽기)과 레포 만들기·협업자 초대(쓰기).
+// **서버 공용 토큰(PAT)을 쓰지 않는다.** PAT 하나로 읽으면 모든 조직이 그 PAT 주인의 레포를 보게 된다(조직 간 정보 유출) —
+// 조직마다 그 조직 대표의 권한으로만 본다. 대표가 GitHub를 연결하지 않았으면 목록은 비고 확인은 생략된다.
 // 토큰 값은 오류 메시지·로그에 절대 넣지 않는다.
 const DEFAULT_API = 'https://api.github.com';
 const TIMEOUT_MS = 15_000;
@@ -13,10 +14,16 @@ export const EMPTY_TREE_SHA = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 export const INITIAL_COMMIT_MESSAGE = 'Chore: 레포 초기화';
 
 export type CreatedGithubRepo = { fullName: string; githubRepoId: number; defaultBranch: string };
+export type GithubRepoInfo = CreatedGithubRepo;
 export type InviteOutcome = 'invited' | 'already_collaborator';
 
 export type GithubRepApi = {
   listOrgs(token: string): Promise<string[]>;
+  // 대표가 접근할 수 있는 레포(소유·협업·조직 멤버). 연결 드롭다운.
+  listRepos(token: string): Promise<GithubRepoInfo[]>;
+  // 레포 하나. 없거나 이 토큰으로 안 보이면 null. 직접 입력으로 연결할 때 github_repo_id를 채운다.
+  getRepo(token: string, fullName: string): Promise<GithubRepoInfo | null>;
+  isCollaborator(token: string, fullName: string, githubLogin: string): Promise<boolean>;
   createOrgRepo(token: string, input: { org: string; name: string; description?: string }): Promise<CreatedGithubRepo>;
   inviteCollaborator(token: string, fullName: string, githubLogin: string): Promise<InviteOutcome>;
 };
@@ -61,7 +68,40 @@ export function createGithubRepApi(options: { fetchImpl?: FetchLike; apiBase?: s
     return (await res.json()) as T;
   }
 
+  const toInfo = (r: { id: number; full_name: string; default_branch: string }): GithubRepoInfo => ({
+    fullName: r.full_name,
+    githubRepoId: r.id,
+    defaultBranch: r.default_branch,
+  });
+
   return {
+    async listRepos(token) {
+      const repos: GithubRepoInfo[] = [];
+      for (let page = 1; page <= 10; page += 1) {
+        const res = await call(token, 'GET', `/user/repos?per_page=100&page=${page}&sort=updated&affiliation=owner,collaborator,organization_member`);
+        if (!res.ok) throw await failure(res, 'GitHub 레포 목록');
+        const body = await json<Array<{ id: number; full_name: string; default_branch: string }>>(res);
+        repos.push(...body.map(toInfo));
+        if (body.length < 100) break;
+      }
+      return repos;
+    },
+
+    async getRepo(token, fullName) {
+      const res = await call(token, 'GET', `/repos/${fullName}`);
+      if (res.status === 404) return null;
+      if (!res.ok) throw await failure(res, `GitHub 레포 조회(${fullName})`);
+      return toInfo(await json<{ id: number; full_name: string; default_branch: string }>(res));
+    },
+
+    // 204 = 협업자, 404 = 아님. 그 밖은 "확인 못 함"이라 던진다 — 호출부가 필드를 생략한다(false로 채우지 않는다).
+    async isCollaborator(token, fullName, githubLogin) {
+      const res = await call(token, 'GET', `/repos/${fullName}/collaborators/${encodeURIComponent(githubLogin)}`);
+      if (res.status === 204) return true;
+      if (res.status === 404) return false;
+      throw await failure(res, `협업자 확인(${fullName} ← ${githubLogin})`);
+    },
+
     async listOrgs(token) {
       const orgs: string[] = [];
       for (let page = 1; page <= 10; page += 1) {

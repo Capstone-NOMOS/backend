@@ -12,6 +12,7 @@ import { isAllowedOrigin, type OriginRule } from '../middleware/cors.js';
 import type { CommittedEvent } from './event-feed.js';
 import { topicsFor } from './topics.js';
 import { routeUpgrade } from './upgrade-router.js';
+import { onActivityRecorded } from '../domain/room/activity-hub.js';
 
 // 사람용 실시간 스트림 — 화면이 폴링 대신 "다시 읽어라" 신호를 받는다.
 //
@@ -132,6 +133,14 @@ export function attachUserStream(server: Server, options: UserStreamOptions): Us
         for (const conn of conns ?? []) queue(conn, null, ['agents'], null);
       })
       .catch((err: unknown) => logger.warn('user stream presence failed', { agentId, error: String(err) }));
+  });
+
+  // 에이전트 활동(룸 피드의 에이전트 줄)은 이벤트가 아니라 따로 온다. 그 프로젝트를 구독한 연결에만 'room'을 보낸다.
+  // 신호에는 역할을 싣지 않는다 — 다른 역할 룸이 바뀌었다는 것만 알 뿐 내용은 피드 API가 역할로 거른다.
+  const unsubscribeActivity = onActivityRecorded((orgId, projectId) => {
+    for (const conn of byOrg.get(orgId) ?? []) {
+      if (conn.projects.has(projectId)) queue(conn, projectId, ['room'], null);
+    }
   });
 
   const handleMessage = async (conn: Connection, raw: RawData) => {
@@ -278,6 +287,7 @@ export function attachUserStream(server: Server, options: UserStreamOptions): Us
       clearInterval(ping);
       clearInterval(sweep);
       unsubscribePresence();
+      unsubscribeActivity();
       unroute();
       for (const ws of wss.clients) ws.terminate();
       await new Promise<void>((resolve) => wss.close(() => resolve()));

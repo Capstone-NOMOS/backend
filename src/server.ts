@@ -4,6 +4,7 @@ import { env } from './config/env.js';
 import { logger } from './config/logger.js';
 import { assertSchemaUpToDate } from './config/migrations.js';
 import { recoverInterruptedPlans } from './domain/pm/service.js';
+import { startStallWatchdog } from './domain/task/stall.js';
 import { attachRealtime } from './realtime/index.js';
 
 // 서버 기동. 로컬(index.ts, npm run dev)과 운영(boot.ts server)이 같은 경로를 탄다.
@@ -12,6 +13,8 @@ export async function startServer(): Promise<void> {
   await assertSchemaUpToDate(pool);
   // 서버로 뜰 때만 — migrate 단계(boot.ts migrate)에서는 옛 서버가 아직 PM 작업 중일 수 있어 건드리지 않는다.
   await recoverInterruptedPlans();
+  // 응답이 끊긴 에이전트가 잡고 있는 태스크를 멈춤(BLOCKED)으로 바꾼다 — Executor가 꺼지면 종료 보고조차 오지 않는다.
+  startStallWatchdog();
   const app = createApp();
   await new Promise<void>((resolve) => {
     const server = app.listen(env.PORT, () => {
