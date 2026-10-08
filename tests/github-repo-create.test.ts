@@ -229,6 +229,10 @@ describe('역할 배정 시 GitHub 협업자 자동 초대', () => {
     expect(res.status).toBe(201);
     expect(res.body.data!.githubInvites).toEqual([expect.objectContaining({ status: 'skipped' })]);
     expect(calls).toEqual([]);
+    const before = await http('GET', `/projects/${projectId}`, w.rep.token);
+    expect((before.body.data!.members as { githubInvites: { status: string; reason?: string }[] }[])[0]!.githubInvites).toEqual([
+      expect.objectContaining({ status: 'skipped', reason: expect.stringContaining('GitHub를 연결하지') }),
+    ]);
 
     await linkGithub(w.be.userId, 2, 'octo-be');
     const retry = await http('POST', `/projects/${projectId}/members/${w.beAgentId}/github-invite`, w.rep.token);
@@ -236,6 +240,12 @@ describe('역할 배정 시 GitHub 협업자 자동 초대', () => {
     expect(retry.body.data!.githubInvites).toEqual([expect.objectContaining({ status: 'invited' })]);
     const triggers = await testPool.query(`SELECT payload->>'trigger' AS t FROM events WHERE type = 'GITHUB_COLLABORATORS_INVITED' ORDER BY ts`);
     expect(triggers.rows.map((r) => r.t)).toEqual(['assign', 'retry']);
+
+    // 새로고침해도 남는다 — 프로젝트 조회의 멤버 정보에 레포별 마지막 결과(재초대 뒤라 invited).
+    const detail = await http('GET', `/projects/${projectId}`, w.rep.token);
+    const member = (detail.body.data!.members as { agentId: string; githubInvites: { status: string; fullName: string; at: string }[] }[])[0]!;
+    expect(member.agentId).toBe(w.beAgentId);
+    expect(member.githubInvites).toEqual([{ repoId: expect.any(String), fullName: 'acme-gh/shop-api', status: 'invited', at: expect.any(String) }]);
   });
 
   it('GitHub가 실패해도 배정은 유효하고 실패 사유가 결과에 남는다', async () => {

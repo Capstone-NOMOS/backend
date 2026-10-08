@@ -456,12 +456,26 @@ components:
         fullName: { type: string }
     ProjectMember:
       type: object
-      required: [agentId, agentName, teamRole, userId]
+      required: [agentId, agentName, teamRole, userId, githubInvites]
       properties:
         agentId: { type: string, format: uuid }
         agentName: { type: string }
         teamRole: { type: string, enum: [FRONTEND, BACKEND] }
         userId: { type: string, format: uuid, description: '에이전트 주인' }
+        githubInvites:
+          type: array
+          description: |
+            레포별 **마지막** GitHub 협업자 초대 결과(배정·다시 초대 때 남은 이벤트에서 읽는다 — 새로고침해도 남는다). 초대한 적 없으면 빈 목록
+            (GitHub 레포가 없는 프로젝트 등). invited는 초대장을 보냈다는 뜻이고 수락 여부는 GET /orgs/{orgId}/members의 isCollaborator로 본다.
+          items:
+            type: object
+            required: [repoId, fullName, status, at]
+            properties:
+              repoId: { type: string, format: uuid }
+              fullName: { type: string }
+              status: { type: string, enum: [invited, already_collaborator, skipped, failed] }
+              reason: { type: string }
+              at: { type: string, format: date-time, description: '그 초대를 시도한 시각' }
     ProjectDetail:
       type: object
       required: [project, repos, members]
@@ -2348,7 +2362,7 @@ paths:
                   repos:
                     - { id: '{{REPO_API}}', fullName: acme/study-api }
                   members:
-                    - { agentId: '{{AGENT_BE}}', agentName: be-laptop, teamRole: BACKEND }
+                    - { agentId: '{{AGENT_BE}}', agentName: be-laptop, teamRole: BACKEND, githubInvites: [] }
         '403':
           description: 이 프로젝트의 멤버가 아님
           content:
@@ -2710,7 +2724,7 @@ paths:
               example:
                 data:
                   members:
-                    - { agentId: '{{AGENT_BE}}', agentName: be-laptop, teamRole: BACKEND }
+                    - { agentId: '{{AGENT_BE}}', agentName: be-laptop, teamRole: BACKEND, githubInvites: [] }
                   githubInvites:
                     - { repoId: '{{REPO_API}}', fullName: acme/study-api, status: invited }
                   notice: 배정된 에이전트는 POST /api/agents/token/refresh로 토큰을 재발급해야 태스크·노트 API를 쓸 수 있습니다.

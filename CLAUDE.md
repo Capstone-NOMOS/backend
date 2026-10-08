@@ -158,6 +158,8 @@ GitHub API는 **그 조직 대표의 GitHub 토큰(`oauth_sessions`)으로만** 
 - **역할 배정 시 협업자 자동 초대**: 그 에이전트 주인의 `github_login`(멤버가 "GitHub 연결"로 등록 — 가입 때 아이디를 손으로 받지 않는다. 본인 확인이 안 된다)을
   프로젝트의 GitHub 레포마다 push 권한으로 초대한다. 배정을 먼저 커밋하고 그 뒤에 부른다 — **초대 실패가 배정을 막지 않는다**(결과 `githubInvites`, 이벤트 `GITHUB_COLLABORATORS_INVITED`).
   미연결·실패는 `POST .../members/:agentId/github-invite`로 다시 보낸다(시작 뒤에도 된다). 초대는 멤버가 GitHub에서 수락해야 효력이 있다.
+  결과는 따로 저장하지 않는다 — 응답의 멤버 정보(`ProjectMember.githubInvites`)에 **그 이벤트에서 읽은 멤버별 마지막 결과**를 붙인다(새로고침하면 사라진다는 FE 보고).
+  `invited`는 보냈다는 뜻이고 수락 여부는 멤버 목록의 `isCollaborator`다.
 - GitHub 조직이 OAuth 앱 접근 제한을 켜 두었으면 그 조직에서 NOMOS 앱을 승인해야 목록·생성이 된다(403 `GITHUB_FORBIDDEN`).
 
 ### 경로 소유권 모델
