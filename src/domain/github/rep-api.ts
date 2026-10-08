@@ -9,6 +9,9 @@ const TIMEOUT_MS = 15_000;
 // git의 빈 트리. 모든 저장소에 암묵적으로 있는 객체라 파일 없는 커밋을 만들 때 쓴다.
 export const EMPTY_TREE_SHA = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 
+// 첫 커밋 메시지(대표 결정). 팀별 커밋 형식 설정이 생기면 그 형식을 따르게 바꾼다.
+export const INITIAL_COMMIT_MESSAGE = 'Chore: 레포 초기화';
+
 export type CreatedGithubRepo = { fullName: string; githubRepoId: number; defaultBranch: string };
 export type InviteOutcome = 'invited' | 'already_collaborator';
 
@@ -91,7 +94,7 @@ export function createGithubRepApi(options: { fetchImpl?: FetchLike; apiBase?: s
       const branch = repo.default_branch;
 
       const commit = await call(token, 'POST', `/repos/${fullName}/git/commits`, {
-        message: 'init',
+        message: INITIAL_COMMIT_MESSAGE,
         tree: EMPTY_TREE_SHA,
         parents: [],
       });

@@ -292,7 +292,7 @@ describe('GitHub 호출 모양 (rep-api)', () => {
       'PATCH https://gh.test/repos/acme-gh/shop/git/refs/heads/main',
     ]);
     expect(reqs[0]!.body).toEqual({ name: 'shop', private: true, auto_init: true });
-    expect(reqs[1]!.body).toEqual({ message: 'init', tree: EMPTY_TREE_SHA, parents: [] });
+    expect(reqs[1]!.body).toEqual({ message: 'Chore: 레포 초기화', tree: EMPTY_TREE_SHA, parents: [] });
     expect(reqs[2]!.body).toEqual({ sha: 'c0ffee', force: true });
     expect(reqs.every((r) => r.auth === 'Bearer tok')).toBe(true);
   });

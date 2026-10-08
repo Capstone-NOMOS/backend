@@ -11,7 +11,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createGithubRepApi, EMPTY_TREE_SHA } from '../src/domain/github/rep-api.js';
+import { createGithubRepApi, EMPTY_TREE_SHA, INITIAL_COMMIT_MESSAGE } from '../src/domain/github/rep-api.js';
 
 const API = 'https://api.github.com';
 
@@ -68,7 +68,7 @@ async function main(): Promise<void> {
     }>;
     check(commits.length === 1, `기본 브랜치의 커밋이 하나다 (${commits.length}개)`);
     const head = commits[0];
-    check(head?.commit.message === 'init' && head.parents.length === 0, '그 커밋이 부모 없는 "init"이다');
+    check(head?.commit.message === INITIAL_COMMIT_MESSAGE && head.parents.length === 0, `그 커밋이 부모 없는 "${INITIAL_COMMIT_MESSAGE}"이다`);
 
     // 빈 트리는 GitHub에 객체로 저장되지 않아 trees API로 읽으면 404다(실측). 커밋이 가리키는 트리 sha로 본다.
     check(head?.commit.tree.sha === EMPTY_TREE_SHA, `커밋의 트리가 빈 트리다 — README 없음 (${head?.commit.tree.sha ?? '?'})`);
