@@ -11,7 +11,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createGithubRepApi } from '../src/domain/github/rep-api.js';
+import { createGithubRepApi, EMPTY_TREE_SHA } from '../src/domain/github/rep-api.js';
 
 const API = 'https://api.github.com';
 
@@ -70,8 +70,8 @@ async function main(): Promise<void> {
     const head = commits[0];
     check(head?.commit.message === 'init' && head.parents.length === 0, '그 커밋이 부모 없는 "init"이다');
 
-    const tree = (await (await gh(tok, 'GET', `/repos/${created.fullName}/git/trees/${head?.commit.tree.sha ?? ''}`)).json()) as { tree?: unknown[] };
-    check(Array.isArray(tree.tree) && tree.tree.length === 0, `트리가 비어 있다 — README 없음 (${tree.tree?.length ?? '?'}개)`);
+    // 빈 트리는 GitHub에 객체로 저장되지 않아 trees API로 읽으면 404다(실측). 커밋이 가리키는 트리 sha로 본다.
+    check(head?.commit.tree.sha === EMPTY_TREE_SHA, `커밋의 트리가 빈 트리다 — README 없음 (${head?.commit.tree.sha ?? '?'})`);
 
     // Executor가 하는 것처럼 클론해서 origin/<기본 브랜치>에서 태스크 브랜치를 딴다(사용자의 git 자격 증명).
     const dir = mkdtempSync(path.join(os.tmpdir(), 'nomos-check-'));
