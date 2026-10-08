@@ -26,11 +26,16 @@ describe('도구 → 활동', () => {
     const long = toActivity('Bash', { command: 'x'.repeat(400) }, cwd)!;
     expect(long.target.length).toBe(300);
     expect(toActivity('Grep', { pattern: 'TODO' }, cwd)).toEqual({ kind: 'search', target: 'TODO' });
+    // 명령 안의 작업공간 절대 경로는 '.'으로 — 사용자 폴더 이름이 룸에 찍히지 않게(실측: 모델이 git -C <절대 경로>를 썼다).
+    const slash = cwd.split(path.sep).join('/');
+    expect(toActivity('Bash', { command: `git -C "${slash}" ls-files` }, cwd)).toEqual({ kind: 'run', target: 'git -C "." ls-files' });
+    expect(toActivity('Bash', { command: `ls ${cwd}${path.sep}src` }, cwd)).toEqual({ kind: 'run', target: `ls .${path.sep}src` });
   });
 
   it('NOMOS 도구·할 일 목록은 보내지 않는다(제출·노트는 서버 이벤트로 이미 보인다), 모르는 도구는 이름만', () => {
     expect(toActivity('mcp__nomos__submit_artifact', { commitSha: 'x' }, cwd)).toBeNull();
     expect(toActivity('TodoWrite', { todos: [] }, cwd)).toBeNull();
+    expect(toActivity('ToolSearch', { query: 'select:x' }, cwd)).toBeNull();
     expect(toActivity('WebFetch', { url: 'https://x' }, cwd)).toEqual({ kind: 'other', target: 'WebFetch' });
   });
 });

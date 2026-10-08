@@ -1,6 +1,7 @@
 import { pool, withTransaction, type Queryable } from '../../config/db.js';
 import { AppError } from '../../errors.js';
 import { presenceOf } from '../agent/presence.js';
+import { findAgentMembership } from '../policy/repository.js';
 import { appendEvent } from '../events/append.js';
 import { listProjectMembers } from '../project/repository.js';
 import { assertProjectVisibleToUser, type UserContext } from '../project/visibility.js';
@@ -24,12 +25,21 @@ async function taskInProject(ctx: AgentContext, taskId: string, db: Queryable = 
 
 // ── Executor → 서버 ──────────────────────────────────────────────────────
 
-// Claude 실행을 시작했다. 그 태스크를 잡고 있는 에이전트만 부를 수 있다.
+// Claude 실행을 시작했다. 태스크를 잡는 것(claim_task)은 실행 **안에서** 모델이 하므로, 시작 시점의 태스크는 보통 아직 READY다.
+// 그래서 "이 에이전트가 잡고 있다" 또는 "이 에이전트가 지금 잡을 수 있다(READY·담당 없음·내 역할 또는 역할 제한 없음)"면 받는다.
+// 선행 조건·정책은 여기서 다시 보지 않는다 — 실제로 잡을 수 있는지는 claim이 판정하고, 이건 기록일 뿐이다.
 export async function startRun(ctx: AgentContext, taskId: string): Promise<{ taskId: string; attempt: number }> {
   return withTransaction(async (tx) => {
     const task = await taskInProject(ctx, taskId, tx);
-    if (task.assigneeAgentId !== ctx.agentId || !RUNNING_STATES.includes(task.state)) {
-      throw new AppError('RUN_NOT_ALLOWED', `task ${taskId} is not held by this agent (state ${task.state})`);
+    const held = task.assigneeAgentId === ctx.agentId && RUNNING_STATES.includes(task.state);
+    const membership = await findAgentMembership(tx, ctx.agentId);
+    const claimable =
+      task.state === 'READY' &&
+      task.assigneeAgentId === null &&
+      membership?.projectId === ctx.projectId &&
+      (task.teamRole === null || task.teamRole === membership.teamRole);
+    if (!held && !claimable) {
+      throw new AppError('RUN_NOT_ALLOWED', `task ${taskId} is neither held nor claimable by this agent (state ${task.state})`);
     }
     await appendEvent(tx, {
       orgId: ctx.orgId,

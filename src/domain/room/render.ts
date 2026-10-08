@@ -65,10 +65,11 @@ function eventText(row: FeedRow): { speaker: RoomMessage['speaker']; text: strin
         ? { speaker: 'pm', text: `${title} 실행해 주세요` }
         : { speaker: 'pm', text: `${title} 다시 실행해 주세요 (재시도 ${attempt}/${MAX_RETRIES})` };
     }
-    case 'TASK_CLAIMED':
-      return { speaker: 'nomos', text: `태스크 수령 — ${title}` };
+    // 실행 순서: Executor가 에이전트를 띄우고(AGENT_RUN_STARTED) → 에이전트가 실행 안에서 태스크를 잡는다(TASK_CLAIMED).
     case 'AGENT_RUN_STARTED':
-      return { speaker: 'nomos', text: '구현을 시작합니다' };
+      return { speaker: 'nomos', text: '에이전트를 실행합니다' };
+    case 'TASK_CLAIMED':
+      return { speaker: 'nomos', text: `태스크 수령 — ${title} · 구현을 시작합니다` };
     case 'AGENT_RUN_ENDED': {
       const seconds = Math.round(num(p.durationMs) / 1000);
       if (p.submitted === true) return { speaker: 'nomos', text: `실행을 마쳤습니다 (${seconds}초)` };
@@ -101,11 +102,10 @@ function eventText(row: FeedRow): { speaker: RoomMessage['speaker']; text: strin
         case 'ESCALATED':
           return { speaker: 'pm', text: `검증 실패 — ${stages} → 재시도 한도를 넘어 대표에게 넘깁니다` };
         default:
-          return { speaker: 'pm', text: `검증 중 — ${stages}` };
+          // 아직 단계가 남았다(VERIFYING) — 단계 보고마다 줄이 생겨 시끄러웠다(실측). 결론이 난 줄만 보인다.
+          return null;
       }
     }
-    case 'APPROVAL_REQUESTED':
-      return { speaker: 'pm', text: '대표 승인이 필요합니다' };
     case 'APPROVAL_RESULT':
       return p.decision === 'APPROVE'
         ? { speaker: 'pm', text: '대표가 승인했습니다 → 완료되었습니다' }

@@ -2,6 +2,7 @@ import { withTransaction } from '../../config/db.js';
 import { AppError, type ErrorCode } from '../../errors.js';
 import { tasksChanged } from '../dispatch/tasks-changed.js';
 import { appendEvent } from '../events/append.js';
+import { recordDispatches } from '../room/dispatch.js';
 import { findLatestRejection } from '../approval/repository.js';
 import type { DenialStage, PathDenialReason } from '../events/types.js';
 import { settle, type Outcome } from '../outcome.js';
@@ -310,7 +311,10 @@ export async function submitArtifact(
 }
 
 // 이 에이전트가 지금 가져갈 수 있는 태스크(푸시와 같은 스냅샷). 웹소켓이 끊겼을 때 폴링하는 자리다.
+// 보내기 전에 "실행해 주세요"(TASK_DISPATCHED)를 먼저 기록한다 — 서버 밖(seed:tasks 스크립트)에서 들어온 태스크는 tasksChanged가 없어
+// 기록되지 않은 채 에이전트에게 먼저 갈 수 있다. 에이전트가 받는 목록에 있는 태스크는 반드시 지시가 남아 있게 한다(중복은 PK가 막는다).
 export async function listClaimableTasksForAgent(ctx: AgentContext): Promise<Task[]> {
+  await recordDispatches(ctx.projectId);
   return withTransaction(async (tx) => {
     const membership = await findAgentMembership(tx, ctx.agentId);
     if (!membership || membership.projectId !== ctx.projectId) {

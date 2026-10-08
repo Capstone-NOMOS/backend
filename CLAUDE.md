@@ -446,7 +446,9 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
 
 룸 = **프로젝트 × 역할**. 테이블이 없다(역할당 에이전트가 하나라 구성이 저절로 정해진다). 피드는 세 가지를 시각순으로 섞은 한 줄씩이고 **문장은 서버가 만든다**(`room/render.ts`).
 - **pm**(서버): "실행해 주세요"(`TASK_DISPATCHED`), 검증 결과, 승인, 프로젝트 시작·계획 적용(프로젝트 단위는 **모든 룸**에).
-- **nomos**(Executor 보고): 수령, 구현 시작(`AGENT_RUN_STARTED`), 제출, 실행 종료(`AGENT_RUN_ENDED`).
+  검증은 **결론이 난 줄만** 낸다(VERIFYING 중간 보고·`APPROVAL_REQUESTED`는 줄을 만들지 않는다 — 실제 실행에서 같은 말이 세 줄씩 겹쳤다).
+- **nomos**(Executor 보고): 에이전트 실행(`AGENT_RUN_STARTED`), 수령, 제출, 실행 종료(`AGENT_RUN_ENDED`).
+  태스크는 실행 **안에서** 모델이 잡으므로(`claim_task`) 실행 시작 시점의 태스크는 보통 READY다 — 시작 보고는 "잡고 있음 또는 지금 잡을 수 있음"이면 받는다(실측: 잡은 뒤로 제한했더니 실제 실행의 시작 보고가 전부 거부됐다).
 - **agent**: 도구 사용(`agent_activity`)과 인계 노트.
 
 - **팀원은 자기 역할 룸만, 대표는 전부**(`ROOM_NOT_VISIBLE`). 판정은 `room/service.ts`의 `visibleRoles` 한 곳.

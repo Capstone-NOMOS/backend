@@ -104,8 +104,9 @@ async function feed(token: string, projectId: string, role: string, query = ''):
 describe('룸 피드 — 실행해 주세요부터 검증 결과까지', () => {
   it('BE 룸에 서버 지시·수령·실행·도구 사용·제출·검증이 순서대로 쌓인다(최신부터)', async () => {
     const w = await world();
-    await http('POST', `/tasks/${w.beTaskId}/claim`, w.beAgentToken);
+    // 실제 순서: Executor가 실행을 시작하고 → 모델이 실행 안에서 태스크를 잡는다.
     expect((await http('POST', `/tasks/${w.beTaskId}/runs/start`, w.beAgentToken)).status).toBe(201);
+    await http('POST', `/tasks/${w.beTaskId}/claim`, w.beAgentToken);
     expect(
       (await http('POST', `/tasks/${w.beTaskId}/activity`, w.beAgentToken, {
         items: [
@@ -120,6 +121,11 @@ describe('룸 피드 — 실행해 주세요부터 검증 결과까지', () => {
       changedPaths: ['src/api/join.ts'],
     });
     expect(submitted.status).toBe(201);
+    // Executor가 V2·V4를 보고해야 검증 결론이 난다(그 전의 '검증 중'은 룸에 줄을 만들지 않는다).
+    const artifactId = submitted.data.id as string;
+    for (const stage of ['V2', 'V4']) {
+      await http('POST', `/artifacts/${artifactId}/verifications`, w.beAgentToken, { stage, result: 'SKIPPED', detail: { reason: '없음' } });
+    }
     const ended = await http('POST', `/tasks/${w.beTaskId}/runs/end`, w.beAgentToken, { outcome: 'completed', committed: true, durationMs: 42_000, exitCode: 0 });
     expect(ended.data).toMatchObject({ submitted: true });
 
@@ -128,16 +134,18 @@ describe('룸 피드 — 실행해 주세요부터 검증 결과까지', () => {
     expect(lines.slice(0, 8)).toEqual([
       '[pm] 프로젝트를 시작합니다',
       '[pm] T-1 가입 API 실행해 주세요',
-      '[nomos] 태스크 수령 — T-1 가입 API',
-      '[nomos] 구현을 시작합니다',
+      '[nomos] 에이전트를 실행합니다',
+      '[nomos] 태스크 수령 — T-1 가입 API · 구현을 시작합니다',
       '[agent] src/api/join.ts 읽는 중',
       '[agent] src/api/join.ts 수정',
       '[agent] npm test 실행',
       '[nomos] 제출했습니다 (커밋 a1b2c3d, 파일 1개)',
     ]);
-    // 검증 결론은 정책에 따라 완료·승인 대기·검증 중 중 하나다. 실행 종료는 맨 뒤.
-    expect(lines.slice(8).some((l) => l.startsWith('[pm] 검증'))).toBe(true);
-    expect(lines.at(-1)).toBe('[nomos] 실행을 마쳤습니다 (42초)');
+    // 검증 결론은 한 줄만(이 태스크는 정책상 AUTO라 완료), 그 뒤에 실행 종료.
+    expect(lines.slice(8)).toEqual([
+      '[pm] 검증 완료 — V3 통과, V1A·V1B·V2·V4 건너뜀 → 완료되었습니다',
+      '[nomos] 실행을 마쳤습니다 (42초)',
+    ]);
     // 다른 역할의 태스크는 BE 룸에 나오지 않는다.
     expect(messages.some((m) => m.taskId === w.feTaskId)).toBe(false);
 
@@ -148,8 +156,8 @@ describe('룸 피드 — 실행해 주세요부터 검증 결과까지', () => {
 
   it('끝났는데 제출하지 않았으면 서버가 그렇게 적는다 — 막다른 길이 룸에 드러난다', async () => {
     const w = await world();
-    await http('POST', `/tasks/${w.beTaskId}/claim`, w.beAgentToken);
     await http('POST', `/tasks/${w.beTaskId}/runs/start`, w.beAgentToken);
+    await http('POST', `/tasks/${w.beTaskId}/claim`, w.beAgentToken);
     const ended = await http('POST', `/tasks/${w.beTaskId}/runs/end`, w.beAgentToken, { outcome: 'completed', committed: false, durationMs: 1000, exitCode: 0 });
     expect(ended.data).toEqual({ submitted: false, taskState: 'CLAIMED' });
     const { messages } = await feed(w.rep.token, w.projectId, 'BACKEND');
@@ -184,9 +192,10 @@ describe('룸 권한', () => {
 });
 
 describe('Executor 보고 규칙', () => {
-  it('실행 시작은 그 태스크를 잡은 에이전트만, 활동·종료는 열린 실행에만', async () => {
+  it('실행 시작은 그 태스크를 잡았거나 지금 잡을 수 있는 에이전트만, 활동·종료는 열린 실행에만', async () => {
     const w = await world();
-    expect(await http('POST', `/tasks/${w.beTaskId}/runs/start`, w.beAgentToken)).toMatchObject({ status: 409, error: { code: 'RUN_NOT_ALLOWED' } });
+    // 다른 역할의 태스크는 시작할 수 없다.
+    expect(await http('POST', `/tasks/${w.beTaskId}/runs/start`, w.feAgentToken)).toMatchObject({ status: 409, error: { code: 'RUN_NOT_ALLOWED' } });
     await http('POST', `/tasks/${w.beTaskId}/claim`, w.beAgentToken);
     expect(await http('POST', `/tasks/${w.beTaskId}/activity`, w.beAgentToken, { items: [{ kind: 'read', target: 'a.ts' }] })).toMatchObject({
       status: 409,

@@ -25,9 +25,20 @@ function relative(cwd: string, p: unknown): string | null {
   return rel.split(path.sep).join('/');
 }
 
+// 명령 안의 작업공간 절대 경로를 '.'으로 바꾼다 — 모델이 `git -C "C:/Users/<이름>/.nomos/..."`처럼 쓰면 사용자 폴더 이름이 룸에 찍힌다(실측).
+function hideWorkspace(command: string, cwd: string): string {
+  const forms = new Set([cwd, cwd.split(path.sep).join('/'), cwd.split('/').join('\\')]);
+  let out = command;
+  for (const form of [...forms].sort((a, b) => b.length - a.length)) {
+    if (form) out = out.split(form).join('.');
+  }
+  return out;
+}
+
 // 도구 하나 → 활동 한 줄. 룸에 보일 필요가 없는 것(NOMOS 도구 — 제출·노트는 서버 이벤트로 이미 보인다, 할 일 목록)은 null.
 export function toActivity(tool: string, input: Record<string, unknown>, cwd: string): ActivityItem | null {
-  if (tool.startsWith('mcp__nomos__') || tool === 'TodoWrite' || tool === 'AskUserQuestion') return null;
+  // ToolSearch는 Claude Code가 도구 정의를 불러오는 내부 동작이다(실측: 실행마다 첫 줄로 찍혔다).
+  if (tool.startsWith('mcp__nomos__') || ['TodoWrite', 'AskUserQuestion', 'ToolSearch'].includes(tool)) return null;
   const file = (key: string): string | null => relative(cwd, input[key]);
   let item: ActivityItem | null = null;
   switch (tool) {
@@ -53,7 +64,7 @@ export function toActivity(tool: string, input: Record<string, unknown>, cwd: st
       break;
     }
     case 'Bash':
-      item = typeof input.command === 'string' && input.command.trim() ? { kind: 'run', target: input.command } : null;
+      item = typeof input.command === 'string' && input.command.trim() ? { kind: 'run', target: hideWorkspace(input.command, cwd) } : null;
       break;
     case 'Grep':
     case 'Glob':

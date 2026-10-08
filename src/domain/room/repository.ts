@@ -81,7 +81,7 @@ export const TASK_FEED_EVENTS = [
   'AGENT_RUN_ENDED',
   'ARTIFACT_SUBMITTED',
   'VERIFICATION_COMPLETED',
-  'APPROVAL_REQUESTED',
+  // APPROVAL_REQUESTED는 넣지 않는다 — 같은 트랜잭션의 검증 결과 줄이 이미 "대표 승인을 기다립니다"라고 말한다(겹쳐 보였다).
   'APPROVAL_RESULT',
   'NOTE_PUBLISHED',
 ] as const;

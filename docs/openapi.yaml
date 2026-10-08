@@ -2606,8 +2606,8 @@ paths:
         예(오래된 것부터):
         ```
         [pm]    T-3 회원가입 API 실행해 주세요
-        [nomos] 태스크 수령 — T-3 회원가입 API
-        [nomos] 구현을 시작합니다
+        [nomos] 에이전트를 실행합니다
+        [nomos] 태스크 수령 — T-3 회원가입 API · 구현을 시작합니다
         [agent] src/routes/auth.ts 읽는 중
         [agent] src/routes/auth.ts 수정
         [agent] npm test 실행
@@ -3391,8 +3391,9 @@ paths:
       tags: [룸]
       summary: Claude 실행 시작 보고 (Executor)
       description: |
-        Executor가 태스크를 수령한 뒤 Claude를 띄우기 직전에 부른다. 룸에 "구현을 시작합니다"가 남는다(이벤트 `AGENT_RUN_STARTED`).
-        그 태스크를 잡고 있는 에이전트만(CLAIMED·IN_PROGRESS) 부를 수 있다. 아니면 409 `RUN_NOT_ALLOWED`.
+        Executor가 Claude를 띄우기 직전에 부른다. 룸에 "에이전트를 실행합니다"가 남는다(이벤트 `AGENT_RUN_STARTED`).
+        태스크를 잡는 것(`claim_task`)은 실행 **안에서** 모델이 하므로, 이 에이전트가 그 태스크를 잡고 있거나(CLAIMED·IN_PROGRESS)
+        **지금 잡을 수 있으면**(READY·담당 없음·내 역할 또는 역할 제한 없음) 받는다. 아니면 409 `RUN_NOT_ALLOWED`.
       security: [{ agentToken: [] }]
       parameters: [{ $ref: '#/components/parameters/TaskId' }]
       responses:
@@ -3402,7 +3403,7 @@ paths:
             application/json:
               schema: { type: object, required: [data], properties: { data: { type: object, required: [taskId, attempt], properties: { taskId: { type: string, format: uuid }, attempt: { type: integer } } } } }
         '409':
-          description: 이 에이전트가 잡고 있는 태스크가 아님
+          description: 이 에이전트가 잡고 있지도, 잡을 수도 없는 태스크
           content:
             application/json:
               example:
