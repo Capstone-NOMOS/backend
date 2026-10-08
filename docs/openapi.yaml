@@ -306,6 +306,32 @@ components:
         fullName: { type: string }
         seededPathCount: { type: integer }
         rootOwnerRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true, description: '`**` 행의 소유 역할. 연결 때 ownerRole을 주지 않았으면 null(나중에 PATCH로 지정)' }
+    CreatedGithubRepo:
+      type: object
+      required: [id, fullName, seededPathCount, rootOwnerRole, githubRepoId, defaultBranch, cloneUrl]
+      properties:
+        id: { type: string, format: uuid }
+        fullName: { type: string }
+        seededPathCount: { type: integer }
+        rootOwnerRole: { type: string, enum: [FRONTEND, BACKEND] }
+        githubRepoId: { type: integer }
+        defaultBranch: { type: string, description: 'GitHub 조직의 기본 브랜치 설정을 따른다(보통 main)' }
+        cloneUrl: { type: string, description: 'V3가 커밋을 읽을 곳. 자동으로 채워진다' }
+    GithubInviteResult:
+      type: object
+      required: [repoId, fullName, status]
+      properties:
+        repoId: { type: string, format: uuid }
+        fullName: { type: string }
+        status:
+          type: string
+          enum: [invited, already_collaborator, skipped, failed]
+          description: |
+            - invited: 초대장을 보냈다. **멤버가 GitHub에서 수락해야** 클론·push할 수 있다
+            - already_collaborator: 이미 접근할 수 있다
+            - skipped: 멤버나 대표가 GitHub를 연결하지 않아 보내지 못했다(reason)
+            - failed: GitHub가 거부·실패했다(reason)
+        reason: { type: string }
     RepoSettings:
       type: object
       required: [id, fullName, githubRepoId, defaultBranch, devBranch, cloneUrl]
@@ -1219,6 +1245,94 @@ paths:
             application/json:
               example:
                 error: { code: CROSS_ORG_ACCESS, message: cannot access another organization }
+    post:
+      tags: [레포·경로]
+      summary: GitHub 조직에 레포 만들고 연결 (대표 전용)
+      description: |
+        대표의 GitHub 토큰으로 **GitHub 조직에 비공개 레포**를 만들고 곧바로 NOMOS에 연결한다(개인 계정에는 만들지 않는다).
+        프로젝트 생성 화면에서 이걸 부른 뒤 받은 `id`를 `repoIds`에 넣으면 된다.
+
+        - 첫 커밋은 **파일 없는 빈 커밋** 하나다(README 없음). 브랜치가 있어야 에이전트가 분기할 수 있다.
+        - `ownerRole`은 필수다 — `**` 행의 소유 역할. 없으면 프로젝트에 넣을 수 없다(422 `REPO_OWNERSHIP_NOT_SET`).
+        - `githubRepoId`·`cloneUrl`이 자동으로 채워져 V3(실제 diff 검사)가 처음부터 돈다.
+        - GitHub에 레포를 만든 뒤 연결이 실패하면 GitHub에는 레포가 남는다. 그때는 `POST /orgs/{orgId}/repos`로 연결한다.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/OrgId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [githubOrg, name, ownerRole]
+              properties:
+                githubOrg: { type: string, description: 'GitHub 조직 login (GET /orgs/{orgId}/github/orgs)' }
+                name: { type: string, description: '영숫자와 . _ - 만, 100자까지' }
+                description: { type: string, maxLength: 350 }
+                ownerRole: { type: string, enum: [FRONTEND, BACKEND] }
+            example:
+              githubOrg: Capstone-NOMOS
+              name: shop-api
+              ownerRole: BACKEND
+      responses:
+        '201':
+          description: 만들고 연결함
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [repo], properties: { repo: { $ref: '#/components/schemas/CreatedGithubRepo' } } } } }
+              example:
+                data:
+                  repo: { id: '{{REPO_API}}', fullName: Capstone-NOMOS/shop-api, seededPathCount: 15, rootOwnerRole: BACKEND, githubRepoId: 123456, defaultBranch: main, cloneUrl: 'https://github.com/Capstone-NOMOS/shop-api' }
+        '403':
+          description: 대표가 아니거나 GitHub가 거부(그 조직에 레포를 만들 권한이 없음, 조직이 NOMOS 앱을 승인하지 않음)
+          content:
+            application/json:
+              examples:
+                대표아님:
+                  value: { error: { code: NOT_REPRESENTATIVE, message: this action requires the organization representative } }
+                GitHub거부:
+                  value: { error: { code: GITHUB_FORBIDDEN, message: 'GitHub 레포 생성(acme/shop-api): GitHub가 거부했습니다(403)' } }
+        '409':
+          description: GitHub 미연결 또는 같은 이름의 레포가 이미 있음
+          content:
+            application/json:
+              examples:
+                미연결:
+                  value: { error: { code: GITHUB_NOT_LINKED, message: GitHub 계정이 연결되어 있지 않습니다 } }
+                이름중복:
+                  value: { error: { code: GITHUB_REPO_NAME_TAKEN, message: GitHub 조직 acme에 shop-api 레포를 만들 수 없습니다 } }
+
+  /orgs/{orgId}/github/orgs:
+    get:
+      tags: [레포·경로]
+      summary: 레포를 만들 수 있는 GitHub 조직 목록 (대표 전용)
+      description: |
+        대표 본인의 GitHub 토큰으로 대표가 속한 GitHub 조직을 읽는다. 레포 만들기 화면의 드롭다운을 채운다.
+        GitHub를 연결하지 않았으면 409 `GITHUB_NOT_LINKED`.
+
+        GitHub 조직이 OAuth 앱 접근 제한을 켜 두었으면 NOMOS 앱을 그 조직에서 승인해야 목록·생성이 된다.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/OrgId' }]
+      responses:
+        '200':
+          description: GitHub 조직 login 목록
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [orgs], properties: { orgs: { type: array, items: { type: string } } } } } }
+              example:
+                data: { orgs: [Capstone-NOMOS] }
+        '403':
+          description: 대표가 아님
+          content:
+            application/json:
+              example:
+                error: { code: NOT_REPRESENTATIVE, message: this action requires the organization representative }
+        '409':
+          description: 대표가 GitHub를 연결하지 않음
+          content:
+            application/json:
+              example:
+                error: { code: GITHUB_NOT_LINKED, message: GitHub 계정이 연결되어 있지 않습니다 }
 
   /orgs/{orgId}/members:
     get:
@@ -2430,6 +2544,11 @@ paths:
 
         프로젝트당 역할은 **하나씩만** 배정된다(`uq_project_members_role`). 실험 통제를 위해서다.
         **G1(`started_at`) 이후에는 멤버를 바꿀 수 없다** — 도중에 바뀌면 통제가 흔들린다.
+
+        **GitHub 협업자 자동 초대**: 배정과 함께 그 에이전트 주인을 프로젝트의 GitHub 레포(`githubRepoId`가 있는 것)마다
+        push 권한 협업자로 초대한다(대표의 GitHub 토큰). 결과는 `githubInvites`(레포마다 한 줄). 초대가 실패해도 배정은 유효하다 —
+        멤버가 GitHub를 연결하지 않았으면 `skipped`이고, 연결한 뒤 `POST .../members/{agentId}/github-invite`로 다시 보낸다.
+        GitHub 레포가 없는 프로젝트(로컬 데모)는 빈 배열이다.
       security: [{ userToken: [] }]
       parameters: [{ $ref: '#/components/parameters/ProjectId' }]
       requestBody:
@@ -2450,11 +2569,13 @@ paths:
           description: 배정됨. 남은 멤버 목록과 재발급 안내를 함께 준다.
           content:
             application/json:
-              schema: { type: object, required: [data], properties: { data: { type: object, required: [members, notice], properties: { members: { type: array, items: { $ref: '#/components/schemas/ProjectMember' } }, notice: { type: string } } } } }
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [members, githubInvites, notice], properties: { members: { type: array, items: { $ref: '#/components/schemas/ProjectMember' } }, githubInvites: { type: array, items: { $ref: '#/components/schemas/GithubInviteResult' } }, notice: { type: string } } } } }
               example:
                 data:
                   members:
                     - { agentId: '{{AGENT_BE}}', agentName: be-laptop, teamRole: BACKEND }
+                  githubInvites:
+                    - { repoId: '{{REPO_API}}', fullName: acme/study-api, status: invited }
                   notice: 배정된 에이전트는 POST /api/agents/token/refresh로 토큰을 재발급해야 태스크·노트 API를 쓸 수 있습니다.
         '403':
           description: 대표가 아님 · 다른 조직의 에이전트 · G1 이후
@@ -2476,6 +2597,44 @@ paths:
                   value: { error: { code: ROLE_ALREADY_ASSIGNED, message: BACKEND is already assigned in this project } }
                 에이전트중복:
                   value: { error: { code: AGENT_ALREADY_ASSIGNED, message: this agent is already a member of the project } }
+
+  /projects/{projectId}/members/{agentId}/github-invite:
+    post:
+      tags: [프로젝트]
+      summary: GitHub 협업자 초대 다시 보내기 (대표 전용)
+      description: |
+        역할 배정 때 멤버가 GitHub를 연결하지 않았거나 GitHub 호출이 실패했을 때 다시 보낸다.
+        멤버 구성을 바꾸는 게 아니라 접근을 주는 일이라 **시작(G1) 뒤에도 된다.** 실패해도 200이고 결과는 `githubInvites`에 적힌다.
+      security: [{ userToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - name: agentId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          example: '{{AGENT_BE}}'
+      responses:
+        '200':
+          description: 레포마다 초대 결과
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [githubInvites], properties: { githubInvites: { type: array, items: { $ref: '#/components/schemas/GithubInviteResult' } } } } } }
+              example:
+                data:
+                  githubInvites:
+                    - { repoId: '{{REPO_API}}', fullName: acme/study-api, status: skipped, reason: 멤버가 GitHub를 연결하지 않았다 }
+        '403':
+          description: 대표가 아니거나 다른 조직
+          content:
+            application/json:
+              example:
+                error: { code: NOT_REPRESENTATIVE, message: this action requires the organization representative }
+        '404':
+          description: 이 프로젝트의 멤버가 아닌 에이전트
+          content:
+            application/json:
+              example:
+                error: { code: MEMBER_NOT_FOUND, message: agent ... is not a member of this project }
 
   /projects/{projectId}/members/{agentId}:
     delete:

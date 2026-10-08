@@ -5,7 +5,8 @@ const DEVICE_CODE_URL = 'https://github.com/login/device/code';
 const TOKEN_URL = 'https://github.com/login/oauth/access_token';
 const VIEWER_URL = 'https://api.github.com/user';
 
-// collaborator 확인에 필요한 최소 스코프. 넓히면 그만큼 탈취 피해가 커진다.
+// 대표 토큰은 collaborator 확인·V3 커밋 읽기에 더해 GitHub 조직에 레포 만들기·협업자 초대까지 쓴다(대표 결정, rep-api.ts).
+// repo가 그 전부를 덮으므로 스코프는 그대로다. 더 넓히면(delete_repo·admin:org) 그만큼 탈취 피해가 커진다 — 넓히지 말 것.
 export const DEFAULT_SCOPE = 'repo read:org';
 
 export type DeviceCode = {

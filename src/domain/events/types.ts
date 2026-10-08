@@ -22,6 +22,7 @@ export type EventType =
   | 'APPROVAL_REQUESTED'
   | 'APPROVAL_RESULT'
   | 'MEMBER_UNASSIGNED'
+  | 'GITHUB_COLLABORATORS_INVITED'
   | 'REPO_UPDATED'
   | 'TASKS_IMPORTED'
   | 'SPEC_CREATED'
@@ -66,6 +67,8 @@ export type RepoConnectedPayload = {
   repoId: string;
   fullName: string;
   seededPathCount: number;
+  // NOMOS가 GitHub 조직에 직접 만든 레포일 때만 있다(POST /orgs/:orgId/github/repos). 이미 있던 레포를 연결하면 없다.
+  createdOnGithub?: { githubOrg: string; githubRepoId: number };
 };
 
 export type RepoPathUpdatedPayload = {
@@ -236,6 +239,23 @@ export type MemberUnassignedPayload = {
   teamRole: string;
 };
 
+// 역할 배정(또는 재초대) 때 에이전트 주인을 프로젝트의 GitHub 레포에 협업자로 초대한 결과. 레포마다 한 줄.
+// 실패해도 배정은 그대로다 — GitHub 사정이 우리 기능을 멈추지 않는다. 토큰은 넣지 않는다.
+export type GithubCollaboratorsInvitedPayload = {
+  agentId: string;
+  userId: string;
+  githubLogin: string | null;
+  trigger: 'assign' | 'retry';
+  results: GithubInviteResult[];
+};
+
+export type GithubInviteResult = {
+  repoId: string;
+  fullName: string;
+  status: 'invited' | 'already_collaborator' | 'skipped' | 'failed';
+  reason?: string;
+};
+
 // 어느 단계가 어떻게 끝났는지를 그대로 남긴다. SKIPPED도 기록한다 —
 // M5(자동 통과율)를 계산할 때 "통과"와 "못 돌렸다"를 구분할 수 있어야 한다.
 export type VerificationCompletedPayload = {
@@ -347,6 +367,7 @@ export type EventPayloadMap = {
   APPROVAL_REQUESTED: ApprovalRequestedPayload;
   APPROVAL_RESULT: ApprovalResultPayload;
   MEMBER_UNASSIGNED: MemberUnassignedPayload;
+  GITHUB_COLLABORATORS_INVITED: GithubCollaboratorsInvitedPayload;
   REPO_UPDATED: RepoUpdatedPayload;
   TASKS_IMPORTED: TasksImportedPayload;
   SPEC_CREATED: SpecCreatedPayload;

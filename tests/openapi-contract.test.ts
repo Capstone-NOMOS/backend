@@ -9,6 +9,7 @@ import { env } from '../src/config/env.js';
 import { setPmModel } from '../src/domain/pm/model.js';
 import { drainPmJobs } from '../src/domain/pm/service.js';
 import type { GithubDeviceApi } from '../src/domain/oauth/github-device.js';
+import { setGithubRepApi, type GithubRepApi } from '../src/domain/github/rep-api.js';
 import {
   gitMirrorInspector,
   setCommitInspector,
@@ -84,6 +85,20 @@ describe('문서와 라우트가 1:1이다', () => {
 let server: Server;
 let baseUrl: string;
 let restoreGithub: GithubDeviceApi;
+let restoreGithubRep: GithubRepApi;
+
+// 대표 토큰으로 부르는 GitHub 쓰기 API(레포 만들기·협업자 초대)도 가짜로.
+const fakeGithubRep: GithubRepApi = {
+  async listOrgs() {
+    return ['acme'];
+  },
+  async createOrgRepo(_token, input) {
+    return { fullName: `${input.org}/${input.name}`, githubRepoId: 123456, defaultBranch: 'main' };
+  },
+  async inviteCollaborator() {
+    return 'invited';
+  },
+};
 
 const fakeGithub: GithubDeviceApi = {
   async requestDeviceCode() {
@@ -103,6 +118,7 @@ beforeAll(async () => {
   await resetSchema();
   clearPolicyCache();
   restoreGithub = setGithubDeviceApi(fakeGithub);
+  restoreGithubRep = setGithubRepApi(fakeGithubRep);
   server = createApp().listen(0);
   await new Promise<void>((resolve) => server.once('listening', resolve));
   baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -110,6 +126,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   setGithubDeviceApi(restoreGithub);
+  setGithubRepApi(restoreGithubRep);
   setCommitInspector(gitMirrorInspector());
   await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
   await pool.end();
@@ -190,6 +207,9 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     await call('PATCH', `/repos/${repoId}/paths/${root.id}`, rep, { ownerRole: 'BACKEND' });
     await call('POST', `/repos/${repoId}/paths`, rep, { pathPattern: 'docs/**', access: 'read' });
     await call('GET', `/orgs/${orgId}/repos`, rep);
+    // GitHub 조직에 레포 만들기(대표) — 프로젝트에는 위 레포만 넣는다.
+    await call('GET', `/orgs/${orgId}/github/orgs`, rep);
+    await call('POST', `/orgs/${orgId}/github/repos`, rep, { githubOrg: 'acme', name: 'study-web', ownerRole: 'FRONTEND' });
 
     // 프로젝트·배정
     const created = await call('POST', `/orgs/${orgId}/projects`, rep, {
@@ -203,6 +223,7 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     await call('POST', `/projects/${projectId}/members`, rep, { agentId: repAgentId, teamRole: 'FRONTEND' });
     await call('DELETE', `/projects/${projectId}/members/${repAgentId}`, rep);
     await call('POST', `/projects/${projectId}/members`, rep, { agentId: beAgentId, teamRole: 'BACKEND' });
+    await call('POST', `/projects/${projectId}/members/${beAgentId}/github-invite`, rep);
 
     // 명세·태스크 작성
     const spec = await call('POST', `/projects/${projectId}/specs`, rep, {
