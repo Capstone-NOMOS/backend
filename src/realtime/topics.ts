@@ -36,6 +36,7 @@ export const TOPICS_BY_EVENT: Record<EventType, Mapping> = {
   PROJECT_STARTED: { project: ['project', 'tasks', 'specs', 'plans'], org: ['projects'] },
   MEMBER_ASSIGNED: { project: ['members'], org: ['agents'] },
   MEMBER_UNASSIGNED: { project: ['members'], org: ['agents'] },
+  GITHUB_COLLABORATORS_INVITED: { project: ['members'], org: ['members'] },
 
   SPEC_CREATED: { project: ['specs'] },
   TASK_CREATED: { project: ['tasks'] },

@@ -1,8 +1,12 @@
-import { withTransaction, type Queryable } from '../../config/db.js';
+import { pool, withTransaction, type Queryable } from '../../config/db.js';
 import { AppError } from '../../errors.js';
 import { hashObject } from '../../utils/canonical-json.js';
 import { tasksChanged } from '../dispatch/tasks-changed.js';
 import { appendEvent } from '../events/append.js';
+import type { GithubInviteResult } from '../events/types.js';
+import { githubRepApi } from '../github/rep-api.js';
+import { findRepresentativeGithubToken } from '../oauth/repository.js';
+import { decryptSecret } from '../../utils/secret-box.js';
 import { violatedConstraint } from '../pg-errors.js';
 import { recomputeProjectPolicyHash } from '../policy/policy-hash.js';
 import type { TeamRole } from '../roles.js';
@@ -12,6 +16,7 @@ import {
   copyPoliciesFromCatalog,
   deleteProjectMember,
   findAgentOrg,
+  findAgentOwnerGithub,
   findOtherActiveAssignment,
   findOrgConstitution,
   findProjectById,
@@ -20,7 +25,9 @@ import {
   findReposWithoutOwnership,
   insertProject,
   insertProjectMember,
+  isProjectMember,
   linkProjectRepos,
+  listProjectGithubRepos,
   listProjectMembers,
   listProjectRepos,
   listProjectsByOrg,
@@ -217,6 +224,78 @@ export async function assignMember(
 
     return listProjectMembers(tx, projectId);
   });
+}
+
+// 역할 배정 + 그 에이전트 주인을 프로젝트의 GitHub 레포에 협업자로 자동 초대.
+// 배정은 먼저 커밋한다 — 초대는 GitHub 호출이라 트랜잭션에 넣을 수 없고, 초대가 실패해도 배정은 유효하다.
+export async function assignMemberWithInvites(
+  actor: Actor,
+  projectId: string,
+  agentId: string,
+  teamRole: TeamRole,
+): Promise<{ members: ProjectMember[]; githubInvites: GithubInviteResult[] }> {
+  const members = await assignMember(actor, projectId, agentId, teamRole);
+  const githubInvites = await inviteToProjectGithubRepos(actor, projectId, agentId, 'assign');
+  return { members, githubInvites };
+}
+
+// 초대를 다시 보낸다(대표 전용) — 배정 때 멤버가 GitHub를 연결하지 않았거나 GitHub가 실패한 경우.
+// 시작(G1) 뒤에도 된다: 멤버 구성을 바꾸는 게 아니라 이미 정해진 멤버에게 접근을 주는 일이다.
+export async function retryGithubInvites(actor: Actor, projectId: string, agentId: string): Promise<GithubInviteResult[]> {
+  await assertProjectInOrg(pool, actor.orgId, projectId);
+  if (!(await isProjectMember(pool, projectId, agentId))) {
+    throw new AppError('MEMBER_NOT_FOUND', `agent ${agentId} is not a member of this project`);
+  }
+  return inviteToProjectGithubRepos(actor, projectId, agentId, 'retry');
+}
+
+// 에이전트 주인을 프로젝트의 GitHub 레포마다 협업자(push)로 초대한다. 대표의 GitHub 토큰을 쓴다.
+// 실패는 던지지 않고 결과에 적는다 — GitHub 사정이 배정을 멈추면 안 된다. GitHub 레포가 없으면(로컬 데모) 아무것도 하지 않는다.
+// 결과는 GITHUB_COLLABORATORS_INVITED 하나로 남긴다(레포마다 한 줄).
+async function inviteToProjectGithubRepos(
+  actor: Actor,
+  projectId: string,
+  agentId: string,
+  trigger: 'assign' | 'retry',
+): Promise<GithubInviteResult[]> {
+  const repos = await listProjectGithubRepos(pool, projectId);
+  if (repos.length === 0) return [];
+  const owner = await findAgentOwnerGithub(pool, agentId);
+  if (owner === null) return [];
+
+  const skipAll = (reason: string): GithubInviteResult[] =>
+    repos.map((r) => ({ repoId: r.id, fullName: r.fullName, status: 'skipped', reason }));
+
+  let results: GithubInviteResult[];
+  const sealed = await findRepresentativeGithubToken(pool, actor.orgId);
+  if (owner.githubLogin === null) {
+    results = skipAll('멤버가 GitHub를 연결하지 않았다 — 연결 뒤 재초대(POST .../github-invite)');
+  } else if (sealed === null) {
+    results = skipAll('대표가 GitHub를 연결하지 않았다');
+  } else {
+    const token = await decryptSecret(sealed);
+    results = [];
+    for (const repo of repos) {
+      try {
+        const status = await githubRepApi().inviteCollaborator(token, repo.fullName, owner.githubLogin);
+        results.push({ repoId: repo.id, fullName: repo.fullName, status });
+      } catch (err) {
+        results.push({ repoId: repo.id, fullName: repo.fullName, status: 'failed', reason: err instanceof Error ? err.message : String(err) });
+      }
+    }
+  }
+
+  await withTransaction(async (tx) => {
+    await appendEvent(tx, {
+      orgId: actor.orgId,
+      projectId,
+      type: 'GITHUB_COLLABORATORS_INVITED',
+      actorAgentId: agentId,
+      onBehalfOf: actor.userId,
+      payload: { agentId, userId: owner.userId, githubLogin: owner.githubLogin, trigger, results },
+    });
+  });
+  return results;
 }
 
 export async function unassignMember(

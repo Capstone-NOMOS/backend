@@ -63,13 +63,13 @@ function toRepoPath(row: QueryResultRow): RepoPath {
 // repos 한 행을 INSERT한다. (org_id, full_name) 중복이면 REPO_ALREADY_CONNECTED(409).
 export async function insertRepo(
   db: Queryable,
-  input: { orgId: string; fullName: string; githubRepoId?: number; defaultBranch?: string },
+  input: { orgId: string; fullName: string; githubRepoId?: number; defaultBranch?: string; cloneUrl?: string },
 ): Promise<Repo> {
   try {
     const { rows } = await db.query(
-      `INSERT INTO repos (id, org_id, full_name, github_repo_id, default_branch)
-       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-      [randomUUID(), input.orgId, input.fullName, input.githubRepoId ?? null, input.defaultBranch ?? 'main'],
+      `INSERT INTO repos (id, org_id, full_name, github_repo_id, default_branch, clone_url)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [randomUUID(), input.orgId, input.fullName, input.githubRepoId ?? null, input.defaultBranch ?? 'main', input.cloneUrl ?? null],
     );
     const row = rows[0];
     if (!row) throw new Error('insertRepo: insert returned no row');

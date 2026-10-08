@@ -323,3 +323,36 @@ export async function approveAppliedPlans(db: Queryable, projectId: string): Pro
   );
   return rows.map((r) => r.id as string);
 }
+
+// ── GitHub 협업자 자동 초대 ──────────────────────────────────────────────
+
+// 프로젝트 레포 중 GitHub에 실제로 있는 것(github_repo_id가 있는 것)만. 로컬 데모 레포는 초대할 곳이 없다.
+export async function listProjectGithubRepos(db: Queryable, projectId: string): Promise<RepoRow[]> {
+  const { rows } = await db.query(
+    `SELECT r.id, r.org_id, r.full_name FROM project_repos pr
+       JOIN repos r ON r.id = pr.repo_id
+      WHERE pr.project_id = $1 AND r.github_repo_id IS NOT NULL
+      ORDER BY r.full_name`,
+    [projectId],
+  );
+  return rows.map((r) => ({ id: r.id, orgId: r.org_id, fullName: r.full_name }));
+}
+
+// 에이전트 주인의 GitHub 아이디. GitHub를 연결하지 않았으면 githubLogin이 null이다.
+export async function findAgentOwnerGithub(
+  db: Queryable,
+  agentId: string,
+): Promise<{ userId: string; githubLogin: string | null } | null> {
+  const { rows } = await db.query(
+    `SELECT u.id, u.github_login FROM agents a JOIN users u ON u.id = a.user_id WHERE a.id = $1`,
+    [agentId],
+  );
+  const row = rows[0];
+  return row ? { userId: row.id as string, githubLogin: (row.github_login as string | null) ?? null } : null;
+}
+
+// 이 프로젝트의 멤버인가(재초대 API가 멤버가 아닌 에이전트를 받지 않게).
+export async function isProjectMember(db: Queryable, projectId: string, agentId: string): Promise<boolean> {
+  const { rows } = await db.query(`SELECT 1 FROM project_members WHERE project_id = $1 AND agent_id = $2`, [projectId, agentId]);
+  return rows.length > 0;
+}
