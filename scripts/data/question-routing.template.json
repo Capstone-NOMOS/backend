@@ -1,0 +1,17 @@
+{
+  "version": "team-1",
+  "roles": ["FRONTEND", "BACKEND"],
+  "contexts": {
+    "예시-fe-화면": {
+      "askerRole": "FRONTEND",
+      "task": { "title": "F-10 스터디 멤버 목록 화면", "kind": "IMPLEMENT" },
+      "repo": { "fullName": "acme/study-web" },
+      "spec": { "featureKey": "F-10", "title": "스터디 멤버 목록 화면", "content": "명세 본문(없으면 spec을 null로)" }
+    }
+  },
+  "items": [
+    { "id": "t001", "context": "예시-fe-화면", "question": "GET /api/studies/:id/members 의 응답 본문 형태는?", "accept": ["BACKEND"], "source": "real", "labeledBy": "이름" },
+    { "id": "t002", "context": "예시-fe-화면", "question": "가입일을 화면에 어떤 형식으로 보여 줄까요?", "accept": ["SELF"], "source": "real", "labeledBy": "이름" },
+    { "id": "t003", "context": "예시-fe-화면", "questions": ["응답 필드 이름은?", "빈 목록일 때 화면 문구는?"], "accept": ["BACKEND"], "source": "real", "labeledBy": "이름", "note": "한 번에 두 질문 — 묶음 전체를 누구에게 보내야 하나" }
+  ]
+}

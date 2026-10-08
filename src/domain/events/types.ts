@@ -21,6 +21,11 @@ export type EventType =
   | 'NOTES_ACK_REQUIRED'
   | 'APPROVAL_REQUESTED'
   | 'APPROVAL_RESULT'
+  | 'QUESTION_ASKED'
+  | 'QUESTION_ANSWERED'
+  | 'QUESTION_EXPIRED'
+  | 'QUESTION_DRAFTED'
+  | 'TASK_BLOCKED_ON_QUESTION'
   | 'MEMBER_UNASSIGNED'
   | 'GITHUB_COLLABORATORS_INVITED'
   | 'TASK_DISPATCHED'
@@ -28,6 +33,7 @@ export type EventType =
   | 'AGENT_RUN_ENDED'
   | 'TASK_BLOCKED'
   | 'TASK_RESUMED'
+  | 'PROJECT_SETTINGS_UPDATED'
   | 'RELEASE_REQUESTED'
   | 'RELEASE_DECIDED'
   | 'ACTION_DETECTED'
@@ -185,6 +191,60 @@ export type ApprovalRequestedPayload = {
   triggeredActions: string[];
 };
 
+// 실행 중인 에이전트가 다른 역할 소관의 결정을 물었다(AskUserQuestion → 브릿지 → 서버). 질문 문장은 행에 있다.
+// targetRole 'SELF'는 라우터가 "묻는 쪽 자기 소관"으로 판정해 돌려보낸 것. confidence·latencyMs·fallback은 라우터 비교 지표다.
+export type QuestionAskedPayload = {
+  questionId: string;
+  taskId: string;
+  askerRole: string;
+  targetRole: string;
+  routedBy: string;
+  confidence: number | null;
+  latencyMs: number;
+  fallback: string | null;
+  questionCount: number;
+};
+
+// 대상 역할의 사람이 답했다. answeredByRole: 답한 사람이 대상 역할 담당인지 대표인지(대표는 어느 역할이든 답할 수 있다).
+// source: human(직접) · agent_confirmed(에이전트 답 확인) · human_override(에이전트 답 뒤집기 — 고치는 태스크는 미구현, notice).
+// resumedTask: 이 답으로 질문 때문에 멈춘 태스크가 READY로 돌아갔다.
+export type QuestionAnsweredPayload = {
+  questionId: string;
+  taskId: string;
+  targetRole: string;
+  answeredByRole: 'TARGET_OWNER' | 'REPRESENTATIVE';
+  source: 'human' | 'agent_confirmed' | 'human_override';
+  resumedTask: boolean;
+  waitedMs: number;
+  notice?: 'REWORK_NOT_IMPLEMENTED';
+};
+
+// 대상 역할 에이전트의 상담 실행이 초안을 올렸다. autoAnswered: 전부 이미 정해진 것이라 초안이 곧 답(사람 미확인).
+export type QuestionDraftedPayload = {
+  questionId: string;
+  taskId: string;
+  decidedCount: number;
+  questionCount: number;
+  autoAnswered: boolean;
+  resumedTask: boolean;
+};
+
+// 묻는 쪽이 정한 시간만 기다리고 태스크를 내려놓았다(BLOCKED·QUESTION). 답이 오면 READY로 돌아간다.
+export type TaskBlockedOnQuestionPayload = {
+  taskId: string;
+  questionId: string;
+  targetRole: string;
+};
+
+// 시간 안에 답이 오지 않았다 — 에이전트는 멈추고(E4) 태스크는 사람이 다시 움직여야 한다.
+export type QuestionExpiredPayload = {
+  questionId: string;
+  taskId: string;
+  targetRole: string;
+  // 그 질문으로 멈춘 태스크를 ESCALATED로 올렸다.
+  escalated: boolean;
+};
+
 // 대표가 승인·반려했다.
 // - reviewer: 'human' | 'human_fallback'(PM_REVIEW를 PM 리뷰가 없어 사람이 대신 처리) — PM 리뷰가 생기면 지표를 나눠 센다.
 // - selfApproval: 승인자가 제출한 에이전트의 주인이다 — "다른 멤버 승인" 규칙을 만들 때의 근거.
@@ -227,6 +287,14 @@ export type ProjectCreatedPayload = {
   repoIds: string[];
   policyHash: string;
   constitutionHash: string;
+  // 질문 중계 스위치(018). 이전 행에는 없다(그때는 기능이 없었다).
+  questionRelay?: boolean;
+};
+
+// 시작 전 프로젝트 설정 변경 — 지금은 질문 중계 스위치뿐. 대조군 실험의 근거라 바뀐 사실을 남긴다.
+export type ProjectSettingsUpdatedPayload = {
+  before: { questionRelay: boolean };
+  after: { questionRelay: boolean };
 };
 
 // G1 — 이 시점의 멤버·태스크 수·승인한 계획을 남긴다. 이후 지표("이 구성으로 시작해서 어땠나")의 기준점이다.
@@ -331,6 +399,8 @@ export type AgentRunEndedPayload = {
   durationMs: number;
   exitCode: number | null;
   taskState: string;
+  // 질문의 답을 기다리느라 태스크를 내려놓고 끝났다(BLOCKED·QUESTION) — 멈춤(AGENT_STOPPED)으로 바꾸지 않는다.
+  waitingQuestion?: boolean;
 };
 
 export type GithubInviteResult = {
@@ -450,6 +520,11 @@ export type EventPayloadMap = {
   NOTES_ACK_REQUIRED: NotesAckRequiredPayload;
   APPROVAL_REQUESTED: ApprovalRequestedPayload;
   APPROVAL_RESULT: ApprovalResultPayload;
+  QUESTION_ASKED: QuestionAskedPayload;
+  QUESTION_ANSWERED: QuestionAnsweredPayload;
+  QUESTION_EXPIRED: QuestionExpiredPayload;
+  QUESTION_DRAFTED: QuestionDraftedPayload;
+  TASK_BLOCKED_ON_QUESTION: TaskBlockedOnQuestionPayload;
   MEMBER_UNASSIGNED: MemberUnassignedPayload;
   GITHUB_COLLABORATORS_INVITED: GithubCollaboratorsInvitedPayload;
   TASK_DISPATCHED: TaskDispatchedPayload;
@@ -457,6 +532,7 @@ export type EventPayloadMap = {
   AGENT_RUN_ENDED: AgentRunEndedPayload;
   TASK_BLOCKED: TaskBlockedPayload;
   TASK_RESUMED: TaskResumedPayload;
+  PROJECT_SETTINGS_UPDATED: ProjectSettingsUpdatedPayload;
   RELEASE_REQUESTED: ReleaseRequestedPayload;
   RELEASE_DECIDED: ReleaseDecidedPayload;
   ACTION_DETECTED: ActionDetectedPayload;

@@ -8,6 +8,9 @@ export type PromptBriefing = {
   spec: { featureKey: string; title: string; content: string } | null;
   notesBlock: string;
   lastRejection?: { reason: string; commitSha: string | null } | null;
+  answeredQuestions?: { question: string; answer: string; source: string }[];
+  // 질문 중계(프로젝트 스위치). 꺼져 있으면(옛 서버면 필드 없음 → 꺼짐) AskUserQuestion 규칙 대신 "가정함" 규칙을 준다.
+  questionRelay?: boolean;
   writablePaths: { pathPattern: string }[];
 };
 
@@ -46,6 +49,18 @@ export function buildTaskPrompt(briefing: PromptBriefing, branch: string, enviro
       ].join('\n'),
     );
   }
+  // 질문 때문에 멈췄다 재개한 태스크 — 그동안 받은 답. 같은 브랜치에 이전 작업이 남아 있다.
+  if (briefing.answeredQuestions && briefing.answeredQuestions.length > 0) {
+    sections.push(
+      [
+        '# 물어서 받은 답 (이 태스크는 답을 기다리느라 멈췄다가 다시 시작됐다)',
+        ...briefing.answeredQuestions.map(
+          (a) => `- Q: ${a.question}\n  A: ${a.answer}${a.source === 'agent' ? ' (상대 에이전트가 코드에서 찾은 답 — 사람 미확인)' : ''}`,
+        ),
+        '이 브랜치에 이전 작업이 남아 있으면 이어서 진행한다. 같은 질문을 다시 묻지 않는다.',
+      ].join('\n'),
+    );
+  }
   if (briefing.notesBlock) {
     sections.push(briefing.notesBlock);
   }
@@ -59,11 +74,19 @@ export function buildTaskPrompt(briefing: PromptBriefing, branch: string, enviro
       '# 규칙',
       '- 작업을 시작하기 전에 claim_task를 부르고 성공을 확인한다. 실패하면 파일을 건드리지 않는다.',
       '- 위 목록 밖의 경로는 수정하지 않는다. 비밀 파일(.env, *.pem, *.key, secrets/)은 절대 건드리지 않는다.',
+      // 실험(E6): 이 줄이 없으면 명세에 없는 BE 결정을 묻지 않고 스스로 정했다(0/4). 있으면 필요한 곳에서만 물었다(4/4, 대조군 0/2).
+      // 질문 중계가 꺼진 프로젝트에는 AskUserQuestion이 없다 — 묻지 말고 가정을 기록하고 진행하게 한다.
+      briefing.questionRelay === true
+        ? '- 다른 역할(BACKEND 등)이 정해야 하는 결정(응답 형식·상태 코드·필드 이름 등)이 명세·인계 노트에 없으면 추측하지 말고 AskUserQuestion으로 물어본다. 명세에 있으면 묻지 않는다. 답은 그 역할의 사람이 한다 — 기다리는 동안 작업이 멈춰 있어도 된다.'
+        : '- 다른 역할(BACKEND 등)이 정해야 하는 결정(응답 형식·상태 코드·필드 이름 등)이 명세·인계 노트에 없으면 가장 단순한 쪽으로 가정하고 진행하되, 그 가정을 아래 규칙대로 GOTCHA 노트로 남긴다.',
       '- 작업이 끝나면 커밋하고, submit_artifact에 **실제 커밋 sha와 실제로 바꾼 모든 경로**를 넣는다.',
       '  바꾸지 않은 경로를 적거나 sha를 지어내지 않는다 — 서버가 제출 시점에 다시 검증한다.',
       '- 제출이 NOTES_UNACKNOWLEDGED로 반려되면, 작업 중에 새로 올라온 인계 노트가 함께 온다. 읽고, 작업에 영향이 있으면 고쳐서 커밋한 뒤',
       '  submit_artifact를 다시 부르며 그 노트 id를 acknowledged_note_ids에 넣는다. 위 [인계 노트]의 노트는 따로 넣지 않아도 된다.',
       '- 다음 사람이 알아야 할 결정이나 함정이 있으면 publish_note로 남긴다. 다른 사람도 따라야 할 결정(계약·형식)은 DECIDED로 남긴다 — 프로젝트 전체에 전달된다.',
+      // 실험(E6): 이 줄이 없으면 FE 에이전트가 명세에 없는 BE 계약을 스스로 정해 DECIDED로 발행했다 — 그 노트가 BE 브리핑에 "결정"으로 들어간다.
+      `- 단, 다른 역할이 정해야 하는 계약(그 역할이 만드는 API의 응답 형식·상태 코드·필드 이름 등)은 DECIDED로 남기지 않는다 — 네 역할(${task.teamRole ?? '제한 없음'})이 정할 수 있는 것이 아니다.`,
+      '  명세·인계 노트·받은 답에 없어 가정하고 구현했다면 GOTCHA로 "가정함 — <그 역할> 확인 필요: <가정 내용>"을 남긴다.',
       '- 다른 에이전트의 잘못을 노트에 적지 않는다. 그건 raise_dispute의 몫이다.',
     ].join('\n'),
   );

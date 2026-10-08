@@ -117,3 +117,13 @@ describe('멈춤 사유 모으기(RunObserver)', () => {
     expect(o.summary()).toEqual({ lastMessage: '권한이 없어 진행할 수 없습니다', deniedCommands: [] });
   });
 });
+
+describe('질문 중계의 권한 도구가 거부한 명령도 멈춤 사유에 모인다', () => {
+  it('permission_prompt의 거부 문구(DENY_OTHER)를 거부로 본다', async () => {
+    const { DENY_OTHER } = await import('../src/bridge/permission.js');
+    const o = new RunObserver(cwd);
+    o.observe(assistant({ type: 'tool_use', id: 'p1', name: 'Bash', input: { command: 'git merge task/x' } }));
+    o.observe(JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'p1', is_error: true, content: DENY_OTHER.message }] } }));
+    expect(o.summary().deniedCommands).toEqual(['git merge task/x']);
+  });
+});

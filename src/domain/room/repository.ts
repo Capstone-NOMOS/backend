@@ -12,7 +12,8 @@ export async function insertNewDispatches(db: Queryable, projectId: string): Pro
   const { rows } = await db.query(
     `WITH ready AS (
        SELECT t.id, t.retry_count,
-              (SELECT count(*) FROM events e WHERE e.type = 'TASK_RESUMED' AND e.payload->>'taskId' = t.id::text)::int AS resumes
+              -- 재개 = 대표의 재개(TASK_RESUMED) + 질문의 답을 기다리느라 내려놓았다가 돌아온 것(TASK_BLOCKED_ON_QUESTION).
+              (SELECT count(*) FROM events e WHERE e.type IN ('TASK_RESUMED', 'TASK_BLOCKED_ON_QUESTION') AND e.payload->>'taskId' = t.id::text)::int AS resumes
          FROM tasks t
          JOIN projects p ON p.id = t.project_id
         WHERE t.project_id = $1
@@ -84,6 +85,12 @@ export const TASK_FEED_EVENTS = [
   'AGENT_RUN_ENDED',
   'TASK_BLOCKED',
   'TASK_RESUMED',
+  // 질문 중계(018). 묻는 쪽 태스크의 룸에 더해, 답할 역할(targetRole)의 룸에도 나온다(아래 쿼리).
+  'QUESTION_ASKED',
+  'QUESTION_DRAFTED',
+  'QUESTION_ANSWERED',
+  'QUESTION_EXPIRED',
+  'TASK_BLOCKED_ON_QUESTION',
   'ARTIFACT_SUBMITTED',
   'VERIFICATION_COMPLETED',
   // APPROVAL_REQUESTED는 넣지 않는다 — 같은 트랜잭션의 검증 결과 줄이 이미 "대표 승인을 기다립니다"라고 말한다(겹쳐 보였다).
@@ -123,7 +130,8 @@ export async function listRoomFeed(
          LEFT JOIN artifacts ar ON e.type = 'ARTIFACT_SUBMITTED' AND ar.id = (e.payload->>'artifactId')::uuid
         WHERE e.project_id = $1
           AND (
-            (e.type = ANY($3::text[]) AND t.id IS NOT NULL AND (t.team_role IS NULL OR t.team_role = $2))
+            (e.type = ANY($3::text[]) AND t.id IS NOT NULL
+              AND (t.team_role IS NULL OR t.team_role = $2 OR (e.type LIKE 'QUESTION\_%' AND e.payload->>'targetRole' = $2)))
             OR e.type = ANY($4::text[])
           )
        UNION ALL

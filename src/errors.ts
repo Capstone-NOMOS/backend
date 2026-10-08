@@ -38,6 +38,7 @@ export type ErrorCode =
   | 'RUN_NOT_OPEN'
   | 'ROOM_NOT_VISIBLE'
   | 'TASK_NOT_STOPPED'
+  | 'QUESTION_RELAY_OFF'
   | 'TASK_NOT_FOUND'
   | 'TASK_ALREADY_CLAIMED'
   | 'ARTIFACT_NOT_FOUND'
@@ -60,6 +61,10 @@ export type ErrorCode =
   | 'APPROVAL_NOT_FOUND'
   | 'APPROVAL_ALREADY_DECIDED'
   | 'APPROVAL_STALE'
+  | 'QUESTION_NOT_FOUND'
+  | 'QUESTION_CLOSED'
+  | 'QUESTION_INVALID'
+  | 'NOT_QUESTION_TARGET'
   | 'PM_JOB_NOT_FOUND'
   | 'PM_RELAY_DISABLED'
   | 'PROJECT_NOT_FOUND'
@@ -127,6 +132,8 @@ const STATUS_BY_CODE: Record<ErrorCode, number> = {
   ROOM_NOT_VISIBLE: 403,
   // 재개는 BLOCKED(AGENT_STOPPED)인 태스크만.
   TASK_NOT_STOPPED: 409,
+  // 질문 중계를 끈 프로젝트에서 질문을 올렸다.
+  QUESTION_RELAY_OFF: 409,
   TASK_NOT_FOUND: 404,
   // 409 — 권한 문제가 아니라 경합에서 진 것이다. 재시도하면 다른 태스크를 잡으면 된다.
   TASK_ALREADY_CLAIMED: 409,
@@ -162,6 +169,10 @@ const STATUS_BY_CODE: Record<ErrorCode, number> = {
   APPROVAL_ALREADY_DECIDED: 409,
   // 409 — 결정하려는 순간 태스크가 더 이상 승인 대기가 아니다(정지·수동 변경 등).
   APPROVAL_STALE: 409,
+  QUESTION_NOT_FOUND: 404,
+  QUESTION_CLOSED: 409,
+  QUESTION_INVALID: 422,
+  NOT_QUESTION_TARGET: 403,
   // 중계 모드의 작업. 끝났거나 시간 제한에 걸렸거나 서버가 재시작돼 사라졌다.
   PM_JOB_NOT_FOUND: 404,
   // 서버가 중계 모드가 아니다(PM_PROVIDER=api) — pm-worker가 할 일이 없다.

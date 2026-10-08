@@ -955,3 +955,41 @@ Ref: events.actor_agent_id > agents.id
 
 Ref: agent_tokens.agent_id > agents.id [delete: cascade]
 Ref: oauth_sessions.user_id > users.id [delete: cascade]
+// ★ 018 (실험 — exp/question-relay)
+Table agent_questions {
+  id uuid [pk, default: `gen_random_uuid()`]
+  project_id uuid [not null, ref: > projects.id]
+  task_id uuid [not null, ref: > tasks.id]
+  asked_by_agent uuid [not null, ref: > agents.id]
+  asker_role text [not null, note: 'FRONTEND | BACKEND']
+  target_role text [not null, note: '답할 역할 — 서버의 질문 라우터가 정한다']
+  routed_by text [not null, note: "라우터 구현(domain/question/router.ts). 기본 'role_rule:opposite'"]
+  routing jsonb [not null, default: '{}', note: '라우터 판정 상세 {confidence, reason, latencyMs, fallback}']
+  questions jsonb [not null, note: 'Claude Code AskUserQuestion 형식 그대로(1~4개)']
+  status text [not null, default: 'pending', note: 'pending | agent_answered | answered | expired | self_owned']
+  draft jsonb [note: '상담 실행 초안 {answers, decided, basis}']
+  drafted_by_agent uuid [ref: > agents.id]
+  drafted_at timestamptz
+  answers jsonb [note: '키 = 질문 문장 그대로']
+  answer_source text [note: 'agent | human | agent_confirmed | human_override']
+  answered_by uuid [ref: > users.id, note: '사람이 답했을 때만']
+  answered_at timestamptz
+  expires_at timestamptz [not null, note: '기본 3일 — 지나면 expired, 그 질문으로 멈춘 태스크는 ESCALATED']
+  created_at timestamptz [not null, default: `now()`]
+
+  Note: '''
+  실행 중인 에이전트가 다른 역할 소관 결정을 AskUserQuestion으로 물으면 브릿지 권한 도구가 올린다(C안).
+  ① 대상 역할 에이전트의 상담 실행이 초안 — 전부 decided면 곧 답(agent_answered, 사람 미확인) ② 아니면 대상 역할 담당·대표가 답(answered).
+  묻는 쪽은 몇 분만 기다리고 태스크를 BLOCKED(QUESTION)로 내려놓는다 — 답이 다 오면 READY.
+  CHECK agent_questions_status_chk: status IN ('pending','agent_answered','answered','expired','self_owned')
+  CHECK agent_questions_roles_chk: asker_role·target_role IN ('FRONTEND','BACKEND')
+  CHECK agent_questions_questions_chk: jsonb_typeof(questions)='array' AND 길이 1~4
+  CHECK agent_questions_source_chk: answer_source IN ('agent','human','agent_confirmed','human_override')
+  CHECK agent_questions_answer_chk: (status IN ('agent_answered','answered')) = (answers·answer_source·answered_at 모두 NOT NULL)
+  CHECK agent_questions_answered_by_chk: (status='answered') = (answered_by IS NOT NULL)
+  CHECK agent_questions_agent_answer_chk: status<>'agent_answered' OR (answer_source='agent' AND drafted_by_agent IS NOT NULL)
+  CHECK agent_questions_draft_chk: (draft IS NULL) = (drafted_by_agent IS NULL AND drafted_at IS NULL)
+  INDEX idx_agent_questions_pending ON (project_id) WHERE status = 'pending'
+  INDEX idx_agent_questions_task ON (task_id)
+  '''
+}

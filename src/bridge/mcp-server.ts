@@ -7,7 +7,9 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { readCredentials, updateAccessToken } from './credentials.js';
 import { NomosClient, PolicyStaleLoopError } from './nomos-client.js';
-import { mergeAcknowledged, readBriefingNoteIds } from './briefing-notes.js';
+import { mergeAcknowledged, readBriefingNoteIds, readBriefingTaskId } from './briefing-notes.js';
+import { PERMISSION_TOOL } from './claude-args.js';
+import { DENY_OTHER, denyUnanswered, handleAskUserQuestion, isHandled, type PermissionResult } from './permission.js';
 import { pushTaskBranch } from './push.js';
 
 // 자격 증명은 ~/.nomos/credentials가 정본이다(0600). 환경변수는 파일이 없을 때만 쓴다
@@ -134,7 +136,7 @@ server.registerTool(
   {
     title: 'Publish a handover note',
     description:
-      'Record what the next person needs to know about the task you claimed: what you implemented, what you decided, a gotcha you hit, or a deviation from the spec. This is a record, not a chat message — there is no reply and no recipient. Keep each key point to one short sentence; the server rejects notes that are too long instead of truncating them. Claims about another agent belong in raise_dispute, not here.',
+      'Record what the next person needs to know about the task you claimed: what you implemented, what you decided, a gotcha you hit, or a deviation from the spec. This is a record, not a chat message — there is no reply and no recipient. Keep each key point to one short sentence; the server rejects notes that are too long instead of truncating them. Claims about another agent belong in raise_dispute, not here. Do not publish DECIDED for a contract another role owns (e.g. the response shape or status codes of an API that role builds) — if you had to assume one, publish a GOTCHA saying it is an assumption that role must confirm.',
     inputSchema: {
       task_id: z.string().describe('The claimed task id'),
       kind: z.enum(['IMPLEMENTED', 'DECIDED', 'GOTCHA', 'DEVIATION']).describe('Note kind'),
@@ -184,6 +186,57 @@ server.registerTool(
         }),
       'read_notes',
     ),
+);
+
+// 권한 도구 — Claude Code가 --permission-prompt-tool로 부른다(모델에게는 보이지 않는다 — 실험 E5).
+// AskUserQuestion만 처리하고 나머지는 전부 거부한다. 이유는 bridge/permission.ts.
+// 답을 기다리는 동안 진행 알림을 보낸다 — 없으면 Claude Code가 30분 무응답에서 끊는다(실험 E1·E1b).
+// 실행 안에서 답을 기다리는 시간(C안). 지나면 서버가 태스크를 BLOCKED로 내려놓고 실행은 커밋 없이 끝난다 — 답이 오면 다시 시작된다.
+// 상대 에이전트의 상담 실행은 30초 안팎이었다(실험) — 코드에 이미 정해진 답은 이 안에 온다. 진짜 결정은 사람을 기다려야 해서 내려놓는다.
+const QUESTION_INLINE_WAIT_MS = Number(process.env.NOMOS_QUESTION_INLINE_WAIT_MS ?? 3 * 60_000);
+const QUESTION_MAX_WAIT_MS = QUESTION_INLINE_WAIT_MS + 60_000;
+
+server.registerTool(
+  PERMISSION_TOOL,
+  {
+    title: 'NOMOS permission prompt',
+    description: 'Internal: permission decisions for the headless run. Not for direct use.',
+    inputSchema: {
+      tool_name: z.string(),
+      input: z.record(z.unknown()),
+      tool_use_id: z.string().optional(),
+    },
+  },
+  async ({ tool_name, input }, extra) => {
+    const respond = (result: PermissionResult) => ok(JSON.stringify(result));
+    if (!isHandled(tool_name)) {
+      process.stderr.write(`[nomos-mcp] permission denied: ${tool_name}\n`);
+      return respond(DENY_OTHER);
+    }
+    const taskId = readBriefingTaskId(workspaceDir);
+    if (!taskId) return respond(denyUnanswered('No task is active in this workspace.', []));
+
+    const progressToken = extra._meta?.progressToken;
+    let tick = 0;
+    const result = await handleAskUserQuestion(input, {
+      ask: (questions) => client.askQuestions(taskId, questions),
+      get: (questionId) => client.getQuestion(taskId, questionId),
+      detach: (questionId) => client.detachQuestion(taskId, questionId),
+      inlineWaitMs: QUESTION_INLINE_WAIT_MS,
+      sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+      maxWaitMs: QUESTION_MAX_WAIT_MS,
+      onWaiting: async () => {
+        tick += 1;
+        if (progressToken === undefined || tick % 15 !== 0) return; // 약 30초마다
+        await extra.sendNotification({
+          method: 'notifications/progress',
+          params: { progressToken, progress: tick, message: 'waiting for an answer from another role' },
+        });
+      },
+    });
+    process.stderr.write(`[nomos-mcp] AskUserQuestion → ${result.behavior}\n`);
+    return respond(result);
+  },
 );
 
 await server.connect(new StdioServerTransport());

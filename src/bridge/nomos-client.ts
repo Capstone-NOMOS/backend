@@ -6,6 +6,16 @@
 
 export type Tokens = { accessToken: string; refreshToken: string };
 
+export type ConsultJob = { id: string; askerRole: string; questions: { question: string }[] };
+
+export type QuestionState = {
+  id: string;
+  status: 'pending' | 'agent_answered' | 'answered' | 'expired' | 'self_owned';
+  targetRole: string;
+  answers: Record<string, string> | null;
+  expiresAt: string;
+};
+
 export type NomosClientOptions = {
   baseUrl: string;
   tokens: Tokens;
@@ -120,6 +130,29 @@ export class NomosClient {
     const path = `/api/projects/${projectId}/notes${query ? `?${query}` : ''}`;
     const data = (await this.request('GET', path)) as { notes: Record<string, unknown>[] };
     return data.notes;
+  }
+
+  // 권한 도구(permission_prompt)가 AskUserQuestion을 올리고, 답을 기다리며 상태를 읽는다.
+  async askQuestions(taskId: string, questions: unknown[]): Promise<QuestionState> {
+    return (await this.request('POST', `/api/tasks/${taskId}/questions`, { questions })) as QuestionState;
+  }
+
+  async getQuestion(taskId: string, questionId: string): Promise<QuestionState> {
+    return (await this.request('GET', `/api/tasks/${taskId}/questions/${questionId}`)) as QuestionState;
+  }
+
+  // 정한 시간만 기다렸다 — 태스크를 내려놓는다(서버가 BLOCKED로). 그 사이 답이 왔으면 답을 돌려준다.
+  async detachQuestion(taskId: string, questionId: string): Promise<QuestionState> {
+    return (await this.request('POST', `/api/tasks/${taskId}/questions/${questionId}/detach`)) as QuestionState;
+  }
+
+  // 상담 실행(Executor): 이 역할이 답할 질문과 읽을 레포, 그리고 초안 올리기.
+  async listConsultJobs(): Promise<{ questions: ConsultJob[]; repos: { id: string; fullName: string; cloneUrl: string | null; defaultBranch: string }[] }> {
+    return (await this.request('GET', '/api/agents/me/questions')) as Awaited<ReturnType<NomosClient['listConsultJobs']>>;
+  }
+
+  async submitDraft(questionId: string, draft: { answers: Record<string, string>; decided: Record<string, boolean>; basis: Record<string, string[]> }): Promise<QuestionState> {
+    return (await this.request('POST', `/api/questions/${questionId}/draft`, draft)) as QuestionState;
   }
 
   // Executor 폴링용. 에이전트 토큰이면 서버가 자기 역할로 강제 필터한다.
