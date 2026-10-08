@@ -1,7 +1,8 @@
 import { Router, type Request } from 'express';
 import { z } from 'zod';
 import {
-  assignMember,
+  assignMemberWithInvites,
+  retryGithubInvites,
   startProject,
   createProject,
   getProject,
@@ -74,6 +75,7 @@ const assignMemberBodySchema = z.object({
 });
 
 // POST /api/projects/:projectId/members — 역할 배정(대표 전용). G1 이후에는 403.
+// 배정과 함께 그 에이전트 주인을 프로젝트의 GitHub 레포에 협업자로 초대한다(githubInvites — 실패해도 배정은 유효).
 projectsRouter.post(
   '/projects/:projectId/members',
   validate({ params: projectIdParamsSchema, body: assignMemberBodySchema }),
@@ -82,8 +84,21 @@ projectsRouter.post(
   async (req, res) => {
     const { projectId } = req.params as z.infer<typeof projectIdParamsSchema>;
     const body = req.body as z.infer<typeof assignMemberBodySchema>;
-    const members = await assignMember(actorOf(req), projectId, body.agentId, body.teamRole);
-    res.status(201).json({ data: { members, notice: REFRESH_NOTICE } });
+    const { members, githubInvites } = await assignMemberWithInvites(actorOf(req), projectId, body.agentId, body.teamRole);
+    res.status(201).json({ data: { members, githubInvites, notice: REFRESH_NOTICE } });
+  },
+);
+
+// POST /api/projects/:projectId/members/:agentId/github-invite — GitHub 협업자 초대 다시 보내기(대표 전용).
+// 배정 때 멤버가 GitHub를 연결하지 않았거나 GitHub 호출이 실패했을 때. 시작 뒤에도 된다.
+projectsRouter.post(
+  '/projects/:projectId/members/:agentId/github-invite',
+  validate({ params: memberParamsSchema }),
+  authenticate,
+  requireRepresentative,
+  async (req, res) => {
+    const { projectId, agentId } = req.params as z.infer<typeof memberParamsSchema>;
+    res.status(200).json({ data: { githubInvites: await retryGithubInvites(actorOf(req), projectId, agentId) } });
   },
 );
 

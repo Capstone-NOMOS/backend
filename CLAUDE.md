@@ -142,6 +142,21 @@ await withTransaction(async (tx) => {
 
 003 이후에는 사용자가 가입으로 먼저 생기고, 조직을 만들거나 초대를 수락할 때 `users.org_id`를 NULL→값으로 채운다(`assignUserToOrg`). `org_id`는 **한 번만** 바뀐다 — 단일 조직 규칙은 `UPDATE ... WHERE org_id IS NULL` 조건 하나로 지켜지므로 이걸 빼면 안 된다. 같은 순간에 `agents.org_id`도 채운다(`assignAgentsToOrg`, 불변식: `agents.org_id = users.org_id`).
 
+### GitHub 레포 만들기·협업자 초대 (`domain/github/rep-api.ts`)
+
+대표 본인의 GitHub 토큰(`oauth_sessions`)으로 GitHub를 **바꾸는** 호출은 여기 한 곳이다. 읽기 전용인 `github/client.ts`(서버의 `GITHUB_TOKEN`)와 섞지 말 것.
+
+- **레포는 GitHub 조직에만, 비공개로 만든다**(`POST /orgs/:orgId/github/repos`, 대표 전용). 팀 프로젝트라 개인 계정에는 만들지 않는다(대표 결정).
+  만들면서 바로 연결한다 — 기존 연결과 같은 `connectOneRepo` 한 벌이고, `ownerRole`(필수)·`github_repo_id`·`clone_url`이 채워져 V3가 처음부터 돈다.
+- **첫 커밋은 파일 없는 빈 커밋**이다. 브랜치가 없으면 Executor가 분기하지 못하고, README는 두지 않는다(대표 결정). 빈 레포에는 Git 데이터 API가
+  안 되므로 `auto_init` 뒤 빈 트리 커밋(부모 없음)으로 기본 브랜치를 force로 덮는다. **첫 커밋을 Executor가 만들게 하지 말 것** — 기본 브랜치 push 금지(`bridge/push.ts`)에
+  예외가 생기고, FE·BE가 동시에 빈 레포를 보면 경합한다.
+- GitHub 호출은 트랜잭션으로 되돌릴 수 없다. 만든 뒤 연결이 실패하면 GitHub에 레포가 남는다(로그를 남기고 `POST /orgs/:orgId/repos`로 이어 붙인다).
+- **역할 배정 시 협업자 자동 초대**: 그 에이전트 주인의 `github_login`(멤버가 "GitHub 연결"로 등록 — 가입 때 아이디를 손으로 받지 않는다. 본인 확인이 안 된다)을
+  프로젝트의 GitHub 레포마다 push 권한으로 초대한다. 배정을 먼저 커밋하고 그 뒤에 부른다 — **초대 실패가 배정을 막지 않는다**(결과 `githubInvites`, 이벤트 `GITHUB_COLLABORATORS_INVITED`).
+  미연결·실패는 `POST .../members/:agentId/github-invite`로 다시 보낸다(시작 뒤에도 된다). 초대는 멤버가 GitHub에서 수락해야 효력이 있다.
+- GitHub 조직이 OAuth 앱 접근 제한을 켜 두었으면 그 조직에서 NOMOS 앱을 승인해야 목록·생성이 된다(403 `GITHUB_FORBIDDEN`).
+
 ### 경로 소유권 모델
 
 레포를 연결하면 `seed-paths.ts`의 규칙 15개가 `repo_paths`에 자동 삽입된다(`source='seed'`, `owner_role`은 전부 null). 대표가 `**` 행의 소유자를 지정하는 것이 온보딩의 실질적 산출물이다.

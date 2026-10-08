@@ -31,6 +31,9 @@ export type ErrorCode =
   | 'SCOPE_DENIED'
   | 'FORBIDDEN_PATH'
   | 'GITHUB_ACCOUNT_TAKEN'
+  | 'GITHUB_NOT_LINKED'
+  | 'GITHUB_FORBIDDEN'
+  | 'GITHUB_REPO_NAME_TAKEN'
   | 'TASK_NOT_FOUND'
   | 'TASK_ALREADY_CLAIMED'
   | 'ARTIFACT_NOT_FOUND'
@@ -107,6 +110,11 @@ const STATUS_BY_CODE: Record<ErrorCode, number> = {
   SCOPE_DENIED: 403,
   FORBIDDEN_PATH: 403,
   GITHUB_ACCOUNT_TAKEN: 409,
+  // 대표가 GitHub를 연결하지 않았거나 토큰이 무효 — 사람이 먼저 해야 할 일이 있다.
+  GITHUB_NOT_LINKED: 409,
+  // GitHub가 대표 토큰의 요청을 거부했다(조직 권한 없음, 조직이 NOMOS 앱을 승인하지 않음 등).
+  GITHUB_FORBIDDEN: 403,
+  GITHUB_REPO_NAME_TAKEN: 409,
   TASK_NOT_FOUND: 404,
   // 409 — 권한 문제가 아니라 경합에서 진 것이다. 재시도하면 다른 태스크를 잡으면 된다.
   TASK_ALREADY_CLAIMED: 409,
