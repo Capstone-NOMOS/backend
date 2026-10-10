@@ -47,15 +47,29 @@ export async function insertNewDispatches(db: Queryable, projectId: string): Pro
 // ── 실행(run) ─────────────────────────────────────────────────────────────
 
 // 이 에이전트가 이 태스크에서 시작하고 아직 끝내지 않은 실행 — 마지막 실행 이벤트가 STARTED면 그 attempt, 아니면 null.
-export async function findOpenRun(db: Queryable, taskId: string, agentId: string): Promise<{ attempt: number } | null> {
+export async function findOpenRun(db: Queryable, taskId: string, agentId: string): Promise<{ attempt: number; startedEventId: string } | null> {
   const { rows } = await db.query(
-    `SELECT type, payload->>'attempt' AS attempt FROM events
+    `SELECT id::text AS id, type, payload->>'attempt' AS attempt FROM events
       WHERE type IN ('AGENT_RUN_STARTED', 'AGENT_RUN_ENDED')
         AND actor_agent_id = $2 AND payload->>'taskId' = $1
       ORDER BY id DESC LIMIT 1`,
     [taskId, agentId],
   );
-  return rows[0]?.type === 'AGENT_RUN_STARTED' ? { attempt: Number(rows[0].attempt) } : null;
+  return rows[0]?.type === 'AGENT_RUN_STARTED' ? { attempt: Number(rows[0].attempt), startedEventId: rows[0].id as string } : null;
+}
+
+// 이 실행(시작 이벤트 이후) 안에서 이 에이전트가 이 태스크를 제출했는가·질문의 답을 기다리느라 내려놓았는가.
+// 종료 순간의 태스크 상태로 짐작하지 않는다 — 실행이 끝난 뒤에도 답·재개·대표의 조치로 상태는 바뀐다(실험 C1: 답이 종료 보고보다
+// 먼저 와 READY였고, 그 실행이 '제출함'으로 세어졌다). 이후 이벤트의 id는 시작 이벤트보다 크다(시작이 커밋된 뒤에야 생긴다).
+export async function findRunOutcome(db: Queryable, taskId: string, agentId: string, startedEventId: string): Promise<{ submitted: boolean; detachedForQuestion: boolean }> {
+  const { rows } = await db.query(
+    `SELECT bool_or(type = 'ARTIFACT_SUBMITTED') AS submitted, bool_or(type = 'TASK_BLOCKED_ON_QUESTION') AS detached
+       FROM events
+      WHERE id > $3::bigint AND actor_agent_id = $2 AND payload->>'taskId' = $1
+        AND type IN ('ARTIFACT_SUBMITTED', 'TASK_BLOCKED_ON_QUESTION')`,
+    [taskId, agentId, startedEventId],
+  );
+  return { submitted: rows[0]?.submitted === true, detachedForQuestion: rows[0]?.detached === true };
 }
 
 // ── 활동(agent_activity) ─────────────────────────────────────────────────
