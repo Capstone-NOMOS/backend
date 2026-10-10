@@ -338,12 +338,13 @@ export async function escalateQuestionTask(db: Queryable, taskId: string): Promi
 
 // 에이전트가 잡고 있던(CLAIMED·IN_PROGRESS) 태스크를 BLOCKED(AGENT_STOPPED)로. 담당은 남겨 둔다(누가 멈췄는지 화면에 보인다).
 // 조건부 UPDATE라 그사이 제출로 상태가 바뀌었으면 아무것도 하지 않고 null.
-export async function blockStoppedTask(db: Queryable, taskId: string): Promise<Task | null> {
+// 그 에이전트가 아직 잡고 있을 때만 멈춘다 — 늦게 온 종료 보고·감시가 다른 실행(재개로 다시 잡은 것 포함)을 멈추지 않게.
+export async function blockStoppedTask(db: Queryable, taskId: string, agentId: string): Promise<Task | null> {
   const { rows } = await db.query(
     `UPDATE tasks SET state = 'BLOCKED', blocked_reason = 'AGENT_STOPPED', updated_at = now()
-      WHERE id = $1 AND state IN ('CLAIMED', 'IN_PROGRESS')
+      WHERE id = $1 AND state IN ('CLAIMED', 'IN_PROGRESS') AND assignee_agent_id = $2
       RETURNING *`,
-    [taskId],
+    [taskId, agentId],
   );
   return rows[0] ? toTask(rows[0]) : null;
 }

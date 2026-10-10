@@ -495,8 +495,10 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
 - **"실행해 주세요"는 서비스마다 부르지 않는다.** `tasksChanged` 신호를 받아(`room/dispatch.ts`, `createApp`에서 구독) 가져갈 수 있게 된 태스크를 attempt마다
   한 번 기록한다 — `task_dispatches` PK가 중복을, 같은 트랜잭션의 이벤트가 P5를 지킨다. 조건은 `listClaimableTasks`에서 역할만 뺀 것이다(둘이 갈리면 지시는 왔는데 못 가져간다).
   테스트는 `truncateAll`이 `drainTasksChanged()`로 리스너를 기다린 뒤 TRUNCATE한다(겹치면 교착).
-- **제출 여부는 서버가 정한다.** Executor는 정상 종료·시간 초과·비정상과 커밋 여부만 보고하고, 서버가 태스크 상태로 `submitted`를 정해
-  "끝났지만 제출하지 않았다"를 룸에 남긴다 — 데모에서 팀원 터미널에만 보이던 막다른 길이다.
+- **제출 여부는 서버가 정한다.** Executor는 정상 종료·시간 초과·비정상과 커밋 여부만 보고하고, 서버가 **그 실행이 시작된 뒤의 이벤트**
+  (이 에이전트의 `ARTIFACT_SUBMITTED`·`TASK_BLOCKED_ON_QUESTION`, `findRunOutcome`)로 `submitted`·`waitingQuestion`을 정해 — 종료 순간의 태스크 상태로 짐작하지 말 것
+  (답이 종료 보고보다 먼저 오면 이미 READY라 "제출함"으로 세어졌다, 실험 C1). 제출도 내려놓음도 없으면 "끝났지만 제출하지 않았다"를 룸에 남긴다 —
+  데모에서 팀원 터미널에만 보이던 막다른 길이다. 멈춤(AGENT_STOPPED)은 그 에이전트가 아직 잡고 있을 때만 건다(늦은 종료 보고가 다시 잡은 실행을 멈추지 않게).
 - **활동은 도구 종류와 대상(작업공간 기준 경로·명령 첫 줄, 300자)만** 받는다. 파일 내용·명령 결과·모델 설명 문장은 받지 않는다(설명은 인계 노트의 몫, 대표 결정).
   상태 변화가 아니라 `events`가 아닌 `agent_activity`이고, 열린 실행(STARTED 뒤 ENDED 전)에만 붙는다. 화면 신호는 `room/activity-hub` → `/api/stream`의 `room` 토픽(서버 1대 전제).
 - **제출 없이 끝난 태스크는 BLOCKED(`AGENT_STOPPED`)로 멈춘다**(`task/stall.ts`, 종료 보고와 같은 트랜잭션). CLAIMED로 두면 아무도 다시 못 가져가고(운영 테스트의 영구 정체),

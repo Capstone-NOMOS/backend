@@ -12,7 +12,7 @@ import { tasksChanged } from '../dispatch/tasks-changed.js';
 import { blockStoppedTaskInTx } from '../task/stall.js';
 import { activityRecorded } from './activity-hub.js';
 import { parseCursor, renderFeedRow, type RoomMessage } from './render.js';
-import { findOpenRun, insertActivity, listActiveRoleTasks, listRoomFeed, type ActivityKind, type RoomTask } from './repository.js';
+import { findOpenRun, findRunOutcome, insertActivity, listActiveRoleTasks, listRoomFeed, type ActivityKind, type RoomTask } from './repository.js';
 
 // 룸 = 프로젝트 × 역할. 그 역할의 에이전트가 무엇을 하는지(활동), 서버(PM)가 무엇을 지시·판정했는지를 한 줄씩 보여 준다.
 // 팀원은 자기 역할 룸만, 대표는 전부 본다. PM(서버)의 프로젝트 단위 알림은 모든 룸에 나온다.
@@ -66,9 +66,10 @@ export type EndRunInput = {
   deniedCommands?: string[];
 };
 
-// Claude 실행이 끝났다. 제출 여부는 Executor가 아니라 서버가 정한다 — 이 에이전트가 아직 그 태스크를 잡고 있으면(CLAIMED·IN_PROGRESS)
-// 제출하지 않은 것이다. 제출 뒤에는 검증이 상태를 이미 옮겨 두었다(VERIFYING·DONE·READY…).
-// 제출하지 않았으면 같은 트랜잭션에서 BLOCKED(AGENT_STOPPED)로 멈추고 사유를 남긴다(task/stall.ts) — 재시도 횟수는 그대로.
+// Claude 실행이 끝났다. 제출 여부는 Executor가 아니라 서버가 정한다 — 이 실행이 시작된 뒤 남은 이벤트로 판정한다(findRunOutcome).
+// 종료 순간의 태스크 상태로 짐작하지 않는다: 답이 종료 보고보다 먼저 오면 태스크는 이미 READY다(실험 C1).
+// 제출도 내려놓음도 없으면 같은 트랜잭션에서 BLOCKED(AGENT_STOPPED)로 멈추고 사유를 남긴다(task/stall.ts) — 재시도 횟수는 그대로.
+// 멈추는 것은 이 에이전트가 아직 잡고 있을 때만이다(늦게 온 종료 보고가 다른 실행을 멈추지 않게).
 export async function endRun(
   ctx: AgentContext,
   taskId: string,
@@ -78,9 +79,10 @@ export async function endRun(
     const task = await taskInProject(ctx, taskId, tx);
     const open = await findOpenRun(tx, taskId, ctx.agentId);
     if (open === null) throw new AppError('RUN_NOT_OPEN', `no open run for task ${taskId}`);
-    // 질문의 답을 기다리느라 내려놓았다(BLOCKED·QUESTION, 담당도 비었다) — 제출한 것도, 멈춘 것도 아니다. 답이 오면 다시 시작된다.
-    const waitingQuestion = task.state === 'BLOCKED' && task.blockedReason === 'QUESTION';
-    const submitted = !waitingQuestion && !(task.assigneeAgentId === ctx.agentId && RUNNING_STATES.includes(task.state));
+    // 질문의 답을 기다리느라 내려놓았다(담당도 비었다) — 제출한 것도, 멈춘 것도 아니다. 답이 오면 다시 시작된다.
+    const outcome = await findRunOutcome(tx, taskId, ctx.agentId, open.startedEventId);
+    const submitted = outcome.submitted;
+    const waitingQuestion = !submitted && outcome.detachedForQuestion;
     await appendEvent(tx, {
       orgId: ctx.orgId,
       projectId: ctx.projectId,
