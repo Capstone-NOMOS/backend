@@ -340,4 +340,38 @@ describe('질문 중계와 룸', () => {
     const be = (await feed(w.be.token, w.projectId, 'BACKEND')).messages.map((m) => m.text);
     expect(be).toContain('FRONTEND 에이전트가 BACKEND에게 질문했습니다 (1개)');
   });
+
+  it('답이 종료 보고보다 먼저 와도(이미 READY·다시 수령) 그 실행은 "제출함"도 "멈춤"도 아니다 — 판정은 실행 안의 이벤트로 (실험 C1)', async () => {
+    const w = await world();
+    await http('POST', `/tasks/${w.feTaskId}/runs/start`, w.feAgentToken);
+    await http('POST', `/tasks/${w.feTaskId}/claim`, w.feAgentToken);
+    const q = 'GET /api/todos 응답 필드 이름은?';
+    const asked = await http('POST', `/tasks/${w.feTaskId}/questions`, w.feAgentToken, {
+      questions: [{ question: q, header: '필드', options: [{ label: 'title' }, { label: 'name' }], multiSelect: false }],
+    });
+    const questionId = asked.data.id as string;
+    await http('POST', `/tasks/${w.feTaskId}/questions/${questionId}/detach`, w.feAgentToken);
+    // 사람이 빨리 답했다 → READY. 그리고 (늦게 온 종료 보고 전에) 같은 에이전트가 다시 잡았다.
+    expect((await http('POST', `/questions/${questionId}/answer`, w.be.token, { answers: { [q]: 'title' } })).status).toBe(200);
+    expect((await http('POST', `/tasks/${w.feTaskId}/claim`, w.feAgentToken)).status).toBe(200);
+
+    const ended = await http('POST', `/tasks/${w.feTaskId}/runs/end`, w.feAgentToken, { outcome: 'completed', committed: false, durationMs: 130_000, exitCode: 0 });
+    expect(ended.data).toEqual({ submitted: false, taskState: 'CLAIMED', blocked: false });
+    const { rows } = await testPool.query(`SELECT payload FROM events WHERE type = 'AGENT_RUN_ENDED'`);
+    expect(rows[0]!.payload).toMatchObject({ submitted: false, waitingQuestion: true });
+    // 다시 잡은 실행은 멈추지 않는다.
+    expect((await testPool.query(`SELECT state FROM tasks WHERE id = $1`, [w.feTaskId])).rows[0]).toEqual({ state: 'CLAIMED' });
+    expect((await testPool.query(`SELECT 1 FROM events WHERE type = 'TASK_BLOCKED'`)).rowCount).toBe(0);
+  });
+
+  it('다른 에이전트가 잡고 있는 태스크는 늦게 온 종료 보고로 멈추지 않는다', async () => {
+    const w = await world();
+    await http('POST', `/tasks/${w.feTaskId}/runs/start`, w.feAgentToken);
+    await http('POST', `/tasks/${w.feTaskId}/claim`, w.feAgentToken);
+    // 대표가 멈춤을 풀고(READY) 다시 잡히기 전까지의 상황을 흉내 낸다 — 담당이 다른 에이전트로 바뀌었다.
+    await testPool.query(`UPDATE tasks SET assignee_agent_id = (SELECT id FROM agents WHERE id <> assignee_agent_id LIMIT 1) WHERE id = $1`, [w.feTaskId]);
+    const ended = await http('POST', `/tasks/${w.feTaskId}/runs/end`, w.feAgentToken, { outcome: 'completed', committed: false, durationMs: 1_000, exitCode: 0 });
+    expect(ended.data).toMatchObject({ submitted: false, blocked: false });
+    expect((await testPool.query(`SELECT state FROM tasks WHERE id = $1`, [w.feTaskId])).rows[0]).toEqual({ state: 'CLAIMED' });
+  });
 });

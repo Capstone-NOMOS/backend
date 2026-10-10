@@ -25,7 +25,7 @@ export async function blockStoppedTaskInTx(
   taskId: string,
   input: BlockInput,
 ): Promise<Task | null> {
-  const blocked = await blockStoppedTask(tx, taskId);
+  const blocked = await blockStoppedTask(tx, taskId, input.agentId);
   if (blocked === null) return null;
   await appendEvent(tx, {
     orgId: ctx.orgId,
