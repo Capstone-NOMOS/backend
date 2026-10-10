@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveClaudeCommand } from './runner.js';
+import { claudeEnv, resolveClaudeCommand } from './runner.js';
 import { removeQuietly } from './cleanup.js';
 
 // executor pm-worker — 중계 모드(PM_PROVIDER=relay)에서 대표 노트북이 PM의 "모델 호출" 한 자리를 맡는다.
@@ -101,7 +101,7 @@ const spawnClaude: RunClaudeJson = (args, stdin, cwd) => {
   const { command, commandArgs } = resolveClaudeCommand(args);
   return new Promise((resolve, reject) => {
     // shell을 쓰지 않는다 — 인자가 명령으로 해석되지 않게(runner.ts와 같은 이유).
-    const child = spawn(command, commandArgs, { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(command, commandArgs, { cwd, stdio: ['pipe', 'pipe', 'pipe'], env: claudeEnv() });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (c: Buffer) => (stdout += c.toString()));

@@ -23,7 +23,7 @@ import { SEED_PATH_RULES } from '../src/domain/repo/seed-paths.js';
 import { connectRepos } from '../src/domain/repo/service.js';
 import { runConsult } from '../src/executor/consult.js';
 import { buildTaskPrompt, type PromptBriefing } from '../src/executor/prompt.js';
-import { resolveClaudeCommand } from '../src/executor/runner.js';
+import { claudeEnv, resolveClaudeCommand } from '../src/executor/runner.js';
 import { resetSchema, testPool } from './test-db.js';
 
 // C안 E2E — 진짜 헤드리스 Claude 셋(FE 태스크 실행, BE 상담 실행, 필요하면 FE 재개 실행).
@@ -147,7 +147,7 @@ describe.skipIf(!RUN)('C안 E2E (진짜 Claude)', () => {
 
     const runFe = async (briefing: PromptBriefing): Promise<string> => {
       const { command, commandArgs } = resolveClaudeCommand(buildClaudeArgs({ prompt: buildTaskPrompt(briefing, `nomos/${task.id}`), mcpConfigPath, cwd: feDir }));
-      const child = spawn(command, commandArgs, { cwd: feDir, stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(command, commandArgs, { cwd: feDir, stdio: ['ignore', 'pipe', 'pipe'], env: claudeEnv() });
       let out = '';
       child.stdout.on('data', (d) => (out += d));
       await new Promise((r) => child.on('close', r));

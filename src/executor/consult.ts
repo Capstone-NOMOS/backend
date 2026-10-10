@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { resolveClaudeCommand } from './runner.js';
+import { claudeEnv, resolveClaudeCommand } from './runner.js';
 
 // 상담 실행 — 다른 역할 에이전트가 이 역할 소관을 물으면, 이 노트북의 Claude Code(본인 구독)로 레포를 **읽기만** 해서 답 초안을 만든다.
 //
@@ -111,7 +111,7 @@ export async function runConsult(input: { dir: string; role: string; repoName: s
   writeFileSync(emptyMcp, JSON.stringify({ mcpServers: {} }));
   const { command, commandArgs } = resolveClaudeCommand(consultArgs(buildConsultPrompt(input), emptyMcp));
   const out = await new Promise<string>((resolve, reject) => {
-    const child = spawn(command, commandArgs, { cwd: input.dir, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, commandArgs, { cwd: input.dir, stdio: ['ignore', 'pipe', 'pipe'], env: claudeEnv() });
     let stdout = '';
     const timer = setTimeout(() => {
       child.kill();

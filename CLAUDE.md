@@ -287,6 +287,11 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
   `onTokensChanged`로 갱신된 토큰을 파일에 쓴다.
 - **재발급 대상은 `POLICY_STALE`과 `UNAUTHENTICATED` 둘 다다.** 만료(1시간)를 빼면 한 시간 뒤부터 조용히 죽는다.
   재발급 후에도 같은 이유로 막히면 `PolicyStaleLoopError`로 멈춘다 — 두 번째 재발급은 하지 않는다.
+- **claude는 `claudeEnv()`로 띄운다**(`executor/runner.ts` — 작업 실행·상담·PM 워커, 실험 스크립트도). 띄운 쪽 Claude Code 세션 변수(`CLAUDECODE`·`CLAUDE_CODE_SESSION_ID`·
+  `CLAUDE_CODE_MESSAGING_*` 등 `SESSION_ENV_KEYS`)를 빼지 않으면, Claude Code 안에서 CLI를 띄웠을 때 태스크 실행이 그 대화의 하위 세션이 된다
+  (진입점이 claude-vscode로 기록되고 부모 세션의 알림이 모델 맥락에 끼어들었다 — 실측). 인증·설정 변수는 남긴다.
+- **모델 출력이 15분(`DEFAULT_IDLE_MS`) 없으면 끊는다**(`stalled`). 도구 결과 뒤 다음 응답이 오지 않은 채 20분 넘게 멈춘 실행이 있었다. 서버에는 `timeout`으로 보고하고
+  사유 문장 `[응답 없음]`으로 구분한다(옛 서버는 outcome에 stalled를 모른다). 질문 답 대기(3분)·시험 실행(최대 10분)보다 길어야 한다.
 - 작업공간은 `~/.nomos/workspaces/{projectId}/{taskId}/`에 **git worktree로** 만든다. 레포 자체와 분리되므로
   사용자의 작업 트리를 건드리지 않는다. 태스크가 끝나도 **남긴다** — 실패 원인은 남은 파일에서 드러난다.
 - `.claude/settings.json`이 로컬 방어선이다. 생성에 쓴 `policy_hash`를 `.claude/.nomos-policy.json`에 함께 남긴다.
