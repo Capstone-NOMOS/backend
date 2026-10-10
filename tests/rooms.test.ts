@@ -2,7 +2,8 @@ import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
-import { pool } from '../src/config/db.js';
+import { appendEvent } from '../src/domain/events/append.js';
+import { pool, withTransaction } from '../src/config/db.js';
 import { connectAgent } from '../src/domain/agent/service.js';
 import { login, signup } from '../src/domain/auth/service.js';
 import { createTask } from '../src/domain/authoring/service.js';
@@ -11,6 +12,7 @@ import { acceptInvite, createInvite } from '../src/domain/invite/service.js';
 import { createOrganization } from '../src/domain/org/service.js';
 import { assignMember, createProject, startProject } from '../src/domain/project/service.js';
 import { connectRepos } from '../src/domain/repo/service.js';
+import { DISPATCHER } from '../src/domain/room/dispatch.js';
 import { gitMirrorInspector, setCommitInspector } from '../src/domain/verification/commit-inspector.js';
 import { sweepUnresponsiveClaims } from '../src/domain/task/stall.js';
 import { assignRootOwner } from './fixtures.js';
@@ -61,7 +63,7 @@ async function account(loginId: string) {
 }
 
 // 대표, BE·FE 팀원(각자 에이전트), BE·FE 태스크 하나씩. 시작까지 해 둔다.
-async function world() {
+async function world(options: { started?: boolean } = {}) {
   const rep = await account('rep');
   const { orgId } = await createOrganization(rep.userId, 'Acme');
   const be = await account('be-dev');
@@ -81,7 +83,9 @@ async function world() {
   await assignMember(actor, projectId, feAgent.agentId, 'FRONTEND');
   const beTask = await createTask(rep.userId, projectId, { title: 'T-1 가입 API', teamRole: 'BACKEND', kind: 'INTEGRATION', repoId: repo!.id, specId: null, dependsOn: [] });
   const feTask = await createTask(rep.userId, projectId, { title: 'T-2 가입 화면', teamRole: 'FRONTEND', kind: 'INTEGRATION', repoId: repo!.id, specId: null, dependsOn: [] });
-  await startProject(actor, projectId);
+  // 태스크 생성의 신호(tasksChanged → 지시 기록)가 끝난 뒤에 시작한다 — 겹치는 경우는 아래 '이벤트 시각' 테스트가 따로 고정한다.
+  await drainTasksChanged();
+  if (options.started !== false) await startProject(actor, projectId);
   await drainTasksChanged();
   // 배정 뒤 재발급해야 토큰에 project_id가 담긴다.
   const refresh = async (refreshToken: string) =>
@@ -101,6 +105,38 @@ async function feed(token: string, projectId: string, role: string, query = ''):
   const res = await http('GET', `/projects/${projectId}/rooms/${role}/feed${query}`, token);
   return { status: res.status, messages: (res.data.messages ?? []) as Msg[], nextBefore: (res.data.nextBefore ?? null) as string | null };
 }
+
+describe('이벤트 시각 (019)', () => {
+  // 지시 기록(recordDispatches)은 신호를 받아 별도 트랜잭션에서 "지금 가져갈 수 있는 태스크"를 계산한다. 그 트랜잭션이 시작보다 먼저
+  // BEGIN했어도 READ COMMITTED라 계산 문장은 커밋된 시작을 본다 — now()(BEGIN 시각)였을 때 지시가 시작보다 앞에 정렬되어 CI에서 가끔 깨졌다.
+  // 실제 지시 기록과 경합하지 않도록 같은 모양을 직접 만든다: 먼저 연 트랜잭션 A, 그 사이 커밋된 B, A가 B 뒤에 넣은 이벤트.
+  it('먼저 BEGIN한 트랜잭션이 뒤에 커밋된 이벤트를 보고 넣은 이벤트는 그보다 뒤 시각이다', async () => {
+    const w = await world({ started: false });
+    const event = (type: 'PROJECT_STARTED' | 'TASK_DISPATCHED') => ({
+      orgId: w.orgId,
+      projectId: w.projectId,
+      type,
+      onBehalfOf: DISPATCHER,
+      payload: { taskId: w.beTaskId, marker: 'clock' },
+    });
+    const a = await pool.connect();
+    try {
+      await a.query('BEGIN');
+      await a.query('SELECT 1'); // 트랜잭션 시작 시각이 여기서 정해진다
+      await withTransaction(async (b) => appendEvent(b, event('PROJECT_STARTED')));
+      await new Promise((r) => setTimeout(r, 5));
+      await appendEvent(a, event('TASK_DISPATCHED'));
+      await a.query('COMMIT');
+    } catch (err) {
+      await a.query('ROLLBACK');
+      throw err;
+    } finally {
+      a.release();
+    }
+    const { rows } = await testPool.query(`SELECT type FROM events WHERE payload->>'marker' = 'clock' ORDER BY ts`);
+    expect(rows.map((r) => r.type)).toEqual(['PROJECT_STARTED', 'TASK_DISPATCHED']);
+  });
+});
 
 describe('룸 피드 — 실행해 주세요부터 검증 결과까지', () => {
   it('BE 룸에 서버 지시·수령·실행·도구 사용·제출·검증이 순서대로 쌓인다(최신부터)', async () => {

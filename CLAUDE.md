@@ -132,6 +132,9 @@ await withTransaction(async (tx) => {
 })
 ```
 
+`events.ts`(와 `agent_activity.ts`)는 `clock_timestamp()` — **넣은 순간**이다(019). `now()`(BEGIN 시각)로 되돌리지 말 것: 먼저 BEGIN한 트랜잭션이 뒤에 커밋된 변화를 읽고 남긴 이벤트가
+원인보다 과거 시각을 받아, 룸 피드에서 "실행해 주세요"가 "프로젝트를 시작합니다"보다 앞에 나왔다(CI에서 가끔). 시각으로 순서를 매기는 곳(피드·리플레이)이 이 성질에 기댄다.
+
 `on_behalf_of`는 NOT NULL이고 절대 비울 수 없다(모든 행동은 사람에게 귀속된다는 원칙의 구현체). 시스템이 주체면 `'system:planner'`처럼 명시적 문자열을 쓴다 — 빈 문자열이나 `'system'` 같은 모호한 값 금지. events는 append-only로, UPDATE/DELETE하지 않는다.
 
 조직에 들기 전의 행동(가입, 연결 키 교체, CLI 연결)은 `orgId: null`로 기록한다(003에서 `events.org_id` nullable). `orgId`는 생략할 수 없는 필수 인자라 호출부가 의식적으로 `null`을 고르게 되어 있다. **비밀값(연결 키·토큰·비밀번호)은 payload에 절대 넣지 않는다** — events는 지워지지 않는다.
