@@ -472,6 +472,8 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
   30분 MCP 무응답 한도(E1)를 실행이 붙잡고 기다리지 않는 이유다.
 - **상담 실행**: 답할 역할의 Executor가 자기 작업공간을 `--tools Read,Grep,Glob` + 빈 MCP + `--strict-mcp-config`로 읽어 초안을 낸다(쓰기·셸·웹 없음).
   질문 전부가 코드·명세에 정해져 있으면(decided) 초안이 곧 답(`agent_answered`, 사람 미확인) — 아니면 사람이 답한다(대상 역할 담당 또는 대표). 상담은 읽은 순간의 스냅샷이다.
+  상담할 질문은 **웹소켓으로 깨운다**: 질문이 커밋되면 `questionsChanged` → 에이전트 스트림이 `{ type: 'questions', targetRole }`을 프로젝트 연결 전부에 보내고 Executor가 자기 역할만 본다.
+  내용은 싣지 않는다(GET `/agents/me/questions`로 다시 읽는다). 신호를 놓친 경우는 연결 직후 한 번·1분마다 한 번(`CONSULT_FALLBACK_MS`), 끊겨 있으면 매 루프 확인한다. 태스크 스냅샷(`tasksChanged`)으로 깨우지 말 것 — 질문만으로는 가져갈 태스크가 바뀌지 않는다.
 - **만료 3일** — 읽을 때(settleExpiry)와 **주기 정리**(`startQuestionExpirySweep`, `startServer`에서만)가 만료시키고 그 질문으로 멈춘 태스크를 ESCALATED로 올린다.
   주기 정리가 없으면 아무도 읽지 않은 질문 때문에 태스크가 영원히 기다린다.
 - **프로젝트 스위치 `projects.question_relay`(기본 켜짐)**: 끄면 서버가 질문을 409 `QUESTION_RELAY_OFF`로 거부하고, 브리핑의 `questionRelay=false`를 보고 Executor가 권한 도구를 붙이지 않으며

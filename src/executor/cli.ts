@@ -288,10 +288,10 @@ async function start(): Promise<void> {
     } catch (err) {
       log(`태스크 목록 실패: ${err instanceof Error ? err.message : String(err)}`);
     }
-    // 다른 역할이 이 역할에 물은 질문 — 질문이 생기면 서버가 같은 신호(스냅샷 푸시)로 깨운다.
+    // 다른 역할이 이 역할에 물은 질문 — 질문이 생기면 서버가 { type: 'questions' }로 깨운다. 신호가 없으면 1분마다만 확인한다.
     try {
       // 역할이 없는 에이전트(역할 제한 없는 배정)는 상담할 소관도 없다.
-      if (self.teamRole) await consultPending(client, self.teamRole);
+      if (self.teamRole && source.consultDue(self.teamRole)) await consultPending(client, self.teamRole);
     } catch (err) {
       log(`상담할 질문 목록 실패: ${err instanceof Error ? err.message : String(err)}`);
     }

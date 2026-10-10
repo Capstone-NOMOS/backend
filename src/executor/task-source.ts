@@ -18,6 +18,9 @@ export type TaskSource = {
   nextTasks(limit: number): Promise<TaskSummary[]>;
   // 목록이 바뀔 때까지(또는 최대 maxMs) 기다린다. 폴링은 그냥 maxMs를 잔다.
   waitForChange(maxMs: number): Promise<void>;
+  // 지금 상담할 질문 목록(GET /agents/me/questions)을 읽어야 하는가. 부르면 "읽었다"로 친다.
+  // 푸시는 신호가 왔을 때·느린 안전망 간격마다만, 폴링은 매번 true다.
+  consultDue(role: string): boolean;
   close(): void;
 };
 
@@ -30,6 +33,7 @@ export function pollingTaskSource(client: NomosClient): TaskSource {
       return (rows as unknown as TaskSummary[]).slice(0, limit);
     },
     waitForChange: (maxMs) => new Promise((resolve) => setTimeout(resolve, maxMs)),
+    consultDue: () => true,
     close: () => {},
   };
 }
