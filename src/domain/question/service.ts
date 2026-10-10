@@ -9,6 +9,7 @@ import { findProjectById, listProjectMembers } from '../project/repository.js';
 import { assertProjectVisibleToUser, type UserContext } from '../project/visibility.js';
 import type { TeamRole } from '../roles.js';
 import { findRepoById } from '../repo/repository.js';
+import { questionsChanged } from '../dispatch/questions-changed.js';
 import { tasksChanged } from '../dispatch/tasks-changed.js';
 import { blockTaskForQuestion, escalateQuestionTask, findSpecForTask, findTaskById, unblockQuestionTask } from '../task/repository.js';
 import { routeQuestion } from './router-registry.js';
@@ -153,8 +154,8 @@ export async function askQuestion(ctx: AgentContext, taskId: string, questions: 
     });
     return question;
   });
-  // 커밋 뒤 — 대상 역할 에이전트의 스트림이 깨어나 상담 실행을 맡는다(태스크 스냅샷과 같은 신호를 쓴다).
-  if (created.status === 'pending') tasksChanged(ctx.projectId);
+  // 커밋 뒤 — 대상 역할 에이전트의 Executor를 깨워 상담 실행을 맡긴다. 질문만으로는 가져갈 태스크가 바뀌지 않는다.
+  if (created.status === 'pending') questionsChanged(ctx.projectId, created.targetRole);
   return created;
 }
 

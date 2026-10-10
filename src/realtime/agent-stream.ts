@@ -3,6 +3,7 @@ import type { Duplex } from 'node:stream';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 import { logger } from '../config/logger.js';
 import { markAgentSeen, streamClosed, streamOpened } from '../domain/agent/presence.js';
+import { onQuestionsChanged } from '../domain/dispatch/questions-changed.js';
 import { onTasksChanged } from '../domain/dispatch/tasks-changed.js';
 import { listClaimableTasksForAgent, type AgentContext } from '../domain/task/service.js';
 import { AppError } from '../errors.js';
@@ -18,7 +19,11 @@ import { routeUpgrade } from './upgrade-router.js';
 // - 인증: 연결 뒤 첫 메시지로 토큰을 보낸다({ type: 'auth', token }). URL에 실으면 프록시 로그에 남는다.
 //   검증은 HTTP와 같은 resolveAgentToken(서명 → 재조회 → 정지 → 정책 신선도).
 //
-// 서버→클라이언트: { type: 'ready', agentId, projectId } · { type: 'tasks', projectId, tasks } · { type: 'error', code, message }
+// - 다른 역할이 물은 질문이 생기면 { type: 'questions', projectId, targetRole }을 보낸다(dispatch/questions-changed).
+//   역할로 거르지 않고 프로젝트 연결 전부에 보낸다 — 받는 Executor가 자기 역할만 본다. 내용은 GET /agents/me/questions로 다시 읽는다.
+//
+// 서버→클라이언트: { type: 'ready', agentId, projectId } · { type: 'tasks', projectId, tasks } · { type: 'questions', projectId, targetRole }
+//                · { type: 'error', code, message }
 // 닫는 코드: 4400 잘못된 메시지 · 4401 인증 실패(재발급 후 다시 연결) · 4403 프로젝트 멤버 아님 · 4408 인증 시간 초과
 
 export const AGENT_STREAM_PATH = '/api/agents/stream';
@@ -89,6 +94,10 @@ export function attachAgentStream(server: Server): AgentStream {
     const set = byProject.get(projectId);
     if (!set) return;
     await Promise.all([...set].map(pushSnapshot));
+  });
+
+  const unsubscribeQuestions = onQuestionsChanged((projectId, targetRole) => {
+    for (const conn of byProject.get(projectId) ?? []) send(conn.ws, { type: 'questions', projectId, targetRole });
   });
 
   const handle = (ws: WebSocket) => {
@@ -169,6 +178,7 @@ export function attachAgentStream(server: Server): AgentStream {
     close: async () => {
       clearInterval(ping);
       unsubscribe();
+      unsubscribeQuestions();
       unroute();
       for (const ws of wss.clients) ws.terminate();
       await new Promise<void>((resolve) => wss.close(() => resolve()));
