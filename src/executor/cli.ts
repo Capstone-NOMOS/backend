@@ -37,7 +37,7 @@ import { cliVersion, mcpServerPath } from './paths.js';
 import { checkTools } from './preflight.js';
 import { handleNextPmJob } from './pm-worker.js';
 import { buildTaskPrompt } from './prompt.js';
-import { runClaude } from './runner.js';
+import { DEFAULT_IDLE_MS, runClaude } from './runner.js';
 import { streamTaskSource } from './stream-source.js';
 import { pollingTaskSource, type TaskSource, type TaskSummary } from './task-source.js';
 import { runLint, runSpecTests, type SpecTest, type StageReport } from './verify.js';
@@ -178,8 +178,18 @@ async function handleTask(client: NomosClient, projectId: string, task: TaskSumm
   if (reporter) {
     await reporter.close();
     // 제출했는지는 서버가 태스크 상태로 판단해 룸에 남긴다("끝났지만 제출하지 않았다"가 대표에게 보인다).
+    // 응답 없음(stalled)은 서버에 timeout으로 보고하고 사유 문장으로 구분한다 — 옛 서버는 outcome에 stalled를 모른다.
+    const summary = observer.summary();
+    const stalledNote = `[응답 없음] ${Math.round(DEFAULT_IDLE_MS / 60_000)}분 동안 모델 출력이 없어 Executor가 실행을 끊었다`;
     await client
-      .endRun(task.id, { outcome: result.outcome, committed, durationMs: result.durationMs, exitCode: result.exitCode, ...observer.summary() })
+      .endRun(task.id, {
+        outcome: result.outcome === 'stalled' ? 'timeout' : result.outcome,
+        committed,
+        durationMs: result.durationMs,
+        exitCode: result.exitCode,
+        ...summary,
+        ...(result.outcome === 'stalled' ? { lastMessage: (summary.lastMessage ? `${stalledNote} — 마지막 말: ${summary.lastMessage}` : stalledNote).slice(0, 2000) } : {}),
+      })
       .then((r) => {
         if (r.blocked) log('제출 없이 끝나 태스크가 멈춤(BLOCKED)으로 바뀌었다 — 대표가 원인을 해결하고 재개하면 다시 가져간다');
       })
@@ -193,6 +203,8 @@ async function handleTask(client: NomosClient, projectId: string, task: TaskSumm
     await reportBridgeStages(client, task.id, workspace.dir, briefing.specTests);
   } else if (result.outcome === 'completed') {
     log(`정상 종료했지만 커밋이 없다. 태스크는 그대로 둔다. 로그: ${result.logPath}`);
+  } else if (result.outcome === 'stalled') {
+    log(`${Math.round(DEFAULT_IDLE_MS / 60_000)}분 동안 모델 출력이 없어 끊었다(응답 없음). 재시도하지 않는다. 로그: ${result.logPath}`);
   } else if (result.outcome === 'timeout') {
     log(`30분 초과로 종료했다. 재시도하지 않는다. 로그: ${result.logPath}`);
   } else {
