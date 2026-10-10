@@ -625,7 +625,7 @@ Table agent_activity {
   agent_id   uuid        [not null]
   kind       text        [not null, note: 'read | edit | write | run | search | other']
   target     text        [not null, note: '작업공간 기준 경로 또는 명령 첫 줄, 1~300자']
-  ts         timestamptz [not null, default: `now()`]
+  ts         timestamptz [not null, default: `clock_timestamp()`, note: '★ 019']
 
   indexes {
     (project_id, id)
@@ -692,7 +692,7 @@ Table events {
   latency_ms      integer
   path_violation  boolean         [note: 'M5′']
   owner_role      text
-  ts              timestamptz     [not null, default: `now()`]
+  ts              timestamptz     [not null, default: `clock_timestamp()`, note: '★ 019: 넣은 순간. now()(BEGIN 시각)면 뒤에 커밋된 변화를 보고 남긴 이벤트가 원인보다 앞선다']
 
   indexes {
     (org_id, id)
