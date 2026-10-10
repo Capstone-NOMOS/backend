@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DENY_OTHER, handleAskUserQuestion, isHandled, type QuestionLike, type WaitDeps } from '../src/bridge/permission.js';
+import { DENY_OTHER, handleAskUserQuestion, isHandled, QUESTION_POLL_MS, type QuestionLike, type WaitDeps } from '../src/bridge/permission.js';
 
 // 권한 도구는 보안 경계다 — Claude Code는 여기서 돌려준 답대로 실행한다(실험 E2: 전부 허용으로 답하면 curl·작업 폴더 밖 쓰기가 실제로 실행됐다).
 describe('권한 도구 — 판단', () => {
@@ -100,6 +100,20 @@ describe('권한 도구 — 라우터가 자기 소관이라고 판정한 질문
 });
 
 describe('권한 도구 — C안: 실행 안에서 정한 시간만 기다린다', () => {
+  it('답을 기다리는 동안 5초 간격으로 서버에 묻는다', async () => {
+    const slept: number[] = [];
+    await handleAskUserQuestion(
+      { questions: [QUESTION] },
+      deps([{ status: 'pending', answers: null }, { status: 'pending', answers: null }, { status: 'answered', answers: { [QUESTION.question]: 'x' } }], {
+        sleep: async (ms) => {
+          slept.push(ms);
+        },
+      }),
+    );
+    expect(QUESTION_POLL_MS).toBe(5_000);
+    expect(slept).toEqual([5_000, 5_000]);
+  });
+
   it('에이전트 답(agent_answered)도 바로 쓴다', async () => {
     const result = await handleAskUserQuestion({ questions: [QUESTION] }, deps([{ status: 'pending', answers: null }, { status: 'agent_answered', answers: { [QUESTION.question]: 'camelCase' } }]));
     expect(result).toMatchObject({ behavior: 'allow', updatedInput: { answers: { [QUESTION.question]: 'camelCase' } } });

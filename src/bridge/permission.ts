@@ -53,6 +53,10 @@ export const DENY_SELF_OWNED: PermissionResult = {
     'continue the task, and record the decision with publish_note (kind DECIDED) so others follow it.',
 };
 
+// 답을 기다리는 동안 서버에 묻는 간격. 사람이 답하는 데 몇십 초~몇 분이 걸려 2초는 지나치게 잦았다(대표 결정 5초).
+// MCP 서버는 Claude Code가 띄운 별도 프로세스라 웹소켓을 따로 붙이는 이득이 작다 — 실행 안에서 기다리는 3분 동안 최대 36회.
+export const QUESTION_POLL_MS = 5_000;
+
 export type WaitDeps = {
   ask: (questions: unknown[]) => Promise<{ id: string } & QuestionLike>;
   get: (questionId: string) => Promise<QuestionLike>;
@@ -85,7 +89,7 @@ export async function handleAskUserQuestion(input: Record<string, unknown>, deps
       }
       if (now() - started >= deps.maxWaitMs) return denyUnanswered('No answer arrived in time.', texts);
       await deps.onWaiting?.(now() - started);
-      await deps.sleep(deps.pollMs ?? 2_000);
+      await deps.sleep(deps.pollMs ?? QUESTION_POLL_MS);
       state = await deps.get(asked.id);
     }
     if ((state.status === 'answered' || state.status === 'agent_answered') && state.answers) {
