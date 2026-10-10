@@ -8,6 +8,7 @@ import { connectAgent, refreshAgentToken } from '../src/domain/agent/service.js'
 import { createTask } from '../src/domain/authoring/service.js';
 import { login, signup } from '../src/domain/auth/service.js';
 import { acceptInvite, createInvite } from '../src/domain/invite/service.js';
+import { onQuestionsChanged } from '../src/domain/dispatch/questions-changed.js';
 import { createOrganization } from '../src/domain/org/service.js';
 import { clearPolicyCache } from '../src/domain/policy/policy-cache.js';
 import { assignMember, createProject, startProject } from '../src/domain/project/service.js';
@@ -102,8 +103,12 @@ async function http(method: string, path: string, token: string, body?: unknown)
 describe('질문 올리기', () => {
   it('FE 에이전트가 물으면 대상은 BACKEND이고 QUESTION_ASKED가 남는다', async () => {
     const w = await world();
-    const asked = await w.feClient.askQuestions(w.taskId, [Q1, Q2]);
+    const signals: [string, string][] = [];
+    const off = onQuestionsChanged((projectId, role) => signals.push([projectId, role]));
+    const asked = await w.feClient.askQuestions(w.taskId, [Q1, Q2]).finally(off);
     expect(asked).toMatchObject({ status: 'pending', targetRole: 'BACKEND', answers: null });
+    // 커밋 뒤 대상 역할의 Executor를 깨운다(웹소켓 { type: 'questions' }).
+    expect(signals).toEqual([[w.projectId, 'BACKEND']]);
     const { rows } = await pool.query(`SELECT payload FROM events WHERE type = 'QUESTION_ASKED'`);
     expect(rows[0]!.payload).toMatchObject({ questionId: asked.id, taskId: w.taskId, askerRole: 'FRONTEND', targetRole: 'BACKEND', routedBy: 'role_rule:opposite', questionCount: 2 });
   });
@@ -206,8 +211,11 @@ describe('질문 라우터 교체', () => {
   it('SELF면 넘기지 않고 self_owned로 돌려보낸다 — 아무도 답할 수 없다', async () => {
     const w = await world();
     setQuestionRouter({ name: 'fake', route: async () => ({ target: 'SELF', confidence: 0.9, reason: '화면 문구는 FE 소관', routedBy: 'fake' }) });
-    const asked = await w.feClient.askQuestions(w.taskId, [Q1]);
+    const signals: string[] = [];
+    const off = onQuestionsChanged((_, role) => signals.push(role));
+    const asked = await w.feClient.askQuestions(w.taskId, [Q1]).finally(off);
     expect(asked).toMatchObject({ status: 'self_owned', targetRole: 'FRONTEND' });
+    expect(signals).toEqual([]); // 상담할 사람이 없다
     expect((await http('GET', `/projects/${w.projectId}/questions`, await w.be.token())).json.data!.questions).toEqual([]);
     const res = await http('POST', `/questions/${asked.id}/answer`, await w.rep.token(), { answers: { [Q1.question]: '배열' } });
     expect(res.status).toBe(409);

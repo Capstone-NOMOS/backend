@@ -6,6 +6,8 @@ import type { TaskSource, TaskSummary } from './task-source.js';
 // - 끊겨 있는 동안에는 HTTP 폴링(fallback)으로 같은 목록을 읽는다. 푸시를 놓쳐도 다음 스냅샷이 맞으므로 복구가 단순하다.
 // - 다시 연결은 1초부터 두 배씩 최대 30초. 4401(토큰 만료·정책 변경)이면 재발급한 뒤 연결한다 — 재발급은 연속 1회만.
 // - 4403(프로젝트 멤버가 아님)이면 더 연결하지 않는다. 배정이 해제된 것이다.
+// - 상담할 질문은 서버가 { type: 'questions', targetRole }로 알린다. 자기 역할이면 깨우고 다음 consultDue가 true다.
+//   신호를 놓쳐도(끊김·옛 서버) 연결 직후 한 번과 CONSULT_FALLBACK_MS마다 한 번은 확인한다. 끊겨 있는 동안은 매번 확인한다.
 // - Node 22의 전역 WebSocket을 쓴다(CLI 패키지에 의존성을 늘리지 않는다). 테스트는 생성자를 바꿔 끼운다.
 
 type WebSocketLike = {
@@ -28,7 +30,12 @@ export type StreamDeps = {
   WebSocketImpl?: new (url: string) => WebSocketLike;
   // 테스트용
   backoff?: { initialMs: number; maxMs: number };
+  consultFallbackMs?: number;
+  now?: () => number;
 };
+
+// 질문 신호를 놓쳤을 때의 안전망. 묻는 쪽은 실행 안에서 3분 기다리므로 1분이면 그 안에 상담이 시작된다.
+export const CONSULT_FALLBACK_MS = 60_000;
 
 export const AGENT_STREAM_PATH = '/api/agents/stream';
 
@@ -49,6 +56,11 @@ export function streamTaskSource(deps: StreamDeps): TaskSource & { readonly conn
   let ws: WebSocketLike | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   const waiters = new Set<() => void>();
+  const now = deps.now ?? Date.now;
+  const consultFallbackMs = deps.consultFallbackMs ?? CONSULT_FALLBACK_MS;
+  // 받았지만 아직 확인하지 않은 질문 신호의 대상 역할. 연결할 때마다 '*'로 둬서 끊긴 동안 놓친 질문을 한 번 확인한다.
+  const questionSignals = new Set<string>(['*']);
+  let lastConsultCheck = now();
 
   const wake = () => {
     for (const w of waiters) w();
@@ -68,7 +80,7 @@ export function streamTaskSource(deps: StreamDeps): TaskSource & { readonly conn
     ws = socket;
     socket.onopen = () => socket.send(JSON.stringify({ type: 'auth', token: deps.accessToken() }));
     socket.onmessage = (ev) => {
-      let msg: { type?: string; tasks?: TaskSummary[]; projectId?: string; code?: string; message?: string };
+      let msg: { type?: string; tasks?: TaskSummary[]; projectId?: string; targetRole?: string; code?: string; message?: string };
       try {
         msg = JSON.parse(String(ev.data)) as typeof msg;
       } catch {
@@ -78,9 +90,13 @@ export function streamTaskSource(deps: StreamDeps): TaskSource & { readonly conn
         connected = true;
         delay = backoff.initialMs;
         refreshedInARow = false;
+        questionSignals.add('*');
         deps.log(`서버 푸시 연결됨 — 프로젝트 ${msg.projectId ?? '?'}`);
       } else if (msg.type === 'tasks') {
         latest = msg.tasks ?? [];
+        wake();
+      } else if (msg.type === 'questions') {
+        if (typeof msg.targetRole === 'string') questionSignals.add(msg.targetRole);
         wake();
       } else if (msg.type === 'error') {
         deps.log(`서버 푸시 거부: ${msg.code ?? '?'} ${msg.message ?? ''}`.trim());
@@ -133,6 +149,14 @@ export function streamTaskSource(deps: StreamDeps): TaskSource & { readonly conn
         const timer = setTimeout(done, maxMs);
         waiters.add(done);
       });
+    },
+    consultDue(role: string): boolean {
+      const due = !connected || questionSignals.has(role) || questionSignals.has('*') || now() - lastConsultCheck >= consultFallbackMs;
+      if (due) {
+        questionSignals.clear();
+        lastConsultCheck = now();
+      }
+      return due;
     },
     close(): void {
       closed = true;

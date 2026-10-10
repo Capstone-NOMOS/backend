@@ -11,6 +11,7 @@ import { acceptInvite, createInvite } from '../src/domain/invite/service.js';
 import { createOrganization } from '../src/domain/org/service.js';
 import { assignMember, createProject } from '../src/domain/project/service.js';
 import { connectRepos } from '../src/domain/repo/service.js';
+import { questionsChanged } from '../src/domain/dispatch/questions-changed.js';
 import { streamTaskSource } from '../src/executor/stream-source.js';
 import { attachAgentStream, type AgentStream } from '../src/realtime/agent-stream.js';
 import { assignRootOwner } from './fixtures.js';
@@ -293,6 +294,43 @@ describe('Executor 쪽 수신(streamTaskSource)', () => {
     }
   });
 
+  it('상담할 질문은 신호가 왔을 때만 확인한다 — 연결 직후 한 번, 자기 역할 신호, 안전망 간격', async () => {
+    const w = await world();
+    const agent = await backendAgent(w);
+    let clock = 0;
+    const source = streamTaskSource({
+      baseUrl,
+      accessToken: () => agent.accessToken,
+      refresh: async () => {},
+      fallback: async () => [],
+      log: () => {},
+      consultFallbackMs: 60_000,
+      now: () => clock,
+    });
+    try {
+      for (let i = 0; i < 50 && !source.connected; i += 1) await new Promise((r) => setTimeout(r, 20));
+      expect(source.connected).toBe(true);
+      expect(source.consultDue('BACKEND')).toBe(true); // 연결 직후 — 끊긴 동안 놓친 질문
+      expect(source.consultDue('BACKEND')).toBe(false);
+
+      // 서버 푸시는 프로젝트 연결 전부에 가고, 받는 쪽이 자기 역할만 본다.
+      questionsChanged(w.projectId, 'FRONTEND');
+      await source.waitForChange(500);
+      expect(source.consultDue('BACKEND')).toBe(false);
+
+      const woke = source.waitForChange(2000).then(() => 'woke');
+      questionsChanged(w.projectId, 'BACKEND');
+      expect(await woke).toBe('woke');
+      expect(source.consultDue('BACKEND')).toBe(true);
+      expect(source.consultDue('BACKEND')).toBe(false);
+
+      clock += 60_000; // 신호를 놓쳐도 안전망 간격마다 한 번
+      expect(source.consultDue('BACKEND')).toBe(true);
+    } finally {
+      source.close();
+    }
+  });
+
   it('연결되지 않으면 HTTP 목록(fallback)을 쓴다', async () => {
     const source = streamTaskSource({
       baseUrl: 'http://127.0.0.1:9', // 아무도 듣지 않는 포트
@@ -304,6 +342,9 @@ describe('Executor 쪽 수신(streamTaskSource)', () => {
     });
     try {
       expect((await source.nextTasks(5)).map((t) => t.id)).toEqual(['t1']);
+      // 끊겨 있으면 질문 신호를 받을 수 없으니 매번 확인한다.
+      expect(source.consultDue('BACKEND')).toBe(true);
+      expect(source.consultDue('BACKEND')).toBe(true);
     } finally {
       source.close();
     }
