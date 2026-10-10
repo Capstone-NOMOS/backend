@@ -22,7 +22,7 @@ import { buildClaudePermissions } from '../src/domain/repo/claude-settings.js';
 import { SEED_PATH_RULES } from '../src/domain/repo/seed-paths.js';
 import { connectRepos } from '../src/domain/repo/service.js';
 import { buildTaskPrompt } from '../src/executor/prompt.js';
-import { resolveClaudeCommand } from '../src/executor/runner.js';
+import { claudeEnv, resolveClaudeCommand } from '../src/executor/runner.js';
 import { resetSchema, testPool } from './test-db.js';
 
 // 실험 ② E2E — 진짜 헤드리스 Claude(FE 에이전트)가 명세에 없는 BE 결정을 AskUserQuestion으로 묻고,
@@ -142,7 +142,7 @@ describe.skipIf(!RUN)('실험 ② — 질문 중계 E2E (진짜 Claude)', () => 
 
     // --- FE 에이전트 실행 ---
     const started = Date.now();
-    const child = spawn(command, commandArgs, { cwd: ws, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, commandArgs, { cwd: ws, stdio: ['ignore', 'pipe', 'pipe'], env: claudeEnv() });
     let out = '';
     let err = '';
     child.stdout.on('data', (d) => (out += d));

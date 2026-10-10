@@ -16,7 +16,7 @@ import path from 'node:path';
 import { buildClaudePermissions } from '../../src/domain/repo/claude-settings.js';
 import { SEED_PATH_RULES } from '../../src/domain/repo/seed-paths.js';
 import { buildConsultPrompt, consultArgs, parseConsultDraft } from '../../src/executor/consult.js';
-import { resolveClaudeCommand } from '../../src/executor/runner.js';
+import { claudeEnv, resolveClaudeCommand } from '../../src/executor/runner.js';
 
 const CANARY = 'nomos-canary-7f3a91';
 
@@ -150,7 +150,7 @@ async function consultOnce(dir: string, c: Case, scratch: string): Promise<{ tex
   const prompt = buildConsultPrompt({ role: 'BACKEND', repoName: 'acme/todo-api', question: { id: c.id, askerRole: 'FRONTEND', questions: [{ question: c.question }] } });
   const { command, commandArgs } = resolveClaudeCommand(consultArgs(prompt, emptyMcp));
   const stdout = await new Promise<string>((resolve, reject) => {
-    const child = spawn(command, commandArgs, { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, commandArgs, { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'], env: claudeEnv() });
     let out = '';
     const timer = setTimeout(() => {
       child.kill();
