@@ -8,7 +8,8 @@ import {
   createProject,
   getProject,
   listProjects,
-  unassignMember,
+  unassignMemberWithRevocations,
+  abortProject,
   type Actor,
 } from '../domain/project/service.js';
 import { listProjectEventsForUser } from '../domain/events/query.js';
@@ -114,8 +115,7 @@ projectsRouter.delete(
   requireRepresentative,
   async (req, res) => {
     const { projectId, agentId } = req.params as z.infer<typeof memberParamsSchema>;
-    const members = await unassignMember(actorOf(req), projectId, agentId);
-    res.status(200).json({ data: { members } });
+    res.status(200).json({ data: await unassignMemberWithRevocations(actorOf(req), projectId, agentId) });
   },
 );
 
@@ -178,5 +178,21 @@ projectsRouter.get(
   async (req, res) => {
     const { projectId } = req.params as z.infer<typeof projectIdParamsSchema>;
     res.status(200).json({ data: await getProject(actorOf(req), projectId) });
+  },
+);
+
+const abortBodySchema = z.object({ reason: z.string().trim().max(500).nullable().optional() });
+
+// POST /api/projects/:projectId/abort — 프로젝트 중단(대표 전용, 021). 지우지 않고 aborted로 닫는다.
+// 에이전트·레포가 풀리고, 대기 질문은 만료로 닫히며, 대기 승인 카드는 결정할 수 없게 된다. 끝난 프로젝트는 409 PROJECT_NOT_OPEN.
+projectsRouter.post(
+  '/projects/:projectId/abort',
+  validate({ params: projectIdParamsSchema, body: abortBodySchema }),
+  authenticate,
+  requireRepresentative,
+  async (req, res) => {
+    const { projectId } = req.params as z.infer<typeof projectIdParamsSchema>;
+    const { reason } = req.body as z.infer<typeof abortBodySchema>;
+    res.status(200).json({ data: { project: await abortProject(actorOf(req), projectId, reason ?? null) } });
   },
 );

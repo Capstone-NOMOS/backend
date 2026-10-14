@@ -1,5 +1,7 @@
 export type EventType =
   | 'AGENT_DISCONNECTED'
+  | 'GITHUB_COLLABORATORS_REMOVED'
+  | 'PROJECT_ABORTED'
   | 'ORG_MEMBER_REMOVED'
   | 'REPO_DISCONNECTED'
   | 'INVITE_REVOKED'
@@ -329,6 +331,24 @@ export type OrgMemberRemovedPayload = { userId: string; self: boolean; agentIds:
 export type RepoDisconnectedPayload = { repoId: string; fullName: string };
 export type InviteRevokedPayload = { inviteId: string };
 
+// 빠진 사람의 GitHub 레포 접근 회수(021) — 대표의 GitHub 토큰으로. 실패해도 해제는 그대로다(결과만 남긴다).
+export type GithubRevokeResult = {
+  repoId: string;
+  fullName: string;
+  status: 'removed' | 'invitation_cancelled' | 'not_collaborator' | 'skipped' | 'failed';
+  reason?: string;
+};
+export type GithubCollaboratorsRemovedPayload = {
+  agentId: string | null;
+  userId: string;
+  githubLogin: string | null;
+  trigger: 'unassign' | 'agent_disconnected' | 'org_member_removed';
+  results: GithubRevokeResult[];
+};
+
+// 프로젝트 중단(021). 지우지 않고 aborted로 닫는다 — 이벤트·태스크·노트가 가리킨다.
+export type ProjectAbortedPayload = { previousStatus: string; reason: string | null; openTaskCount: number; expiredQuestionIds: string[] };
+
 // 역할 배정(또는 재초대) 때 에이전트 주인을 프로젝트의 GitHub 레포에 협업자로 초대한 결과. 레포마다 한 줄.
 // 실패해도 배정은 그대로다 — GitHub 사정이 우리 기능을 멈추지 않는다. 토큰은 넣지 않는다.
 export type GithubCollaboratorsInvitedPayload = {
@@ -544,6 +564,8 @@ export type EventPayloadMap = {
   ORG_MEMBER_REMOVED: OrgMemberRemovedPayload;
   REPO_DISCONNECTED: RepoDisconnectedPayload;
   INVITE_REVOKED: InviteRevokedPayload;
+  GITHUB_COLLABORATORS_REMOVED: GithubCollaboratorsRemovedPayload;
+  PROJECT_ABORTED: ProjectAbortedPayload;
   GITHUB_COLLABORATORS_INVITED: GithubCollaboratorsInvitedPayload;
   TASK_DISPATCHED: TaskDispatchedPayload;
   AGENT_RUN_STARTED: AgentRunStartedPayload;

@@ -41,6 +41,8 @@ export const TOPICS_BY_EVENT: Record<EventType, Mapping> = {
   ORG_MEMBER_REMOVED: { org: ['members', 'agents'] },
   REPO_DISCONNECTED: { org: ['repos'] },
   INVITE_REVOKED: { org: ['members'] },
+  GITHUB_COLLABORATORS_REMOVED: { project: ['members'], org: ['members'] },
+  PROJECT_ABORTED: { project: ['project', 'tasks', 'members', 'room'], org: ['projects', 'repos', 'agents', 'approvals'] },
   GITHUB_COLLABORATORS_INVITED: { project: ['members'], org: ['members'] },
 
   SPEC_CREATED: { project: ['specs'] },

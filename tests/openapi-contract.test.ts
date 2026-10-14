@@ -99,6 +99,9 @@ const fakeGithubRep: GithubRepApi = {
   async inviteCollaborator() {
     return 'invited';
   },
+  async revokeCollaborator() {
+    return 'removed';
+  },
   async listRepos() {
     return [{ fullName: 'acme/study-api', githubRepoId: 987654321, defaultBranch: 'main' }];
   },
@@ -416,6 +419,9 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     } finally {
       mutableEnv.PM_PROVIDER = 'api';
     }
+
+    // 프로젝트 중단(021) — 흐름의 맨 끝
+    await call('POST', `/projects/${projectId}/abort`, rep, { reason: '계약 테스트 끝' });
   });
 
   it('문서의 모든 성공 응답을 위 흐름에서 한 번 이상 받았다', () => {

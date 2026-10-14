@@ -10,7 +10,8 @@ import {
 } from '../agent/repository.js';
 import { agentRevoked } from '../dispatch/agent-revoked.js';
 import { tasksChanged } from '../dispatch/tasks-changed.js';
-import { detachAgentFromActiveProject } from '../project/service.js';
+import type { GithubRevokeResult } from '../events/types.js';
+import { detachAgentFromActiveProject, revokeGithubAccess } from '../project/service.js';
 import { appendEvent } from '../events/append.js';
 import { logger } from '../../config/logger.js';
 import { githubRepApi, type GithubRepoInfo } from '../github/rep-api.js';
@@ -158,7 +159,7 @@ export async function removeOrgMember(
   actor: { userId: string; orgId: string; orgRole: string },
   orgId: string,
   userId: string,
-): Promise<{ userId: string; agentIds: string[]; unassignedFrom: string[] }> {
+): Promise<{ userId: string; agentIds: string[]; unassignedFrom: string[]; githubRevocations: GithubRevokeResult[] }> {
   const self = actor.userId === userId;
   if (!self && actor.orgRole !== 'REPRESENTATIVE') {
     throw new AppError('NOT_REPRESENTATIVE', 'only the representative can remove other members');
@@ -193,5 +194,15 @@ export async function removeOrgMember(
   });
   for (const projectId of result.unassignedFrom) tasksChanged(projectId);
   for (const agentId of result.agentIds) agentRevoked(agentId);
-  return result;
+  // 조직의 GitHub 레포 전부에서 접근을 회수한다(커밋 뒤 — 실패해도 탈퇴는 그대로).
+  const githubRevocations = await revokeGithubAccess({
+    orgId,
+    onBehalfOf: actor.userId,
+    projectId: null,
+    agentId: null,
+    userId,
+    scope: { kind: 'org' },
+    trigger: 'org_member_removed',
+  });
+  return { ...result, githubRevocations };
 }

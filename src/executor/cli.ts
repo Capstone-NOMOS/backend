@@ -262,7 +262,8 @@ async function once(): Promise<void> {
   await handleTask(client, self.projectId, task);
 }
 
-async function start(): Promise<void> {
+// 멈춘 이유를 돌려준다 — connect는 배정이 풀린 경우(해제·프로젝트 중단) 다시 배정을 기다린다.
+async function start(): Promise<'disconnected' | 'unassigned'> {
   const client = createClient();
   const self = await client.describeSelf();
   // 서버 푸시(웹소켓)로 받는다. 끊겨 있는 동안은 같은 목록을 HTTP로 읽는다.
@@ -304,7 +305,13 @@ async function start(): Promise<void> {
       if (err instanceof NomosApiError && err.code === 'AGENT_DISCONNECTED') {
         log('이 에이전트는 연결이 해제됐다 — 다시 쓰려면 connect를 실행하라');
         source.close();
-        return;
+        return 'disconnected';
+      }
+      // 배정이 풀렸다(대표의 해제·프로젝트 중단, 서버 021). 같은 목록을 계속 물어도 거부된다.
+      if (err instanceof NomosApiError && err.code === 'NOT_PROJECT_MEMBER' && inFlight.size === 0) {
+        log('프로젝트 배정이 풀렸다(해제 또는 프로젝트 중단)');
+        source.close();
+        return 'unassigned';
       }
       log(`태스크 목록 실패: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -417,16 +424,20 @@ async function connectCommand(argv: string[]): Promise<void> {
     throw new Error('필요한 도구가 없어 시작하지 않는다');
   }
 
-  await connect({
-    server,
-    agentName,
-    readCredentials,
-    login: () => loginTo(server, agentName, args.connectKey),
-    ...serverCalls({ read: readCredentials, updateAccessToken }),
-    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
-    log,
-  });
-  await start();
+  // 배정이 풀리면(해제·프로젝트 중단) 창을 닫지 않고 다시 배정을 기다린다. 연결 해제면 멈춘다.
+  for (;;) {
+    await connect({
+      server,
+      agentName,
+      readCredentials,
+      login: () => loginTo(server, agentName, args.connectKey),
+      ...serverCalls({ read: readCredentials, updateAccessToken }),
+      sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+      log,
+    });
+    if ((await start()) !== 'unassigned') return;
+    log('다시 배정을 기다린다');
+  }
 }
 
 async function doctor(argv: string[]): Promise<void> {
@@ -498,7 +509,10 @@ async function main(): Promise<void> {
   if (command === 'login') return login(process.argv.slice(3));
   if (command === 'refresh') return refresh();
   if (command === 'once') return once();
-  if (command === 'start') return start();
+  if (command === 'start') {
+    await start();
+    return;
+  }
   if (command === 'pm-worker') return pmWorker();
   if (command === 'clean') {
     const { pruned, removed } = cleanWorkspaces();

@@ -580,7 +580,11 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
   - 레포 연결 해제(`DELETE /repos/:repoId`, 대표): 진행 중 프로젝트가 쓰면 409 `REPO_IN_ACTIVE_PROJECT`(`findRepoUsage` 한 벌). `repos.disconnected_at` — 해제된 레포는
     목록·프로젝트 생성·경로 API에서 없는 것으로 본다(`findConnectedRepoById`). 같은 레포를 다시 연결하면 행·경로 규칙·소유권이 되살아난다(`REPO_CONNECTED.payload.revived`).
   - 초대 목록·취소(`GET`·`DELETE /orgs/:orgId/invites`, 대표): `invites.revoked_at`. 쓰인 초대는 취소 대상이 아니다(들어온 사람은 멤버 내보내기로 뺀다).
-  - GitHub 협업자 권한은 자동으로 회수하지 않는다(아직 미구현 — 빠진 사람의 레포 접근은 GitHub에서 따로 정리).
+  - **GitHub 접근 회수**(`revokeGithubAccess`): 사람이 빠지는 모든 경로(직접 해제·에이전트 연결 해제 → 그 프로젝트 레포, 조직 탈퇴 → 조직 GitHub 레포 전부)에서
+    배정 때 초대의 반대로 대표 토큰으로 회수한다 — 수락 안 한 초대는 취소, 아니면 협업자에서 뺀다. 해제를 먼저 커밋하고 그 뒤에 부른다(**회수 실패가 해제를 막지 않는다**,
+    결과는 응답 `githubRevocations`·이벤트 `GITHUB_COLLABORATORS_REMOVED`). 대표 본인은 회수하지 않고, 같은 사람의 다른 에이전트가 그 프로젝트에 남아 있으면 건너뛴다.
+  - **프로젝트 중단**(`POST /projects/:id/abort`, 대표): 지우지 않고 `aborted`. 에이전트·레포가 풀리고(진행 중 정의에서 빠진다), 대기 질문은 만료로 닫고(`PROJECT_ABORTED.payload.expiredQuestionIds`),
+    대기 승인 카드는 대기열에서 빠지며 결정할 수 없다(409). GitHub 권한은 회수하지 않는다(레포·코드는 팀의 것). 실행 중인 CLI는 `NOT_PROJECT_MEMBER`를 보고 다시 배정을 기다린다.
 - **멤버 배정 뒤 그 에이전트는 토큰을 재발급해야 한다.** 배정 전 토큰에는 `project_id`가 없다.
   배정 응답의 `notice`와 openapi 설명에 그 안내가 들어 있다.
 - 허용 레벨 어휘 위반은 zod(400)가 아니라 서비스가 **422**로 답한다 — 무엇이 허용되는지 함께 알려주기 위해서다.

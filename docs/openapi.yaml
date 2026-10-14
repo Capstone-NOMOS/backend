@@ -395,6 +395,22 @@ components:
         githubRepoId: { type: integer }
         defaultBranch: { type: string, description: 'GitHub 조직의 기본 브랜치 설정을 따른다(보통 main)' }
         cloneUrl: { type: string, description: 'V3가 커밋을 읽을 곳. 자동으로 채워진다' }
+    GithubRevokeResult:
+      type: object
+      required: [repoId, fullName, status]
+      properties:
+        repoId: { type: string, format: uuid }
+        fullName: { type: string }
+        status:
+          type: string
+          enum: [removed, invitation_cancelled, not_collaborator, skipped, failed]
+          description: |
+            - removed: 협업자에서 뺐다
+            - invitation_cancelled: 아직 수락하지 않은 초대를 취소했다
+            - not_collaborator: 원래 협업자가 아니었다
+            - skipped: 멤버나 대표가 GitHub를 연결하지 않았다(reason) — GitHub에서 직접 정리
+            - failed: GitHub 호출 실패(reason). 해제 자체는 이미 끝났다
+        reason: { type: string }
     GithubInviteResult:
       type: object
       required: [repoId, fullName, status]
@@ -1577,11 +1593,12 @@ paths:
                 properties:
                   data:
                     type: object
-                    required: [userId, agentIds, unassignedFrom]
+                    required: [userId, agentIds, unassignedFrom, githubRevocations]
                     properties:
                       userId: { type: string, format: uuid }
                       agentIds: { type: array, items: { type: string, format: uuid }, description: '연결 해제된 에이전트' }
                       unassignedFrom: { type: array, items: { type: string, format: uuid }, description: '배정이 풀린 프로젝트' }
+                      githubRevocations: { type: array, items: { $ref: '#/components/schemas/GithubRevokeResult' }, description: '조직의 GitHub 레포 전부에서 접근 회수 결과' }
         '404':
           description: 이 조직의 멤버가 아님
           content:
@@ -3247,6 +3264,41 @@ paths:
               example:
                 error: { code: MEMBER_NOT_FOUND, message: agent ... is not a member of this project }
 
+  /projects/{projectId}/abort:
+    post:
+      tags: [프로젝트]
+      summary: 프로젝트 중단 (대표 전용)
+      description: |
+        진행 중(planning·active·halted)인 프로젝트를 중단한다(021). **지우지 않고 `aborted`로 닫는다** — 이벤트·태스크·노트가 가리킨다.
+        - 에이전트가 풀린다(다른 프로젝트에 배정 가능). 실행 중인 CLI는 배정이 풀린 것을 보고 다시 배정을 기다린다.
+        - 레포를 다른 프로젝트에 쓸 수 있게 된다. 대기 질문은 만료로 닫히고, 대기 승인 카드는 대기열에서 빠지며 결정할 수 없다(409 `PROJECT_NOT_OPEN`).
+        - 룸에 "프로젝트가 중단되었습니다"가 모든 역할에 나온다. GitHub 협업자 권한은 회수하지 않는다(레포와 코드는 팀의 것).
+        이미 끝난 프로젝트(completed·aborted)는 409 `PROJECT_NOT_OPEN`.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/ProjectId' }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string, maxLength: 500, nullable: true, description: '룸·기록에 남는 사유(선택)' }
+            example:
+              reason: 범위가 바뀌어 다시 계획한다
+      responses:
+        '200':
+          description: 중단됨
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [project], properties: { project: { $ref: '#/components/schemas/Project' } } } } }
+        '409':
+          description: 이미 끝난 프로젝트
+          content:
+            application/json:
+              example:
+                error: { code: PROJECT_NOT_OPEN, message: project is completed; only an ongoing project can be aborted }
+
   /projects/{projectId}/members/{agentId}:
     delete:
       tags: [프로젝트]
@@ -3265,12 +3317,12 @@ paths:
           example: '{{AGENT_BE}}'
       responses:
         '200':
-          description: 해제됨. 남은 멤버 목록을 준다.
+          description: 해제됨. 남은 멤버 목록과, 빠진 사람의 GitHub 레포 접근 회수 결과
           content:
             application/json:
-              schema: { type: object, required: [data], properties: { data: { type: object, required: [members], properties: { members: { type: array, items: { $ref: '#/components/schemas/ProjectMember' } } } } } }
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [members, githubRevocations], properties: { members: { type: array, items: { $ref: '#/components/schemas/ProjectMember' } }, githubRevocations: { type: array, items: { $ref: '#/components/schemas/GithubRevokeResult' }, description: '빠진 사람의 GitHub 레포 접근 회수 결과(대표 토큰). 대표 본인·GitHub 레포가 없으면 빈 배열' } } } } }
               example:
-                data: { members: [] }
+                data: { members: [], githubRevocations: [] }
         '403':
           description: 대표가 아님
           content:
@@ -3313,11 +3365,12 @@ paths:
                 properties:
                   data:
                     type: object
-                    required: [agentId, disconnectedAt, unassignedFrom]
+                    required: [agentId, disconnectedAt, unassignedFrom, githubRevocations]
                     properties:
                       agentId: { type: string, format: uuid }
                       disconnectedAt: { type: string, format: date-time }
                       unassignedFrom: { type: string, format: uuid, nullable: true, description: '배정이 풀린 프로젝트(없으면 null)' }
+                      githubRevocations: { type: array, items: { $ref: '#/components/schemas/GithubRevokeResult' }, description: '빠진 사람의 GitHub 레포 접근 회수 결과(대표 토큰). 대표 본인·GitHub 레포가 없으면 빈 배열' }
         '403':
           description: 주인도 대표도 아님
           content:

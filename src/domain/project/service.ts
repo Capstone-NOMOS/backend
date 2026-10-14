@@ -4,12 +4,13 @@ import { AppError } from '../../errors.js';
 import { hashObject } from '../../utils/canonical-json.js';
 import { tasksChanged } from '../dispatch/tasks-changed.js';
 import { appendEvent } from '../events/append.js';
-import type { GithubInviteResult } from '../events/types.js';
+import type { GithubInviteResult, GithubRevokeResult } from '../events/types.js';
 import { githubRepApi } from '../github/rep-api.js';
 import { findRepresentativeGithubToken } from '../oauth/repository.js';
 import { decryptSecret } from '../../utils/secret-box.js';
 import { violatedConstraint } from '../pg-errors.js';
 import { recomputeProjectPolicyHash } from '../policy/policy-hash.js';
+import { findUserById } from '../org/repository.js';
 import { findAgentMembership } from '../policy/repository.js';
 import type { TeamRole } from '../roles.js';
 import {
@@ -29,8 +30,14 @@ import {
   insertProjectMember,
   isProjectMember,
   linkProjectRepos,
+  countOpenTasks,
+  expirePendingQuestions,
+  findUserGithubLogin,
   listActiveTasksOfAgent,
   listLatestInvites,
+  listOrgGithubRepos,
+  markProjectAborted,
+  userStillInProject,
   listProjectGithubRepos,
   listProjectMembers,
   listProjectRepos,
@@ -488,4 +495,107 @@ export async function listProjects(actor: Actor): Promise<Project[]> {
   return withTransaction(async (tx) =>
     listProjectsByOrg(tx, actor.orgId, actor.orgRole === 'REPRESENTATIVE' ? null : actor.userId),
   );
+}
+
+// ── GitHub 접근 회수(021) ────────────────────────────────────────────────
+
+// 빠진 사람의 GitHub 레포 접근을 회수한다 — 배정 때 초대(inviteToProjectGithubRepos)의 반대. 대표의 GitHub 토큰을 쓴다.
+// 해제는 먼저 커밋하고 그 뒤에 부른다: GitHub 호출은 트랜잭션에 넣을 수 없고, 회수가 실패해도 해제는 유효하다(결과는 이벤트로 남긴다).
+// 대표 본인은 회수하지 않는다(그 토큰의 주인이고, 조직 레포 관리자다). GitHub 레포가 없으면(로컬 데모) 아무것도 하지 않는다.
+export async function revokeGithubAccess(input: {
+  orgId: string;
+  onBehalfOf: string;
+  projectId: string | null;
+  agentId: string | null;
+  userId: string;
+  scope: { kind: 'project'; projectId: string } | { kind: 'org' };
+  trigger: 'unassign' | 'agent_disconnected' | 'org_member_removed';
+}): Promise<GithubRevokeResult[]> {
+  // 한 사람이 같은 프로젝트에 다른 에이전트로 남아 있으면 그 프로젝트 레포는 계속 필요하다.
+  if (input.scope.kind === 'project' && (await userStillInProject(pool, input.scope.projectId, input.userId))) return [];
+  const repos = input.scope.kind === 'project' ? await listProjectGithubRepos(pool, input.scope.projectId) : await listOrgGithubRepos(pool, input.orgId);
+  if (repos.length === 0) return [];
+  const target = await findUserById(pool, input.userId);
+  if (target?.orgRole === 'REPRESENTATIVE') return [];
+
+  const githubLogin = await findUserGithubLogin(pool, input.userId);
+  const sealed = await findRepresentativeGithubToken(pool, input.orgId);
+  const skipAll = (reason: string): GithubRevokeResult[] => repos.map((r) => ({ repoId: r.id, fullName: r.fullName, status: 'skipped', reason }));
+  let results: GithubRevokeResult[];
+  if (githubLogin === null) {
+    results = skipAll('멤버가 GitHub를 연결하지 않았다 — 초대된 적이 없다');
+  } else if (sealed === null) {
+    results = skipAll('대표가 GitHub를 연결하지 않았다 — GitHub에서 직접 정리');
+  } else {
+    const token = await decryptSecret(sealed);
+    results = [];
+    for (const repo of repos) {
+      try {
+        const status = await githubRepApi().revokeCollaborator(token, repo.fullName, githubLogin);
+        results.push({ repoId: repo.id, fullName: repo.fullName, status });
+      } catch (err) {
+        results.push({ repoId: repo.id, fullName: repo.fullName, status: 'failed', reason: err instanceof Error ? err.message : String(err) });
+      }
+    }
+  }
+  await withTransaction(async (tx) => {
+    await appendEvent(tx, {
+      orgId: input.orgId,
+      ...(input.projectId ? { projectId: input.projectId } : {}),
+      type: 'GITHUB_COLLABORATORS_REMOVED',
+      ...(input.agentId ? { actorAgentId: input.agentId } : {}),
+      onBehalfOf: input.onBehalfOf,
+      payload: { agentId: input.agentId, userId: input.userId, githubLogin, trigger: input.trigger, results },
+    });
+  });
+  return results;
+}
+
+// 배정 해제 + 그 사람의 프로젝트 GitHub 레포 접근 회수(라우트가 쓴다).
+export async function unassignMemberWithRevocations(
+  actor: Actor,
+  projectId: string,
+  agentId: string,
+): Promise<{ members: ProjectMemberView[]; githubRevocations: GithubRevokeResult[] }> {
+  const owner = await findAgentOwnerGithub(pool, agentId);
+  const members = await unassignMember(actor, projectId, agentId);
+  const githubRevocations = owner
+    ? await revokeGithubAccess({
+        orgId: actor.orgId,
+        onBehalfOf: actor.userId,
+        projectId,
+        agentId,
+        userId: owner.userId,
+        scope: { kind: 'project', projectId },
+        trigger: 'unassign',
+      })
+    : [];
+  return { members: await membersWithInvites(pool, projectId), githubRevocations };
+}
+
+// ── 프로젝트 중단(021) ───────────────────────────────────────────────────
+
+// 진행 중(planning·active·halted)인 프로젝트를 중단한다(대표). 지우지 않고 aborted로 닫는다 — 이벤트·태스크·노트가 가리킨다.
+// - 에이전트 배정은 그대로 기록으로 남지만 "진행 중 프로젝트"가 아니게 되어 에이전트가 풀린다(토큰 재발급 뒤 다른 프로젝트에 배정 가능).
+// - 레포는 다른 프로젝트에 쓸 수 있게 된다(findRepoUsage가 aborted를 세지 않는다). 대기 질문은 만료로 닫는다. 대기 승인 카드는 결정할 수 없다(PROJECT_NOT_OPEN).
+// - GitHub 협업자 권한은 회수하지 않는다 — 레포와 코드는 팀의 것으로 남는다.
+export async function abortProject(actor: Actor, projectId: string, reason: string | null): Promise<Project> {
+  const aborted = await withTransaction(async (tx) => {
+    const project = await assertProjectInOrg(tx, actor.orgId, projectId, 'update');
+    const updated = await markProjectAborted(tx, projectId);
+    if (!updated) throw new AppError('PROJECT_NOT_OPEN', `project is ${project.status}; only an ongoing project can be aborted`);
+    const expiredQuestionIds = await expirePendingQuestions(tx, projectId);
+    await appendEvent(tx, {
+      orgId: actor.orgId,
+      projectId,
+      type: 'PROJECT_ABORTED',
+      onBehalfOf: actor.userId,
+      policyHash: project.policyHash,
+      payload: { previousStatus: project.status, reason, openTaskCount: await countOpenTasks(tx, projectId), expiredQuestionIds },
+    });
+    return updated;
+  });
+  // 커밋 뒤 — 에이전트 스트림은 다음 스냅샷에서 NOT_PROJECT_MEMBER로 닫힌다.
+  tasksChanged(projectId);
+  return aborted;
 }

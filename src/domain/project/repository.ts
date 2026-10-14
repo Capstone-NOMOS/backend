@@ -414,3 +414,54 @@ export async function listActiveTasksOfAgent(
   );
   return rows.map((r) => ({ taskId: r.id as string, title: r.title as string, state: r.state as string }));
 }
+
+// ── GitHub 접근 회수·프로젝트 중단(021) ─────────────────────────────────
+
+// 조직의 GitHub 레포(연결된 것만) — 조직에서 빠진 사람의 접근을 전부 회수할 때.
+export async function listOrgGithubRepos(db: Queryable, orgId: string): Promise<RepoRow[]> {
+  const { rows } = await db.query(
+    `SELECT id, org_id, full_name FROM repos
+      WHERE org_id = $1 AND github_repo_id IS NOT NULL AND disconnected_at IS NULL
+      ORDER BY full_name`,
+    [orgId],
+  );
+  return rows.map((r) => ({ id: r.id, orgId: r.org_id, fullName: r.full_name }));
+}
+
+export async function findUserGithubLogin(db: Queryable, userId: string): Promise<string | null> {
+  const { rows } = await db.query(`SELECT github_login FROM users WHERE id = $1`, [userId]);
+  return (rows[0]?.github_login as string | null | undefined) ?? null;
+}
+
+// 그 사람의 다른 에이전트가 아직 이 프로젝트 멤버인가 — 그러면 레포 접근을 회수하지 않는다(한 사람이 두 역할을 맡은 경우).
+export async function userStillInProject(db: Queryable, projectId: string, userId: string): Promise<boolean> {
+  const { rows } = await db.query(
+    `SELECT 1 FROM project_members m JOIN agents a ON a.id = m.agent_id WHERE m.project_id = $1 AND a.user_id = $2 LIMIT 1`,
+    [projectId, userId],
+  );
+  return rows.length > 0;
+}
+
+// 진행 중(planning·active·halted)인 프로젝트만 중단된다. 아니면 null.
+export async function markProjectAborted(db: Queryable, projectId: string): Promise<Project | null> {
+  const { rows } = await db.query(
+    `UPDATE projects SET status = 'aborted' WHERE id = $1 AND status IN ('planning', 'active', 'halted') RETURNING *`,
+    [projectId],
+  );
+  return rows[0] ? toProject(rows[0]) : null;
+}
+
+export async function countOpenTasks(db: Queryable, projectId: string): Promise<number> {
+  const { rows } = await db.query(`SELECT count(*)::int AS n FROM tasks WHERE project_id = $1 AND state <> 'DONE'`, [projectId]);
+  return Number(rows[0]?.n ?? 0);
+}
+
+// 중단한 프로젝트의 대기 질문은 만료로 닫는다 — 남겨 두면 3일 뒤 만료 정리가 끝난 프로젝트의 태스크를 ESCALATED로 올린다.
+// 이 변화는 PROJECT_ABORTED.payload.expiredQuestionIds로 같은 트랜잭션에 남는다.
+export async function expirePendingQuestions(db: Queryable, projectId: string): Promise<string[]> {
+  const { rows } = await db.query(
+    `UPDATE agent_questions SET status = 'expired' WHERE project_id = $1 AND status = 'pending' RETURNING id`,
+    [projectId],
+  );
+  return rows.map((r) => r.id as string);
+}

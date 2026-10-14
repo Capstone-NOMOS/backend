@@ -226,3 +226,40 @@ describe('초대 목록·취소 (GET·DELETE /orgs/:orgId/invites)', () => {
     expect((await http('DELETE', `/orgs/${w.orgId}/invites/${rows[0]!.id as string}`, w.rep.token)).status).toBe(404);
   });
 });
+
+describe('프로젝트 중단 (POST /projects/:projectId/abort)', () => {
+  it('중단하면 aborted로 닫히고 에이전트·레포가 풀린다 — 룸에 사유가 남고, 다시 중단하면 409', async () => {
+    const w = await world({ started: true });
+    const token = await agentToken(w.beAgent.refreshToken);
+    expect((await http('POST', `/projects/${w.projectId}/abort`, w.be.token, {})).status).toBe(403); // 대표 전용
+
+    const res = await http('POST', `/projects/${w.projectId}/abort`, w.rep.token, { reason: '범위가 바뀌었다' });
+    expect(res).toMatchObject({ status: 200, data: { project: { id: w.projectId, status: 'aborted' } } });
+    expect((await http('POST', `/projects/${w.projectId}/abort`, w.rep.token, {})).error?.code).toBe('PROJECT_NOT_OPEN');
+
+    // 에이전트는 이 프로젝트에서 풀린다(다른 프로젝트에 배정 가능)
+    expect((await http('GET', '/agents/me/tasks', token)).error?.code).toBe('NOT_PROJECT_MEMBER');
+    // 레포를 새 프로젝트에 쓸 수 있다
+    const next = await http('POST', `/orgs/${w.orgId}/projects`, w.rep.token, { name: 'p2', autonomyPreset: 'L2', pmBudgetUsd: 1, repoIds: [w.repoId] });
+    expect(next.status).toBe(201);
+    const p2 = (next.data.project as { id: string }).id;
+    expect((await http('POST', `/projects/${p2}/members`, w.rep.token, { agentId: w.beAgent.agentId, teamRole: 'BACKEND' })).status).toBe(201);
+
+    const feed = (await http('GET', `/projects/${w.projectId}/rooms/BACKEND/feed`, w.rep.token)).data.messages as { text: string }[];
+    expect(feed.map((m) => m.text)).toContain('프로젝트가 중단되었습니다: 범위가 바뀌었다');
+    const { rows } = await testPool.query(`SELECT payload FROM events WHERE type = 'PROJECT_ABORTED'`);
+    expect(rows[0]!.payload).toMatchObject({ previousStatus: 'active', reason: '범위가 바뀌었다', openTaskCount: 1, expiredQuestionIds: [] });
+  });
+
+  it('중단한 프로젝트의 대기 질문은 만료로 닫힌다', async () => {
+    const w = await world({ started: true });
+    const token = await agentToken(w.beAgent.refreshToken);
+    await http('POST', `/tasks/${w.taskId}/claim`, token);
+    const q = '응답 필드는?';
+    const asked = await http('POST', `/tasks/${w.taskId}/questions`, token, { questions: [{ question: q, header: '필드', options: [{ label: 'a' }, { label: 'b' }], multiSelect: false }] });
+    expect(asked.status).toBe(201);
+    await http('POST', `/projects/${w.projectId}/abort`, w.rep.token, {});
+    const { rows } = await testPool.query(`SELECT status FROM agent_questions WHERE id = $1`, [asked.data.id]);
+    expect(rows[0]).toEqual({ status: 'expired' });
+  });
+});

@@ -10,7 +10,8 @@ import { appendEvent } from '../events/append.js';
 import { findUserByConnectKeyHash } from '../org/repository.js';
 import { agentRevoked } from '../dispatch/agent-revoked.js';
 import { tasksChanged } from '../dispatch/tasks-changed.js';
-import { detachAgentFromActiveProject } from '../project/service.js';
+import type { GithubRevokeResult } from '../events/types.js';
+import { detachAgentFromActiveProject, revokeGithubAccess } from '../project/service.js';
 import {
   findAgentByActiveRefreshToken,
   findAgentById,
@@ -191,7 +192,7 @@ export async function agentOrgId(agentId: string): Promise<string | null> {
 export async function disconnectAgent(
   actor: { userId: string; orgId: string | null; orgRole: string | null },
   agentId: string,
-): Promise<{ agentId: string; disconnectedAt: string; unassignedFrom: string | null }> {
+): Promise<{ agentId: string; disconnectedAt: string; unassignedFrom: string | null; githubRevocations: GithubRevokeResult[] }> {
   const agent = await findAgentById(pool, agentId);
   if (!agent || agent.disconnectedAt !== null) throw new AppError('AGENT_NOT_FOUND', `agent ${agentId} not found`);
   const byOwner = agent.userId === actor.userId;
@@ -215,5 +216,18 @@ export async function disconnectAgent(
   // 커밋 뒤 — 빠진 프로젝트의 태스크 스냅샷을 다시 계산하고, 그 에이전트의 스트림을 끊는다.
   if (result.unassignedFrom) tasksChanged(result.unassignedFrom);
   agentRevoked(agentId);
-  return result;
+  // 배정이 풀렸으면 그 프로젝트의 GitHub 레포 접근도 회수한다(커밋 뒤 — 실패해도 해제는 그대로).
+  const githubRevocations =
+    result.unassignedFrom && agent.orgId
+      ? await revokeGithubAccess({
+          orgId: agent.orgId,
+          onBehalfOf: actor.userId,
+          projectId: result.unassignedFrom,
+          agentId,
+          userId: agent.userId,
+          scope: { kind: 'project', projectId: result.unassignedFrom },
+          trigger: 'agent_disconnected',
+        })
+      : [];
+  return { ...result, githubRevocations };
 }

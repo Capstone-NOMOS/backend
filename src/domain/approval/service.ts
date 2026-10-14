@@ -135,6 +135,9 @@ export async function decide(
     if (approval.decision !== null) {
       throw new AppError('APPROVAL_ALREADY_DECIDED', `approval was already decided (${approval.decision})`);
     }
+    // 중단된 프로젝트(021)의 카드는 결정하지 않는다 — 대기열에서도 빠진다(listApprovals).
+    const owning = await findProjectById(tx, approval.projectId);
+    if (owning?.status === 'aborted') throw new AppError('PROJECT_NOT_OPEN', 'the project was aborted');
     if (approval.gate === 'G3') {
       // 승인 = 통합 확인 끝 → 프로젝트 완료. 반려 = 진행 중 그대로(고칠 태스크는 대표가 만든다 — 다시 전부 DONE이 되면 새 카드).
       if (!(await decideApproval(tx, approval.id, decision, actor.userId, reason))) {
