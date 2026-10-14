@@ -12,7 +12,7 @@ import { tasksChanged } from '../dispatch/tasks-changed.js';
 import { blockStoppedTaskInTx } from '../task/stall.js';
 import { activityRecorded } from './activity-hub.js';
 import { parseCursor, renderFeedRow, type RoomMessage } from './render.js';
-import { findOpenRun, findRunOutcome, insertActivity, listActiveRoleTasks, listRoomFeed, type ActivityKind, type RoomTask } from './repository.js';
+import { findOpenRun, findRunOutcome, insertActivity, listActiveRoleTasks, listRoomFeed, type ActivityInput, type RoomTask } from './repository.js';
 
 // 룸 = 프로젝트 × 역할. 그 역할의 에이전트가 무엇을 하는지(활동), 서버(PM)가 무엇을 지시·판정했는지를 한 줄씩 보여 준다.
 // 팀원은 자기 역할 룸만, 대표는 전부 본다. PM(서버)의 프로젝트 단위 알림은 모든 룸에 나온다.
@@ -119,7 +119,7 @@ export async function endRun(
 export async function recordActivity(
   ctx: AgentContext,
   taskId: string,
-  items: { kind: ActivityKind; target: string }[],
+  items: ActivityInput[],
 ): Promise<{ recorded: number }> {
   await taskInProject(ctx, taskId);
   if ((await findOpenRun(pool, taskId, ctx.agentId)) === null) {

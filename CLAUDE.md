@@ -507,8 +507,13 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
   (이 에이전트의 `ARTIFACT_SUBMITTED`·`TASK_BLOCKED_ON_QUESTION`, `findRunOutcome`)로 `submitted`·`waitingQuestion`을 정해 — 종료 순간의 태스크 상태로 짐작하지 말 것
   (답이 종료 보고보다 먼저 오면 이미 READY라 "제출함"으로 세어졌다, 실험 C1). 제출도 내려놓음도 없으면 "끝났지만 제출하지 않았다"를 룸에 남긴다 —
   데모에서 팀원 터미널에만 보이던 막다른 길이다. 멈춤(AGENT_STOPPED)은 그 에이전트가 아직 잡고 있을 때만 건다(늦은 종료 보고가 다시 잡은 실행을 멈추지 않게).
-- **활동은 도구 종류와 대상(작업공간 기준 경로·명령 첫 줄, 300자)만** 받는다. 파일 내용·명령 결과·모델 설명 문장은 받지 않는다(설명은 인계 노트의 몫, 대표 결정).
+- **활동은 룸을 Claude Code 화면처럼 보이게 하는 만큼만 받는다**(020, 대표 결정 — 017의 "도구와 대상만"을 넓혔다): 도구 종류·대상(작업공간 기준 경로·명령 첫 줄, 300자)·
+  성공 여부(`ok`, 도구 결과의 is_error)·수정 줄 수(`added`·`removed`), 그리고 **에이전트의 말**(`say`, 500자, 작업공간 경로는 Executor가 지운다).
+  **파일 내용·diff·명령 출력은 받지 않는다** — 코드가 서버에 쌓인다. 줄 수는 숫자만. 도구 줄은 Executor가 결과를 받은 뒤 성공 여부를 붙여 보낸다(`ActivityTracker`, tool_use_id로 짝짓기).
+  옛 서버가 400으로 거부하면 Executor는 그 실행 동안 예전 형식(도구·대상만)으로 낮춰 보낸다.
   상태 변화가 아니라 `events`가 아닌 `agent_activity`이고, 열린 실행(STARTED 뒤 ENDED 전)에만 붙는다. 화면 신호는 `room/activity-hub` → `/api/stream`의 `room` 토픽(서버 1대 전제).
+- 룸 메시지에는 화면이 그릴 원본 값이 함께 간다: 활동 줄은 `activity`(kind·target·ok·added·removed), 질문 줄(`QUESTION_*`·`TASK_BLOCKED_ON_QUESTION`)은 `questionId` —
+  화면이 `GET /projects/:id/questions`의 같은 id로 질문 카드(선택지·초안·답)를 그린다. 질문 데이터를 피드에 싣지 않는다(가시성 판정이 두 벌이 된다).
 - **제출 없이 끝난 태스크는 BLOCKED(`AGENT_STOPPED`)로 멈춘다**(`task/stall.ts`, 종료 보고와 같은 트랜잭션). CLAIMED로 두면 아무도 다시 못 가져가고(운영 테스트의 영구 정체),
   READY로 되돌려 재시도를 깎으면 권한·환경 탓(쉘 거부·선행 코드 없음)을 에이전트 실패로 센다(대표 결정). **retry_count는 검증 실패·반려만 쓴다.**
   사유는 `TASK_BLOCKED`에 — 모델의 마지막 말과 Executor가 실행 기록에서 뽑은 **거부된 쉘 명령**(대표가 무엇을 풀어야 하는지). 대표가 `POST /tasks/:id/resume`으로 재개하면 READY(담당 비움),

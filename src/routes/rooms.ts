@@ -1,6 +1,6 @@
 import { Router, type Request } from 'express';
 import { z } from 'zod';
-import { ACTIVITY_KINDS } from '../domain/room/repository.js';
+import { ACTIVITY_KINDS, ACTIVITY_TARGET_MAX, type ActivityInput } from '../domain/room/repository.js';
 import { endRun, getRoomFeed, listRooms, recordActivity, startRun } from '../domain/room/service.js';
 import { resumeTask } from '../domain/task/stall.js';
 import { TEAM_ROLES } from '../domain/roles.js';
@@ -43,10 +43,24 @@ roomsRouter.post(
   },
 );
 
-// 도구 종류와 대상(경로·명령)만 받는다. 파일 내용·명령 결과·모델 설명은 받지 않는다(설명은 인계 노트의 몫).
+// 도구 종류·대상(경로·명령 첫 줄)·성공 여부·줄 수, 그리고 에이전트의 말(say, 500자)을 받는다(020).
+// 파일 내용·diff·명령 출력은 받지 않는다.
 const activityBodySchema = z.object({
   items: z
-    .array(z.object({ kind: z.enum(ACTIVITY_KINDS as [string, ...string[]]), target: z.string().trim().min(1).max(300) }))
+    .array(
+      z
+        .object({
+          kind: z.enum(ACTIVITY_KINDS as [string, ...string[]]),
+          target: z.string().trim().min(1).max(ACTIVITY_TARGET_MAX.say),
+          ok: z.boolean().nullable().optional(),
+          added: z.number().int().min(0).max(1_000_000).nullable().optional(),
+          removed: z.number().int().min(0).max(1_000_000).nullable().optional(),
+        })
+        .refine((i) => i.kind === 'say' || i.target.length <= ACTIVITY_TARGET_MAX.tool, {
+          message: `도구 대상은 ${ACTIVITY_TARGET_MAX.tool}자까지다`,
+          path: ['target'],
+        }),
+    )
     .min(1)
     .max(50),
 });
@@ -58,7 +72,7 @@ roomsRouter.post(
   validate({ params: taskIdParamsSchema, body: activityBodySchema }),
   async (req, res) => {
     const { taskId } = req.params as z.infer<typeof taskIdParamsSchema>;
-    const { items } = req.body as { items: { kind: (typeof ACTIVITY_KINDS)[number]; target: string }[] };
+    const { items } = req.body as { items: ActivityInput[] };
     res.status(201).json({ data: await recordActivity(agentContextOf(req), taskId, items) });
   },
 );
