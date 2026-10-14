@@ -1,3 +1,4 @@
+import type { PoolClient } from 'pg';
 import { pool, withTransaction, type Queryable } from '../../config/db.js';
 import { AppError } from '../../errors.js';
 import { hashObject } from '../../utils/canonical-json.js';
@@ -9,6 +10,7 @@ import { findRepresentativeGithubToken } from '../oauth/repository.js';
 import { decryptSecret } from '../../utils/secret-box.js';
 import { violatedConstraint } from '../pg-errors.js';
 import { recomputeProjectPolicyHash } from '../policy/policy-hash.js';
+import { findAgentMembership } from '../policy/repository.js';
 import type { TeamRole } from '../roles.js';
 import {
   approveAppliedPlans,
@@ -27,6 +29,7 @@ import {
   insertProjectMember,
   isProjectMember,
   linkProjectRepos,
+  listActiveTasksOfAgent,
   listLatestInvites,
   listProjectGithubRepos,
   listProjectMembers,
@@ -93,11 +96,57 @@ async function assertProjectInOrg(
   return project;
 }
 
-// G1(started_at) 이후에는 멤버 구성을 바꿀 수 없다. 도중에 바뀌면 실험 통제가 흔들린다.
-function assertNotStarted(project: Project): void {
-  if (project.startedAt !== null) {
-    throw new AppError('PROJECT_STARTED', 'project has started; members are frozen');
+// 멤버를 바꿀 수 있는 프로젝트 — 진행 중(planning·active·halted)이면 시작 뒤에도 된다(021, 대표 결정: 사람이 빠지거나 교체해야 할 때).
+// 끝난 프로젝트(completed·aborted)의 멤버는 기록이라 바꾸지 않는다.
+function assertMembersEditable(project: Project): void {
+  if (project.status === 'completed' || project.status === 'aborted') {
+    throw new AppError('PROJECT_NOT_OPEN', `project is ${project.status}; members are a record now`);
   }
+}
+
+// 멤버 한 명을 뺀다(트랜잭션 안, 프로젝트 행은 호출부가 잠근다). 그 에이전트가 붙잡은 진행 중 태스크가 있으면 거부한다(대표 결정) —
+// 빼 버리면 그 태스크는 아무도 끝내지 못한다. 잡고 있던 것을 끝내거나 멈춘(BLOCKED) 뒤에 뺀다.
+async function removeMemberInTx(
+  tx: PoolClient,
+  project: Project,
+  agentId: string,
+  onBehalfOf: string,
+  cause?: 'agent_disconnected' | 'org_member_removed',
+): Promise<void> {
+  const active = await listActiveTasksOfAgent(tx, project.id, agentId);
+  if (active.length > 0) {
+    throw new AppError('ACTIVE_TASKS_HELD', `agent ${agentId} still holds ${active.length} task(s) in progress; finish or stop them first`, active);
+  }
+  // 역할 교체는 삭제 후 재배정으로 한다 — UPDATE 경로를 두면 한 역할에 둘이 잠깐 겹칠 수 있다.
+  const teamRole = await deleteProjectMember(tx, project.id, agentId);
+  if (teamRole === null) {
+    throw new AppError('MEMBER_NOT_FOUND', `agent ${agentId} is not a member of this project`);
+  }
+  await appendEvent(tx, {
+    orgId: project.orgId,
+    projectId: project.id,
+    type: 'MEMBER_UNASSIGNED',
+    actorAgentId: agentId,
+    onBehalfOf,
+    policyHash: project.policyHash,
+    payload: { agentId, teamRole, ...(cause ? { cause } : {}) },
+  });
+}
+
+// 에이전트를 지금 맡은 진행 중 프로젝트에서 뺀다(연결 해제·조직 탈퇴가 부른다). 맡은 곳이 없으면 null.
+// 호출부의 트랜잭션 안에서 프로젝트 행을 FOR SHARE로 잠근다 — 시작·배정과 같은 잠금이다.
+export async function detachAgentFromActiveProject(
+  tx: PoolClient,
+  agentId: string,
+  onBehalfOf: string,
+  cause: 'agent_disconnected' | 'org_member_removed',
+): Promise<string | null> {
+  const membership = await findAgentMembership(tx, agentId);
+  if (membership === null) return null;
+  const project = await findProjectById(tx, membership.projectId, { lock: 'share' });
+  if (!project) return null;
+  await removeMemberInTx(tx, project, agentId, onBehalfOf, cause);
+  return project.id;
 }
 
 export async function createProject(
@@ -218,7 +267,7 @@ export async function assignMember(
   return withTransaction(async (tx) => {
     // 시작(G1)과 겹치지 않게 잠근다. 시작이 먼저 잡았으면 끝날 때까지 기다린 뒤 started_at을 본다.
     const project = await assertProjectInOrg(tx, actor.orgId, projectId, 'share');
-    assertNotStarted(project);
+    assertMembersEditable(project);
 
     // 에이전트도 같은 조직이어야 한다. 없는 id도 여기서 걸린다.
     const agentOrg = await findAgentOrg(tx, agentId);
@@ -336,33 +385,22 @@ async function inviteToProjectGithubRepos(
   return results;
 }
 
+// 배정 해제(대표). 시작 뒤에도 되지만(021) 그 에이전트가 진행 중 태스크를 붙잡고 있으면 409 ACTIVE_TASKS_HELD.
+// 빠진 역할의 태스크는 새 사람을 배정할 때까지 READY로 기다린다.
 export async function unassignMember(
   actor: Actor,
   projectId: string,
   agentId: string,
 ): Promise<ProjectMemberView[]> {
-  return withTransaction(async (tx) => {
+  const members = await withTransaction(async (tx) => {
     const project = await assertProjectInOrg(tx, actor.orgId, projectId, 'share');
-    assertNotStarted(project);
-
-    // 역할 교체는 삭제 후 재배정으로 한다 — UPDATE 경로를 두면 한 역할에 둘이 잠깐 겹칠 수 있다.
-    const teamRole = await deleteProjectMember(tx, projectId, agentId);
-    if (teamRole === null) {
-      throw new AppError('MEMBER_NOT_FOUND', `agent ${agentId} is not a member of this project`);
-    }
-
-    await appendEvent(tx, {
-      orgId: actor.orgId,
-      projectId,
-      type: 'MEMBER_UNASSIGNED',
-      actorAgentId: agentId,
-      onBehalfOf: actor.userId,
-      policyHash: project.policyHash,
-      payload: { agentId, teamRole },
-    });
-
+    assertMembersEditable(project);
+    await removeMemberInTx(tx, project, agentId, actor.userId);
     return membersWithInvites(tx, projectId);
   });
+  // 커밋 뒤 — 빠진 에이전트의 스트림은 다음 스냅샷에서 NOT_PROJECT_MEMBER로 닫힌다.
+  tasksChanged(projectId);
+  return members;
 }
 
 // 프로젝트 시작(G1). 이 순간부터 실행이 시작된다 — 에이전트는 시작 전에는 태스크를 가져갈 수 없고(PROJECT_NOT_STARTED),
@@ -370,7 +408,7 @@ export async function unassignMember(
 //
 // - 시작할 수 있는가: 태스크가 하나 이상, 끝나지 않은 태스크가 요구하는 역할마다 배정된 에이전트가 있어야 한다.
 //   역할이 비면 그 태스크를 아무도 가져가지 않는다 — 시작 뒤에는 멤버를 바꿀 수 없으므로 여기서 막는다. 위반은 전부 모아 422.
-// - 시작하면: planning → active, started_at. 시작 시점의 명세·적용된 계획에 approved_at(G1 승인 = 잠김). 멤버 고정(assertNotStarted).
+// - 시작하면: planning → active, started_at. 시작 시점의 명세·적용된 계획에 approved_at(G1 승인 = 잠김). 멤버는 시작 뒤에도 바꿀 수 있다(021, 진행 중 태스크가 없을 때).
 // - 헌법은 프로젝트 생성 때 이미 사본을 떴다. 수정 경로가 생기면 "시작 뒤에는 고칠 수 없다"를 그쪽에 건다.
 export async function startProject(actor: Actor, projectId: string): Promise<ProjectDetail> {
   const detail = await withTransaction(async (tx) => {

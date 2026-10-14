@@ -281,8 +281,8 @@ components:
         expiresAt: { type: string, format: date-time, nullable: true, description: '없는 토큰이면 null' }
         reason:
           type: string
-          enum: [expired, used, not_found]
-          description: 'valid=false일 때만 있다'
+          enum: [expired, used, revoked, not_found]
+          description: 'valid=false일 때만 있다. revoked = 대표가 취소한 초대'
     SignupResult:
       type: object
       required: [userId, connectKey]
@@ -496,12 +496,23 @@ components:
         createdAt: { type: string, format: date-time }
     InviteCreated:
       type: object
-      required: [token, url, expiresAt, teamRole]
+      required: [inviteId, token, url, expiresAt, teamRole]
       properties:
+        inviteId: { type: string, format: uuid, description: '취소(DELETE /orgs/{orgId}/invites/{inviteId})할 때 쓴다' }
         token: { type: string }
         url: { type: string, description: '{FRONTEND_BASE_URL}/invites/{token}' }
         expiresAt: { type: string, format: date-time }
         teamRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true }
+    PendingInvite:
+      type: object
+      required: [inviteId, url, teamRole, expiresAt, expired, createdAt]
+      properties:
+        inviteId: { type: string, format: uuid }
+        url: { type: string, description: '{FRONTEND_BASE_URL}/invites/{token} — 다시 복사할 수 있다' }
+        teamRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true }
+        expiresAt: { type: string, format: date-time }
+        expired: { type: boolean, description: '만료됐으면 true(수락 불가). 취소는 된다' }
+        createdAt: { type: string, format: date-time }
     InviteAccepted:
       type: object
       required: [userId, orgId]
@@ -1542,6 +1553,48 @@ paths:
               example:
                 error: { code: CROSS_ORG_ACCESS, message: cannot access another organization }
 
+  /orgs/{orgId}/members/{userId}:
+    delete:
+      tags: [조직]
+      summary: 조직에서 멤버 내보내기 · 본인 탈퇴
+      description: |
+        대표가 다른 멤버를 내보내거나, `userId`가 나 자신이면 탈퇴다(021). **계정은 남고 조직만 빠진다** — 다른 조직의 초대를 받을 수 있고, 지난 기록(이벤트·노트·제출)은 그대로 남는다.
+        그 사람의 에이전트는 맡은 진행 중 프로젝트에서 빠지고 연결이 해제된다. 진행 중 태스크를 붙잡고 있으면 409 `ACTIVE_TASKS_HELD`.
+        대표는 나갈 수도 내보낼 수도 없다(409 `REPRESENTATIVE_CANNOT_LEAVE`). 대표가 아닌 사람이 남을 내보내면 403 `NOT_REPRESENTATIVE`.
+        빠진 사람의 화면 스트림(`/api/stream`)은 4403 `NOT_IN_ORG`로 끊긴다.
+      security: [{ userToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - { name: userId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 빠짐. 함께 해제된 에이전트와 빠진 프로젝트
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [userId, agentIds, unassignedFrom]
+                    properties:
+                      userId: { type: string, format: uuid }
+                      agentIds: { type: array, items: { type: string, format: uuid }, description: '연결 해제된 에이전트' }
+                      unassignedFrom: { type: array, items: { type: string, format: uuid }, description: '배정이 풀린 프로젝트' }
+        '404':
+          description: 이 조직의 멤버가 아님
+          content:
+            application/json:
+              example:
+                error: { code: ORG_MEMBER_NOT_FOUND, message: user is not a member of this organization }
+        '409':
+          description: 대표 · 진행 중 태스크를 붙잡고 있음
+          content:
+            application/json:
+              example:
+                error: { code: REPRESENTATIVE_CANNOT_LEAVE, message: the representative cannot leave or be removed from the organization }
+
   /orgs/{orgId}/agents:
     get:
       tags: [조직]
@@ -1706,6 +1759,29 @@ paths:
               example:
                 error: { code: REPO_ALREADY_CONNECTED, message: 'github_repo_id 987654321 is already used by acme/study-web (...)' }
 
+    delete:
+      tags: [레포·경로]
+      summary: 레포 연결 해제 (대표 전용)
+      description: |
+        조직에서 레포 연결을 끊는다(021). 진행 중(planning·active·halted) 프로젝트가 쓰고 있으면 409 `REPO_IN_ACTIVE_PROJECT`(details에 프로젝트).
+        GitHub의 레포는 그대로다. 행과 경로 규칙은 지우지 않는다(끝난 프로젝트의 태스크·검증이 가리킨다) — 같은 레포를 다시 연결하면 경로 규칙·소유권과 함께 되살아난다.
+        해제된 레포는 목록·프로젝트 생성·경로 API에서 없는 것(404 `REPO_NOT_FOUND`)으로 본다.
+      security: [{ userToken: [] }]
+      parameters:
+        - { name: repoId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 해제됨
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [repoId, fullName], properties: { repoId: { type: string, format: uuid }, fullName: { type: string } } } } }
+        '409':
+          description: 진행 중 프로젝트가 사용 중
+          content:
+            application/json:
+              example:
+                error: { code: REPO_IN_ACTIVE_PROJECT, message: acme/app is used by an active project; finish or abort it first }
+
   /repos/{repoId}/paths:
     get:
       tags: [레포·경로]
@@ -1848,13 +1924,49 @@ paths:
             application/json:
               schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/InviteCreated' } } }
               example:
-                data: { token: '{{INVITE_TOKEN}}', url: 'http://localhost:3001/invites/{{INVITE_TOKEN}}', expiresAt: '2026-09-25T00:00:00.000Z', teamRole: BACKEND }
+                data: { inviteId: 4b0c7c2e-9a3f-4d1e-8c55-1f2a3b4c5d6e, token: '{{INVITE_TOKEN}}', url: 'http://localhost:3001/invites/{{INVITE_TOKEN}}', expiresAt: '2026-09-25T00:00:00.000Z', teamRole: BACKEND }
         '403':
           description: 대표가 아님
           content:
             application/json:
               example:
                 error: { code: NOT_REPRESENTATIVE, message: this action requires the organization representative }
+    get:
+      tags: [초대]
+      summary: 보낸 초대 목록 (대표 전용)
+      description: '아직 쓰이지도 취소되지도 않은 초대. 만료된 것도 expired=true로 함께 나온다(화면이 만료 표시·취소). 링크를 다시 복사할 때도 쓴다.'
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/OrgId' }]
+      responses:
+        '200':
+          description: 초대 목록(최신순)
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [invites], properties: { invites: { type: array, items: { $ref: '#/components/schemas/PendingInvite' } } } } } }
+
+  /orgs/{orgId}/invites/{inviteId}:
+    delete:
+      tags: [초대]
+      summary: 초대 취소 (대표 전용)
+      description: |
+        취소한 링크로는 가입할 수 없다(수락 410 `INVITE_REVOKED`, 미리보기 `reason: revoked`). 이미 쓰인 초대는 취소할 수 없다(404) —
+        들어온 사람을 빼려면 멤버 내보내기(`DELETE /orgs/{orgId}/members/{userId}`)를 쓴다.
+      security: [{ userToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - { name: inviteId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 취소됨
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { type: object, required: [inviteId], properties: { inviteId: { type: string, format: uuid } } } } }
+        '404':
+          description: 대기 중인 초대가 아님(없음·이미 쓰임·이미 취소·다른 조직)
+          content:
+            application/json:
+              example:
+                error: { code: INVITE_NOT_FOUND, message: no pending invite }
 
   /invites/{token}:
     get:
@@ -3044,7 +3156,7 @@ paths:
         응답의 `notice`에도 같은 안내가 들어 있다.
 
         프로젝트당 역할은 **하나씩만** 배정된다(`uq_project_members_role`). 실험 통제를 위해서다.
-        **G1(`started_at`) 이후에는 멤버를 바꿀 수 없다** — 도중에 바뀌면 통제가 흔들린다.
+        시작(G1) 뒤에도 배정할 수 있다(021) — 빠진 역할을 채울 때 쓴다. 끝난 프로젝트(completed·aborted)는 409 `PROJECT_NOT_OPEN`. 연결 해제된 에이전트는 배정할 수 없다(403 `AGENT_NOT_IN_ORG`).
 
         **GitHub 협업자 자동 초대**: 배정과 함께 그 에이전트 주인을 프로젝트의 GitHub 레포(`githubRepoId`가 있는 것)마다
         push 권한 협업자로 초대한다(대표의 GitHub 토큰). 결과는 `githubInvites`(레포마다 한 줄). 초대가 실패해도 배정은 유효하다 —
@@ -3079,14 +3191,12 @@ paths:
                     - { repoId: '{{REPO_API}}', fullName: acme/study-api, status: invited }
                   notice: 배정된 에이전트는 POST /api/agents/token/refresh로 토큰을 재발급해야 태스크·노트 API를 쓸 수 있습니다.
         '403':
-          description: 대표가 아님 · 다른 조직의 에이전트 · G1 이후
+          description: 대표가 아님 · 다른 조직(또는 연결 해제된) 에이전트
           content:
             application/json:
               examples:
                 남의조직에이전트:
                   value: { error: { code: AGENT_NOT_IN_ORG, message: agent does not belong to this organization } }
-                시작된프로젝트:
-                  value: { error: { code: PROJECT_STARTED, message: project has started; members are frozen } }
         '409':
           description: 역할이 이미 찼거나, 그 에이전트가 이미 배정됐거나, 다른 진행 중 프로젝트를 맡고 있음
           content:
@@ -3143,7 +3253,8 @@ paths:
       summary: 배정 해제 (대표 전용)
       description: |
         **역할 교체는 해제 후 재배정으로 한다.** UPDATE 경로를 두면 한 역할에 둘이 잠깐 겹칠 수 있다.
-        G1(`started_at`) 이후에는 해제도 막힌다.
+        시작(G1) 뒤에도 된다(021) — 단 그 에이전트가 진행 중 태스크(CLAIMED·IN_PROGRESS·VERIFYING)를 붙잡고 있으면 409 `ACTIVE_TASKS_HELD`(details에 태스크 목록).
+        빠진 역할의 태스크는 새 사람을 배정할 때까지 READY로 기다린다. 끝난 프로젝트(completed·aborted)는 409 `PROJECT_NOT_OPEN`.
       security: [{ userToken: [] }]
       parameters:
         - $ref: '#/components/parameters/ProjectId'
@@ -3161,17 +3272,64 @@ paths:
               example:
                 data: { members: [] }
         '403':
-          description: 대표가 아니거나 G1 이후
+          description: 대표가 아님
           content:
             application/json:
               example:
-                error: { code: PROJECT_STARTED, message: project has started; members are frozen }
+                error: { code: NOT_REPRESENTATIVE, message: this action requires the organization representative }
+        '409':
+          description: 진행 중 태스크를 붙잡고 있음 · 끝난 프로젝트
+          content:
+            application/json:
+              example:
+                error: { code: ACTIVE_TASKS_HELD, message: agent still holds 1 task(s) in progress; finish or stop them first }
         '404':
           description: 배정되지 않은 에이전트
           content:
             application/json:
               example:
                 error: { code: MEMBER_NOT_FOUND, message: agent is not a member of this project }
+
+  /agents/{agentId}:
+    delete:
+      tags: [CLI 연결]
+      summary: 에이전트 연결 해제
+      description: |
+        노트북 CLI 연결을 끊는다(021) — 그 에이전트의 주인이나 같은 조직의 대표가 한다(아니면 403 `NOT_AGENT_OWNER`).
+        맡은 진행 중 프로젝트에서 빠지고(진행 중 태스크가 있으면 409 `ACTIVE_TASKS_HELD`), refresh token이 폐기되며, 남은 access token도 401 `AGENT_DISCONNECTED`로 거부된다.
+        실행 중인 CLI의 태스크 스트림도 끊긴다. 목록(`GET /orgs/{orgId}/agents`)에서 빠진다.
+        같은 노트북에서 같은 이름으로 다시 `connect`하면 그 에이전트가 되살아난다.
+      security: [{ userToken: [] }]
+      parameters:
+        - { name: agentId, in: path, required: true, schema: { type: string, format: uuid }, example: '{{AGENT_BE}}' }
+      responses:
+        '200':
+          description: 해제됨
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [agentId, disconnectedAt, unassignedFrom]
+                    properties:
+                      agentId: { type: string, format: uuid }
+                      disconnectedAt: { type: string, format: date-time }
+                      unassignedFrom: { type: string, format: uuid, nullable: true, description: '배정이 풀린 프로젝트(없으면 null)' }
+        '403':
+          description: 주인도 대표도 아님
+          content:
+            application/json:
+              example:
+                error: { code: NOT_AGENT_OWNER, message: only the agent owner or the representative can disconnect it }
+        '404':
+          description: 없거나 이미 해제된 에이전트
+          content:
+            application/json:
+              example:
+                error: { code: AGENT_NOT_FOUND, message: agent not found }
 
   /agents/me:
     get:

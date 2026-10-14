@@ -79,6 +79,10 @@ export async function resolveAgentToken(token: string): Promise<AuthAgent> {
     if (!row) {
       throw new AppError('UNAUTHENTICATED', 'invalid or expired token');
     }
+    // 연결 해제된 에이전트(021) — access token은 만료 전이라도 받지 않는다. 다시 쓰려면 connect부터.
+    if (row.disconnectedAt !== null) {
+      throw new AppError('AGENT_DISCONNECTED', 'this agent was disconnected; run connect again to reconnect');
+    }
     // 책임 귀속(on_behalf_of)이 실제 소유자와 어긋난 토큰은 받지 않는다 — P3가 무너진다.
     if (claims.on_behalf_of !== row.userId) {
       throw new AppError('UNAUTHENTICATED', 'invalid or expired token');

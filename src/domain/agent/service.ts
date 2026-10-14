@@ -8,11 +8,16 @@ import { generateSecret, hashSecret, signJwt } from '../../utils/tokens.js';
 import { findAgentMembership, findProjectAuthRow } from '../policy/repository.js';
 import { appendEvent } from '../events/append.js';
 import { findUserByConnectKeyHash } from '../org/repository.js';
+import { agentRevoked } from '../dispatch/agent-revoked.js';
+import { tasksChanged } from '../dispatch/tasks-changed.js';
+import { detachAgentFromActiveProject } from '../project/service.js';
 import {
   findAgentByActiveRefreshToken,
   findAgentById,
   insertRefreshToken,
   listAgentsByOrg,
+  markAgentDisconnected,
+  revokeAgentTokens,
   upsertAgent,
   type Agent,
 } from './repository.js';
@@ -175,4 +180,40 @@ export async function listOrgAgents(orgId: string): Promise<OrgAgentView[]> {
 // 에이전트가 속한 조직 — 사람용 실시간 스트림이 접속 상태 변화를 어느 조직에 알릴지 정할 때 쓴다. 조직 가입 전이면 null.
 export async function agentOrgId(agentId: string): Promise<string | null> {
   return (await findAgentById(pool, agentId))?.orgId ?? null;
+}
+
+// ── 연결 해제(021) ───────────────────────────────────────────────────────
+
+// 에이전트 연결 해제 — 그 에이전트의 주인이나 같은 조직의 대표가 한다(대표 결정).
+// - 맡은 진행 중 프로젝트에서 빠진다. 진행 중 태스크를 붙잡고 있으면 409 ACTIVE_TASKS_HELD(멤버 해제와 같은 규칙).
+// - refresh token을 전부 폐기하고 disconnected_at을 찍는다. 남은 access token은 인증이 거부한다(AGENT_DISCONNECTED).
+// - 행은 지우지 않는다(이벤트·태스크가 가리킨다). 같은 노트북에서 같은 이름으로 다시 connect하면 되살아난다.
+export async function disconnectAgent(
+  actor: { userId: string; orgId: string | null; orgRole: string | null },
+  agentId: string,
+): Promise<{ agentId: string; disconnectedAt: string; unassignedFrom: string | null }> {
+  const agent = await findAgentById(pool, agentId);
+  if (!agent || agent.disconnectedAt !== null) throw new AppError('AGENT_NOT_FOUND', `agent ${agentId} not found`);
+  const byOwner = agent.userId === actor.userId;
+  if (!byOwner && !(actor.orgRole === 'REPRESENTATIVE' && actor.orgId !== null && agent.orgId === actor.orgId)) {
+    throw new AppError('NOT_AGENT_OWNER', 'only the agent owner or the representative can disconnect it');
+  }
+  const result = await withTransaction(async (tx) => {
+    const unassignedFrom = await detachAgentFromActiveProject(tx, agentId, actor.userId, 'agent_disconnected');
+    const marked = await markAgentDisconnected(tx, agentId);
+    if (!marked) throw new AppError('AGENT_NOT_FOUND', `agent ${agentId} not found`);
+    await revokeAgentTokens(tx, agentId);
+    await appendEvent(tx, {
+      orgId: agent.orgId,
+      type: 'AGENT_DISCONNECTED',
+      actorAgentId: agentId,
+      onBehalfOf: actor.userId,
+      payload: { agentId, userId: agent.userId, name: agent.name, byOwner, unassignedFrom },
+    });
+    return { agentId, disconnectedAt: marked.disconnectedAt!, unassignedFrom };
+  });
+  // 커밋 뒤 — 빠진 프로젝트의 태스크 스냅샷을 다시 계산하고, 그 에이전트의 스트림을 끊는다.
+  if (result.unassignedFrom) tasksChanged(result.unassignedFrom);
+  agentRevoked(agentId);
+  return result;
 }

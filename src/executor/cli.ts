@@ -300,6 +300,12 @@ async function start(): Promise<void> {
         }
       }
     } catch (err) {
+      // 대표나 본인이 웹에서 이 에이전트의 연결을 해제했다(서버 021) — 계속 물어도 같은 답이니 이유를 알리고 멈춘다.
+      if (err instanceof NomosApiError && err.code === 'AGENT_DISCONNECTED') {
+        log('이 에이전트는 연결이 해제됐다 — 다시 쓰려면 connect를 실행하라');
+        source.close();
+        return;
+      }
       log(`태스크 목록 실패: ${err instanceof Error ? err.message : String(err)}`);
     }
     // 다른 역할이 이 역할에 물은 질문 — 질문이 생기면 서버가 { type: 'questions' }로 깨운다. 신호가 없으면 1분마다만 확인한다.

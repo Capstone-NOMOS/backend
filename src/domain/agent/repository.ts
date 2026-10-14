@@ -14,6 +14,8 @@ export type Agent = {
   maxConcurrent: number;
   status: AgentStatus;
   lastSeenAt: string | null;
+  // 연결 해제 시각(021). 있으면 토큰이 통하지 않고 목록에 나오지 않는다. 같은 이름으로 다시 connect하면 NULL로 되살아난다.
+  disconnectedAt: string | null;
   createdAt: string;
 };
 
@@ -28,6 +30,7 @@ function toAgent(row: QueryResultRow): Agent {
     maxConcurrent: row.max_concurrent,
     status: row.status,
     lastSeenAt: row.last_seen_at,
+    disconnectedAt: row.disconnected_at ?? null,
     createdAt: row.created_at,
   };
 }
@@ -53,7 +56,8 @@ export async function upsertAgent(
        SET org_id = EXCLUDED.org_id,
            harness = EXCLUDED.harness,
            skills = EXCLUDED.skills,
-           max_concurrent = EXCLUDED.max_concurrent
+           max_concurrent = EXCLUDED.max_concurrent,
+           disconnected_at = NULL
      RETURNING *, (xmax = 0) AS inserted`,
     [input.userId, input.orgId, input.name, input.harness, input.skills, input.maxConcurrent],
   );
@@ -80,7 +84,8 @@ export async function findAgentByActiveRefreshToken(db: Queryable, tokenHash: st
       WHERE t.token_hash = $1
         AND t.kind = 'refresh'
         AND t.revoked_at IS NULL
-        AND t.expires_at > now()`,
+        AND t.expires_at > now()
+        AND a.disconnected_at IS NULL`,
     [tokenHash],
   );
   const row = rows[0];
@@ -130,7 +135,7 @@ export async function listAgentsByOrg(db: Queryable, orgId: string): Promise<Org
           ORDER BY p.created_at DESC
           LIMIT 1
        ) m ON true
-      WHERE a.org_id = $1
+      WHERE a.org_id = $1 AND a.disconnected_at IS NULL
       ORDER BY u.created_at ASC, a.created_at ASC`,
     [orgId],
   );
@@ -143,4 +148,31 @@ export async function listAgentsByOrg(db: Queryable, orgId: string): Promise<Org
     activeProjectId: r.project_id ?? null,
     activeTeamRole: r.team_role ?? null,
   }));
+}
+
+// ── 연결 해제(021) ───────────────────────────────────────────────────────
+
+// 그 에이전트의 refresh token을 전부 폐기한다. access token은 JWT라 지울 수 없어 인증(agent-auth)이 disconnected_at을 보고 거부한다.
+export async function revokeAgentTokens(db: Queryable, agentId: string): Promise<void> {
+  await db.query(`UPDATE agent_tokens SET revoked_at = now() WHERE agent_id = $1 AND revoked_at IS NULL`, [agentId]);
+}
+
+// 이미 해제된 에이전트면 null — 두 번 눌러도 이벤트가 한 번만 남는다.
+export async function markAgentDisconnected(db: Queryable, agentId: string): Promise<Agent | null> {
+  const { rows } = await db.query(
+    `UPDATE agents SET disconnected_at = now() WHERE id = $1 AND disconnected_at IS NULL RETURNING *`,
+    [agentId],
+  );
+  return rows[0] ? toAgent(rows[0]) : null;
+}
+
+// 조직에서 빠지는 사용자의 에이전트(연결된 것만).
+export async function listConnectedAgentsOfUser(db: Queryable, userId: string): Promise<Agent[]> {
+  const { rows } = await db.query(`SELECT * FROM agents WHERE user_id = $1 AND disconnected_at IS NULL ORDER BY created_at`, [userId]);
+  return rows.map(toAgent);
+}
+
+// 조직에서 빠질 때 에이전트도 조직 밖으로(불변식 agents.org_id = users.org_id, 008의 FK가 커밋 시점에 본다).
+export async function detachUserAgentsFromOrg(db: Queryable, userId: string): Promise<void> {
+  await db.query(`UPDATE agents SET org_id = NULL WHERE user_id = $1`, [userId]);
 }

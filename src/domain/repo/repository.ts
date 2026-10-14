@@ -90,8 +90,9 @@ export async function findRepoByIdForOrg(db: Queryable, orgId: string, repoId: s
 }
 
 // 조직에 연결된 모든 레포를 조회한다. members의 GitHub collaborator 확인에 쓰인다.
+// 연결 해제된 레포(021)는 빼고.
 export async function listReposByOrg(db: Queryable, orgId: string): Promise<Repo[]> {
-  const { rows } = await db.query(`SELECT * FROM repos WHERE org_id = $1 ORDER BY created_at ASC`, [orgId]);
+  const { rows } = await db.query(`SELECT * FROM repos WHERE org_id = $1 AND disconnected_at IS NULL ORDER BY created_at ASC`, [orgId]);
   return rows.map(toRepo);
 }
 
@@ -281,4 +282,36 @@ export async function updateRepoPathOwnership(
   const row = rows[0];
   if (!row) throw new Error('updateRepoPathOwnership: update returned no row');
   return toRepoPath(row);
+}
+
+// ── 연결 해제(021) ───────────────────────────────────────────────────────
+
+// 연결된(해제되지 않은) 레포만. 대표·멤버가 레포를 다루는 API는 이걸로 찾는다 — 해제된 레포는 없는 것으로 본다.
+export async function findConnectedRepoById(db: Queryable, repoId: string): Promise<Repo | null> {
+  const { rows } = await db.query(`SELECT * FROM repos WHERE id = $1 AND disconnected_at IS NULL`, [repoId]);
+  return rows[0] ? toRepo(rows[0]) : null;
+}
+
+export async function markRepoDisconnected(db: Queryable, repoId: string): Promise<boolean> {
+  const { rowCount } = await db.query(`UPDATE repos SET disconnected_at = now() WHERE id = $1 AND disconnected_at IS NULL`, [repoId]);
+  return (rowCount ?? 0) > 0;
+}
+
+// 해제했던 같은 레포를 다시 연결하면 그 행을 되살린다 — 경로 규칙(소유권 포함)이 그대로 돌아온다.
+// 새로 받은 GitHub 정보가 있으면 덮고, 없으면 예전 값을 둔다.
+export async function reviveDisconnectedRepo(
+  db: Queryable,
+  input: { orgId: string; fullName: string; githubRepoId?: number; defaultBranch?: string; cloneUrl?: string },
+): Promise<Repo | null> {
+  const { rows } = await db.query(
+    `UPDATE repos
+        SET disconnected_at = NULL,
+            github_repo_id = COALESCE($3, github_repo_id),
+            default_branch = COALESCE($4, default_branch),
+            clone_url = COALESCE($5, clone_url)
+      WHERE org_id = $1 AND full_name = $2 AND disconnected_at IS NOT NULL
+      RETURNING *`,
+    [input.orgId, input.fullName, input.githubRepoId ?? null, input.defaultBranch ?? null, input.cloneUrl ?? null],
+  );
+  return rows[0] ? toRepo(rows[0]) : null;
 }

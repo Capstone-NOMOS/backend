@@ -180,6 +180,16 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     await call('POST', `/invites/${inviteToken}/accept`, be);
     await call('GET', '/me', rep);
     await call('GET', `/orgs/${orgId}/members`, rep);
+    // 초대 목록·취소(021)
+    await call('POST', `/orgs/${orgId}/invites`, rep, {});
+    const pending = (await call('GET', `/orgs/${orgId}/invites`, rep)).data.invites as { inviteId: string }[];
+    await call('DELETE', `/orgs/${orgId}/invites/${pending[0]!.inviteId}`, rep);
+    // 조직에서 내보내기(021) — 들어왔다가 나가는 멤버 하나
+    const temp = await call('POST', '/auth/signup', null, { loginId: 'temp-dev', password: pw, nickname: '잠깐' });
+    const tempToken = (await call('POST', '/auth/login', null, { loginId: 'temp-dev', password: pw })).data.accessToken as string;
+    const tempInvite = await call('POST', `/orgs/${orgId}/invites`, rep, {});
+    await call('POST', `/invites/${tempInvite.data.token as string}/accept`, tempToken);
+    await call('DELETE', `/orgs/${orgId}/members/${temp.data.userId as string}`, rep);
 
     // CLI 연결 — 대표 것은 배정 해제 확인용
     const beConn = await call('POST', '/agents/connect', null, {
@@ -198,7 +208,9 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     await call('GET', `/agents/device/requests/${userCode}`, rep);
     await call('POST', `/agents/device/requests/${userCode}/approve`, rep);
     await pool.query(`UPDATE agent_device_requests SET last_polled_at = NULL`); // poll 간격 검사를 건너뛴다
-    await call('POST', '/agents/device/poll', null, { deviceCode });
+    const approved = await call('POST', '/agents/device/poll', null, { deviceCode });
+    // 에이전트 연결 해제(021) — 브라우저 승인으로 연결한 노트북
+    await call('DELETE', `/agents/${approved.data.agentId as string}`, rep);
     const denied = await call('POST', '/agents/device/start', null, { agentName: 'other-laptop', harness: 'claude-code' });
     await call('POST', `/agents/device/requests/${denied.data.userCode as string}/deny`, rep);
 
@@ -219,7 +231,9 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     await call('GET', `/orgs/${orgId}/repos`, rep);
     // GitHub 조직에 레포 만들기(대표) — 프로젝트에는 위 레포만 넣는다.
     await call('GET', `/orgs/${orgId}/github/orgs`, rep);
-    await call('POST', `/orgs/${orgId}/github/repos`, rep, { githubOrg: 'acme', name: 'study-web', ownerRole: 'FRONTEND' });
+    const ghRepo = await call('POST', `/orgs/${orgId}/github/repos`, rep, { githubOrg: 'acme', name: 'study-web', ownerRole: 'FRONTEND' });
+    // 레포 연결 해제(021) — 프로젝트에 넣지 않은 레포
+    await call('DELETE', `/repos/${(ghRepo.data.repo as { id: string }).id}`, rep);
 
     // 프로젝트·배정
     const created = await call('POST', `/orgs/${orgId}/projects`, rep, {

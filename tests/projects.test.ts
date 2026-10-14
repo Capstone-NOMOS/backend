@@ -290,19 +290,20 @@ describe('멤버 배정', () => {
     ).rejects.toMatchObject({ code: 'AGENT_NOT_IN_ORG' });
   });
 
-  it('G1(started_at) 이후에는 배정도 해제도 막힌다', async () => {
+  it('끝난 프로젝트(completed·aborted)는 배정도 해제도 막힌다 — 시작 뒤 교체는 된다(021, tests/removals.test.ts)', async () => {
     const ctx = await setup();
     const { project } = await createProject(ctx.orgId, ctx.userId, input(ctx));
     const be = await addMember(ctx, 'be', 'be-laptop');
     await assignMember(ctx.actor, project.id, be.agentId, 'BACKEND');
-    await pool.query(`UPDATE projects SET started_at = now(), status = 'active' WHERE id = $1`, [project.id]);
+    // 프로젝트를 끝내는 서비스 경로(G3 승인)는 태스크·검증까지 필요해 상태만 바꾼다.
+    await pool.query(`UPDATE projects SET started_at = now(), status = 'completed' WHERE id = $1`, [project.id]);
 
     await expect(assignMember(ctx.actor, project.id, be.agentId, 'FRONTEND')).rejects.toMatchObject({
-      code: 'PROJECT_STARTED',
-      status: 403,
+      code: 'PROJECT_NOT_OPEN',
+      status: 409,
     });
     await expect(unassignMember(ctx.actor, project.id, be.agentId)).rejects.toMatchObject({
-      code: 'PROJECT_STARTED',
+      code: 'PROJECT_NOT_OPEN',
     });
   });
 

@@ -182,7 +182,7 @@ export type RepoRow = { id: string; orgId: string; fullName: string };
 
 export async function findReposByIds(db: Queryable, repoIds: string[]): Promise<RepoRow[]> {
   const { rows } = await db.query(
-    `SELECT id, org_id, full_name FROM repos WHERE id = ANY($1::uuid[])`,
+    `SELECT id, org_id, full_name FROM repos WHERE id = ANY($1::uuid[]) AND disconnected_at IS NULL`,
     [repoIds],
   );
   return rows.map((r) => ({ id: r.id, orgId: r.org_id, fullName: r.full_name }));
@@ -282,8 +282,9 @@ export async function deleteProjectMember(
   return rows[0]?.team_role ?? null;
 }
 
+// 연결 해제된 에이전트(021)는 없는 것으로 본다 — 배정할 수 없다.
 export async function findAgentOrg(db: Queryable, agentId: string): Promise<string | null | undefined> {
-  const { rows } = await db.query(`SELECT org_id FROM agents WHERE id = $1`, [agentId]);
+  const { rows } = await db.query(`SELECT org_id FROM agents WHERE id = $1 AND disconnected_at IS NULL`, [agentId]);
   return rows.length === 0 ? undefined : (rows[0]!.org_id as string | null);
 }
 
@@ -396,4 +397,20 @@ export async function listLatestInvites(db: Queryable, projectId: string): Promi
 export async function updateQuestionRelay(db: Queryable, projectId: string, enabled: boolean): Promise<Project> {
   const { rows } = await db.query(`UPDATE projects SET question_relay = $2 WHERE id = $1 RETURNING *`, [projectId, enabled]);
   return toProject(rows[0]!);
+}
+
+// 그 에이전트가 이 프로젝트에서 붙잡고 있는 진행 중 태스크(021) — 있으면 멤버에서 뺄 수 없다(대표 결정).
+// VERIFYING도 넣는다: 제출 뒤 V2·V4는 그 에이전트의 Executor가 보고해야 결론이 난다.
+export async function listActiveTasksOfAgent(
+  db: Queryable,
+  projectId: string,
+  agentId: string,
+): Promise<{ taskId: string; title: string; state: string }[]> {
+  const { rows } = await db.query(
+    `SELECT id, title, state FROM tasks
+      WHERE project_id = $1 AND assignee_agent_id = $2 AND state IN ('CLAIMED', 'IN_PROGRESS', 'VERIFYING')
+      ORDER BY created_at`,
+    [projectId, agentId],
+  );
+  return rows.map((r) => ({ taskId: r.id as string, title: r.title as string, state: r.state as string }));
 }
