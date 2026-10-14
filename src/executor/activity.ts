@@ -1,14 +1,15 @@
 import path from 'node:path';
 import type { NomosClient } from '../bridge/nomos-client.js';
 
-// Claude 실행(stream-json)에서 "무슨 도구로 무엇을 건드렸나"만 뽑아 룸으로 보낸다.
-// 보내는 것은 도구 종류와 대상(작업공간 기준 경로·명령 첫 줄)뿐이다. 파일 내용·명령 결과·모델의 설명 문장은 보내지 않는다 —
-// 코드가 서버에 쌓이고, 설명은 인계 노트의 몫이다(대표 결정).
+// Claude 실행(stream-json)에서 룸에 보일 것을 뽑는다 — 룸을 Claude Code 화면처럼(대표 결정, 서버 020).
+// 보내는 것: 도구 종류·대상(작업공간 기준 경로·명령 첫 줄)·성공 여부·수정 줄 수, 에이전트의 말(say, 500자).
+// 보내지 않는 것: 파일 내용·diff·명령 출력 — 코드가 서버에 쌓인다. 줄 수는 숫자만 센다.
 
-export type ActivityKind = 'read' | 'edit' | 'write' | 'run' | 'search' | 'other';
-export type ActivityItem = { kind: ActivityKind; target: string };
+export type ActivityKind = 'read' | 'edit' | 'write' | 'run' | 'search' | 'other' | 'say';
+export type ActivityItem = { kind: ActivityKind; target: string; ok?: boolean; added?: number; removed?: number };
 
 const MAX_TARGET = 300;
+const MAX_SAY = 500;
 
 function clip(text: string): string {
   const oneLine = text.split(/\r?\n/)[0]!.trim();
@@ -33,6 +34,38 @@ function hideWorkspace(command: string, cwd: string): string {
     if (form) out = out.split(form).join('.');
   }
   return out;
+}
+
+function countLines(text: unknown): number | null {
+  if (typeof text !== 'string') return null;
+  const body = text.replace(/\r?\n$/, '');
+  return body === '' ? 0 : body.split(/\r?\n/).length;
+}
+
+// 수정·작성의 줄 수(내용은 보내지 않는다). Edit은 old/new, MultiEdit은 합, Write는 새 내용.
+function lineCounts(tool: string, input: Record<string, unknown>): { added?: number; removed?: number } {
+  if (tool === 'Write') {
+    const added = countLines(input.content);
+    return added === null ? {} : { added };
+  }
+  const edits = tool === 'MultiEdit' && Array.isArray(input.edits) ? (input.edits as Record<string, unknown>[]) : [input];
+  let added = 0;
+  let removed = 0;
+  for (const e of edits) {
+    const a = countLines(e.new_string);
+    const r = countLines(e.old_string);
+    if (a === null || r === null) return {};
+    added += a;
+    removed += r;
+  }
+  return { added, removed };
+}
+
+// 에이전트의 말 — 작업공간 경로를 지우고, 빈 줄을 줄이고, 500자에서 자른다.
+export function toSay(text: string, cwd: string): ActivityItem | null {
+  const cleaned = hideWorkspace(text, cwd).replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  if (!cleaned) return null;
+  return { kind: 'say', target: cleaned.length > MAX_SAY ? `${cleaned.slice(0, MAX_SAY - 1)}…` : cleaned };
 }
 
 // 도구 하나 → 활동 한 줄. 룸에 보일 필요가 없는 것(NOMOS 도구 — 제출·노트는 서버 이벤트로 이미 보인다, 할 일 목록)은 null.
@@ -73,27 +106,54 @@ export function toActivity(tool: string, input: Record<string, unknown>, cwd: st
     default:
       item = { kind: 'other', target: tool };
   }
-  return item ? { kind: item.kind, target: clip(item.target) } : null;
+  if (!item) return null;
+  const counts = item.kind === 'edit' || item.kind === 'write' ? lineCounts(tool, input) : {};
+  return { kind: item.kind, target: clip(item.target), ...counts };
 }
 
-// stream-json 한 줄 → 그 줄에 든 도구 호출들. 형식이 다르거나 깨진 줄은 조용히 건너뛴다(룸 표시가 실행을 막으면 안 된다).
-export function activityFromStreamLine(line: string, cwd: string): ActivityItem[] {
-  const trimmed = line.trim();
-  if (!trimmed.startsWith('{')) return [];
-  let msg: { type?: unknown; message?: { content?: unknown } };
-  try {
-    msg = JSON.parse(trimmed) as typeof msg;
-  } catch {
-    return [];
+// 실행 하나의 stream-json을 따라가며 룸에 보낼 줄을 낸다. 도구 줄은 **결과가 온 뒤** 성공 여부를 붙여 낸다(tool_use_id로 짝짓기).
+// 결과를 못 받은 도구는 finish()에서 성공 여부 없이 낸다. 형식이 다르거나 깨진 줄은 조용히 건너뛴다(룸 표시가 실행을 막으면 안 된다).
+export class ActivityTracker {
+  private readonly pending = new Map<string, ActivityItem>();
+
+  constructor(private readonly cwd: string) {}
+
+  observe(line: string): ActivityItem[] {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('{')) return [];
+    let msg: { type?: unknown; message?: { content?: unknown } };
+    try {
+      msg = JSON.parse(trimmed) as typeof msg;
+    } catch {
+      return [];
+    }
+    if (!Array.isArray(msg.message?.content)) return [];
+    const out: ActivityItem[] = [];
+    for (const block of msg.message.content as Record<string, unknown>[]) {
+      if (msg.type === 'assistant' && block.type === 'text' && typeof block.text === 'string') {
+        const say = toSay(block.text, this.cwd);
+        if (say) out.push(say);
+      } else if (msg.type === 'assistant' && block.type === 'tool_use' && typeof block.name === 'string') {
+        const item = toActivity(block.name, (block.input ?? {}) as Record<string, unknown>, this.cwd);
+        if (!item) continue;
+        if (typeof block.id === 'string') this.pending.set(block.id, item);
+        else out.push(item);
+      } else if (msg.type === 'user' && block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
+        const item = this.pending.get(block.tool_use_id);
+        if (!item) continue;
+        this.pending.delete(block.tool_use_id);
+        out.push({ ...item, ok: block.is_error !== true });
+      }
+    }
+    return out;
   }
-  if (msg.type !== 'assistant' || !Array.isArray(msg.message?.content)) return [];
-  const items: ActivityItem[] = [];
-  for (const block of msg.message.content as { type?: unknown; name?: unknown; input?: unknown }[]) {
-    if (block.type !== 'tool_use' || typeof block.name !== 'string') continue;
-    const item = toActivity(block.name, (block.input ?? {}) as Record<string, unknown>, cwd);
-    if (item) items.push(item);
+
+  // 실행이 끝났다 — 결과를 못 받은 도구도 낸다.
+  finish(): ActivityItem[] {
+    const rest = [...this.pending.values()];
+    this.pending.clear();
+    return rest;
   }
-  return items;
 }
 
 // 활동을 모아 2초마다 한 번에 보낸다. 보내기 실패는 기록만 하고 넘어간다 — 룸 표시가 태스크 실행을 멈추면 안 된다.
@@ -102,6 +162,8 @@ export class ActivityReporter {
   private timer: ReturnType<typeof setInterval> | null = null;
   private sending: Promise<void> = Promise.resolve();
   private warned = false;
+  // 옛 서버(020 전)는 say·성공 여부·줄 수를 400으로 거부한다 — 한 번 거부되면 그 실행 동안은 예전 형식(도구·대상만)으로 낮춰 보낸다.
+  private legacy = false;
 
   constructor(
     private readonly client: Pick<NomosClient, 'postActivity'>,
@@ -122,7 +184,7 @@ export class ActivityReporter {
       while (this.queue.length > 0) {
         const batch = this.queue.splice(0, 50);
         try {
-          await this.client.postActivity(this.taskId, batch);
+          await this.send(batch);
         } catch (err) {
           if (!this.warned) {
             this.warned = true;
@@ -132,6 +194,22 @@ export class ActivityReporter {
       }
     });
     return this.sending;
+  }
+
+  private async send(batch: ActivityItem[]): Promise<void> {
+    if (this.legacy) return this.sendLegacy(batch);
+    try {
+      await this.client.postActivity(this.taskId, batch);
+    } catch (err) {
+      if ((err as { status?: unknown }).status !== 400) throw err;
+      this.legacy = true;
+      await this.sendLegacy(batch);
+    }
+  }
+
+  private async sendLegacy(batch: ActivityItem[]): Promise<void> {
+    const items = batch.filter((i) => i.kind !== 'say').map((i) => ({ kind: i.kind, target: i.target }));
+    if (items.length > 0) await this.client.postActivity(this.taskId, items);
   }
 
   async close(): Promise<void> {

@@ -412,7 +412,7 @@ components:
         reason: { type: string }
     RoomMessage:
       type: object
-      required: [id, ts, speaker, type, taskId, taskTitle, text]
+      required: [id, ts, speaker, type, taskId, taskTitle, text, questionId, activity]
       properties:
         id: { type: string, description: '피드 커서로도 쓴다(before)' }
         ts: { type: string, format: date-time }
@@ -425,10 +425,26 @@ components:
             - agent: 에이전트가 쓴 도구(읽기·수정·실행) · 인계 노트
         type:
           type: string
-          description: '원본 이벤트 타입(TASK_DISPATCHED 등) 또는 ACTIVITY_READ·ACTIVITY_EDIT·ACTIVITY_WRITE·ACTIVITY_RUN·ACTIVITY_SEARCH·ACTIVITY_OTHER. 아이콘용'
+          description: '원본 이벤트 타입(TASK_DISPATCHED 등) 또는 ACTIVITY_READ·ACTIVITY_EDIT·ACTIVITY_WRITE·ACTIVITY_RUN·ACTIVITY_SEARCH·ACTIVITY_OTHER·ACTIVITY_SAY(에이전트의 말). 아이콘용'
         taskId: { type: string, format: uuid, nullable: true }
         taskTitle: { type: string, nullable: true }
         text: { type: string, description: '화면에 그대로 보여 줄 문장(서버가 만든다)' }
+        questionId:
+          type: string
+          format: uuid
+          nullable: true
+          description: 질문 줄(QUESTION_*·TASK_BLOCKED_ON_QUESTION)이면 그 질문의 id — GET /projects/{projectId}/questions의 같은 id로 질문 카드(선택지·답)를 그린다. 그 외 null
+        activity:
+          type: object
+          nullable: true
+          description: 활동 줄(ACTIVITY_*)이면 원본 값 — Claude Code처럼 도구 블록으로 그릴 때 쓴다. 이벤트 줄이면 null
+          required: [kind, target, ok, added, removed]
+          properties:
+            kind: { type: string, enum: [read, edit, write, run, search, other, say] }
+            target: { type: string, description: '도구 대상(작업공간 기준 경로·명령 첫 줄) 또는 에이전트의 말' }
+            ok: { type: boolean, nullable: true, description: 'false면 도구가 실패했다(예: 시험 실패). 결과를 모르면 null' }
+            added: { type: integer, nullable: true, description: '수정·작성으로 더한 줄 수' }
+            removed: { type: integer, nullable: true, description: '수정으로 뺀 줄 수' }
     RoomSummary:
       type: object
       required: [role, agent, activeTasks]
@@ -3823,8 +3839,8 @@ paths:
       tags: [룸]
       summary: 실행 중 도구 사용 보고 (Executor)
       description: |
-        Executor가 Claude 출력에서 도구 사용을 뽑아 2초마다 묶어 보낸다(최대 50줄). **도구 종류와 대상(작업공간 기준 경로·명령 첫 줄, 300자)만** 받는다 —
-        파일 내용·명령 결과·모델 설명은 받지 않는다(설명은 인계 노트의 몫). 열린 실행에만 붙는다(409 `RUN_NOT_OPEN`).
+        Executor가 Claude 출력에서 도구 사용과 에이전트의 말을 뽑아 2초마다 묶어 보낸다(최대 50줄). 받는 것: 도구 종류·대상(작업공간 기준 경로·명령 첫 줄, 300자)·
+        성공 여부·수정 줄 수, 에이전트의 말(`say`, 500자 — 020). **파일 내용·diff·명령 출력은 받지 않는다.** 열린 실행에만 붙는다(409 `RUN_NOT_OPEN`).
         이벤트가 아니라 `agent_activity`에 쌓이고, 화면 스트림에는 `room` 토픽으로 알린다.
       security: [{ agentToken: [] }]
       parameters: [{ $ref: '#/components/parameters/TaskId' }]
@@ -3844,13 +3860,17 @@ paths:
                     type: object
                     required: [kind, target]
                     properties:
-                      kind: { type: string, enum: [read, edit, write, run, search, other] }
-                      target: { type: string, maxLength: 300 }
+                      kind: { type: string, enum: [read, edit, write, run, search, other, say], description: 'say = 에이전트의 말(020)' }
+                      target: { type: string, maxLength: 500, description: '도구 대상(경로·명령 첫 줄) 300자, say면 그 말 500자' }
+                      ok: { type: boolean, nullable: true, description: '도구 결과가 오류가 아니었는가. 결과를 못 받았으면 생략' }
+                      added: { type: integer, minimum: 0, nullable: true, description: '수정·작성으로 더한 줄 수(내용은 보내지 않는다)' }
+                      removed: { type: integer, minimum: 0, nullable: true, description: '수정으로 뺀 줄 수' }
             example:
               items:
-                - { kind: read, target: src/routes/auth.ts }
-                - { kind: edit, target: src/routes/auth.ts }
-                - { kind: run, target: npm test }
+                - { kind: say, target: 레포 구조를 먼저 살펴보겠습니다. }
+                - { kind: read, target: src/routes/auth.ts, ok: true }
+                - { kind: edit, target: src/routes/auth.ts, ok: true, added: 12, removed: 3 }
+                - { kind: run, target: npm test, ok: false }
       responses:
         '201':
           description: 기록함

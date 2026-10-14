@@ -74,18 +74,32 @@ export async function findRunOutcome(db: Queryable, taskId: string, agentId: str
 
 // ── 활동(agent_activity) ─────────────────────────────────────────────────
 
-export type ActivityKind = 'read' | 'edit' | 'write' | 'run' | 'search' | 'other';
-export const ACTIVITY_KINDS: readonly ActivityKind[] = ['read', 'edit', 'write', 'run', 'search', 'other'];
+export type ActivityKind = 'read' | 'edit' | 'write' | 'run' | 'search' | 'other' | 'say';
+export const ACTIVITY_KINDS: readonly ActivityKind[] = ['read', 'edit', 'write', 'run', 'search', 'other', 'say'];
+// say(에이전트의 말)는 500자, 도구 대상은 300자 — 020의 agent_activity_target_chk와 같은 숫자.
+export const ACTIVITY_TARGET_MAX = { say: 500, tool: 300 } as const;
+
+export type ActivityInput = { kind: ActivityKind; target: string; ok?: boolean | null; added?: number | null; removed?: number | null };
 
 export async function insertActivity(
   db: Queryable,
-  input: { projectId: string; taskId: string; agentId: string; items: { kind: ActivityKind; target: string }[] },
+  input: { projectId: string; taskId: string; agentId: string; items: ActivityInput[] },
 ): Promise<void> {
   // 한 묶음은 한 문장으로 넣는다 — id(bigserial) 순서가 보낸 순서와 같다.
   await db.query(
-    `INSERT INTO agent_activity (project_id, task_id, agent_id, kind, target)
-     SELECT $1, $2, $3, k, t FROM unnest($4::text[], $5::text[]) WITH ORDINALITY AS x(k, t, n) ORDER BY n`,
-    [input.projectId, input.taskId, input.agentId, input.items.map((i) => i.kind), input.items.map((i) => i.target)],
+    `INSERT INTO agent_activity (project_id, task_id, agent_id, kind, target, ok, lines_added, lines_removed)
+     SELECT $1, $2, $3, k, t, o, a, r
+       FROM unnest($4::text[], $5::text[], $6::boolean[], $7::int[], $8::int[]) WITH ORDINALITY AS x(k, t, o, a, r, n) ORDER BY n`,
+    [
+      input.projectId,
+      input.taskId,
+      input.agentId,
+      input.items.map((i) => i.kind),
+      input.items.map((i) => i.target),
+      input.items.map((i) => i.ok ?? null),
+      input.items.map((i) => i.added ?? null),
+      input.items.map((i) => i.removed ?? null),
+    ],
   );
 }
 
@@ -150,7 +164,7 @@ export async function listRoomFeed(
           )
        UNION ALL
        SELECT 'a'::text, a.id::text, (extract(epoch FROM a.ts) * 1000000)::bigint, a.ts,
-              a.kind, jsonb_build_object('target', a.target), t.id, t.title, NULL::int
+              a.kind, jsonb_build_object('target', a.target, 'ok', a.ok, 'added', a.lines_added, 'removed', a.lines_removed), t.id, t.title, NULL::int
          FROM agent_activity a
          JOIN tasks t ON t.id = a.task_id
         WHERE a.project_id = $1 AND (t.team_role IS NULL OR t.team_role = $2)

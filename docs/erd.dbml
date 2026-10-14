@@ -623,9 +623,12 @@ Table agent_activity {
   project_id uuid        [not null]
   task_id    uuid        [not null]
   agent_id   uuid        [not null]
-  kind       text        [not null, note: 'read | edit | write | run | search | other']
-  target     text        [not null, note: '작업공간 기준 경로 또는 명령 첫 줄, 1~300자']
+  kind       text        [not null, note: 'read | edit | write | run | search | other | say(★ 020 — 에이전트의 말)']
+  target     text        [not null, note: '작업공간 기준 경로 또는 명령 첫 줄(1~300자), say면 그 말(1~500자)']
   ts         timestamptz [not null, default: `clock_timestamp()`, note: '★ 019']
+  ok            boolean  [note: '★ 020 도구 결과가 오류가 아니었는가(is_error의 반대). 결과를 못 받았으면 NULL']
+  lines_added   integer  [note: '★ 020 수정·작성으로 더한 줄 수(내용은 받지 않는다)']
+  lines_removed integer  [note: '★ 020 수정으로 뺀 줄 수']
 
   indexes {
     (project_id, id)
@@ -634,8 +637,10 @@ Table agent_activity {
   ★ 017 룸: 에이전트가 실행 중에 쓴 도구 한 줄씩(Executor가 Claude stream-json에서 뽑아 보낸다).
   상태 변화가 아니라 events에 넣지 않는다. 파일 내용·명령 결과·모델 설명은 받지 않는다(설명은 인계 노트의 몫).
   열린 실행(AGENT_RUN_STARTED 뒤 AGENT_RUN_ENDED 전)에만 붙는다.
-  agent_activity_kind_chk   kind IN ('read','edit','write','run','search','other')
-  agent_activity_target_chk char_length(target) BETWEEN 1 AND 300
+  ★ 020: 룸을 Claude Code 화면처럼 — 에이전트의 말(say)·성공 여부·줄 수를 더했다(대표 결정). 파일 내용·diff·명령 출력은 여전히 받지 않는다.
+  agent_activity_kind_chk   kind IN ('read','edit','write','run','search','other','say')
+  agent_activity_target_chk char_length(target) BETWEEN 1 AND (CASE WHEN kind = 'say' THEN 500 ELSE 300 END)
+  agent_activity_lines_chk  (lines_added IS NULL OR lines_added >= 0) AND (lines_removed IS NULL OR lines_removed >= 0)
   '''
 }
 

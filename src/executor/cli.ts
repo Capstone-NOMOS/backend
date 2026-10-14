@@ -30,7 +30,7 @@ import {
   writeCredentials,
 } from '../bridge/credentials.js';
 import { NomosApiError, NomosClient } from '../bridge/nomos-client.js';
-import { ActivityReporter, activityFromStreamLine, RunObserver } from './activity.js';
+import { ActivityReporter, ActivityTracker, RunObserver } from './activity.js';
 import { connect, DEFAULT_SERVER, serverCalls } from './connect.js';
 import { deviceLogin } from './device-login.js';
 import { cliVersion, mcpServerPath } from './paths.js';
@@ -156,6 +156,7 @@ async function handleTask(client: NomosClient, projectId: string, task: TaskSumm
     });
   const reporter = runOpen ? new ActivityReporter(client, task.id, log) : null;
   const observer = new RunObserver(workspace.dir);
+  const tracker = new ActivityTracker(workspace.dir);
 
   // 의존성은 모델이 아니라 여기서 설치한다(설치 스크립트 끔). 실패해도 진행한다 — 프롬프트에 결과를 적는다.
   const setup = await prepareDependencies(workspace.dir, log);
@@ -170,12 +171,13 @@ async function handleTask(client: NomosClient, projectId: string, task: TaskSumm
     questionRelay: briefing.questionRelay === true,
     onStdoutLine: (line: string) => {
       observer.observe(line);
-      reporter?.push(activityFromStreamLine(line, workspace.dir));
+      reporter?.push(tracker.observe(line));
     },
   });
   const committed = headSha(workspace.dir) !== before;
 
   if (reporter) {
+    reporter.push(tracker.finish());
     await reporter.close();
     // 제출했는지는 서버가 태스크 상태로 판단해 룸에 남긴다("끝났지만 제출하지 않았다"가 대표에게 보인다).
     // 응답 없음(stalled)은 서버에 timeout으로 보고하고 사유 문장으로 구분한다 — 옛 서버는 outcome에 stalled를 모른다.

@@ -3,6 +3,9 @@ import type { FeedRow } from './repository.js';
 
 // 룸 피드의 한 줄. 문장은 서버가 만든다 — 같은 이벤트를 화면마다 다르게 풀면 룸마다 말이 달라진다.
 // speaker: pm(서버가 지시·판정을 알림) · nomos(Executor가 보고한 실행 상태) · agent(에이전트가 쓴 도구).
+// 도구 사용·에이전트의 말(020). 화면이 Claude Code처럼 도구 블록으로 그릴 수 있게 원본 값을 함께 준다.
+export type RoomActivity = { kind: string; target: string; ok: boolean | null; added: number | null; removed: number | null };
+
 export type RoomMessage = {
   id: string;
   ts: string;
@@ -11,6 +14,9 @@ export type RoomMessage = {
   taskId: string | null;
   taskTitle: string | null;
   text: string;
+  // 질문 줄(QUESTION_*·TASK_BLOCKED_ON_QUESTION)이면 그 질문 — 화면이 GET /projects/:id/questions의 같은 id로 카드를 그린다.
+  questionId: string | null;
+  activity: RoomActivity | null;
 };
 
 const ACTIVITY_TEXT: Record<string, (target: string) => string> = {
@@ -19,8 +25,20 @@ const ACTIVITY_TEXT: Record<string, (target: string) => string> = {
   write: (t) => `${t} 작성`,
   run: (t) => `${t} 실행`,
   search: (t) => `${t} 검색`,
+  say: (t) => t,
   other: (t) => t,
 };
+
+function nullableNum(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+
+function activityText(a: RoomActivity): string {
+  const base = (ACTIVITY_TEXT[a.kind] ?? ACTIVITY_TEXT.other!)(a.target);
+  if (a.kind === 'say') return base;
+  const lines = a.added !== null || a.removed !== null ? ` (+${a.added ?? 0} −${a.removed ?? 0})` : '';
+  return `${base}${lines}${a.ok === false ? ' — 실패' : ''}`;
+}
 
 const STAGE_ORDER = ['V1A', 'V1B', 'V2', 'V3', 'V4'];
 
@@ -145,11 +163,20 @@ function eventText(row: FeedRow): { speaker: RoomMessage['speaker']; text: strin
 export function renderFeedRow(row: FeedRow): RoomMessage | null {
   const base = { id: `${row.tsMicros}.${row.source}.${row.id}`, ts: row.ts, type: row.type, taskId: row.taskId, taskTitle: row.taskTitle };
   if (row.source === 'a') {
-    const toText = ACTIVITY_TEXT[row.type] ?? ACTIVITY_TEXT.other!;
-    return { ...base, type: `ACTIVITY_${row.type.toUpperCase()}`, speaker: 'agent', text: toText(str(row.payload.target)) };
+    const p = row.payload;
+    const activity: RoomActivity = {
+      kind: row.type,
+      target: str(p.target),
+      ok: typeof p.ok === 'boolean' ? p.ok : null,
+      added: nullableNum(p.added),
+      removed: nullableNum(p.removed),
+    };
+    return { ...base, type: `ACTIVITY_${row.type.toUpperCase()}`, speaker: 'agent', text: activityText(activity), questionId: null, activity };
   }
   const rendered = eventText(row);
-  return rendered === null ? null : { ...base, ...rendered };
+  if (rendered === null) return null;
+  const questionId = row.type.startsWith('QUESTION_') || row.type === 'TASK_BLOCKED_ON_QUESTION' ? str(row.payload.questionId) || null : null;
+  return { ...base, ...rendered, questionId, activity: null };
 }
 
 // 커서 문자열("<마이크로초>.<e|a>.<id>")을 되돌린다. 형식이 틀리면 null(→ 400).
