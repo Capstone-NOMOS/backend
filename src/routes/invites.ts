@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate, requireRepresentative, requireSameOrg } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
-import { acceptInvite, createInvite, previewInvite } from '../domain/invite/service.js';
+import { acceptInvite, createInvite, listInvites, previewInvite, revokeInvite } from '../domain/invite/service.js';
 import { TEAM_ROLES } from '../domain/roles.js';
 
 export const invitesRouter = Router();
@@ -24,6 +24,34 @@ invitesRouter.post(
     const { orgId } = req.params as z.infer<typeof orgIdParamsSchema>;
     const invite = await createInvite(orgId, req.user!.id, req.body);
     res.status(201).json({ data: invite });
+  },
+);
+
+// GET /api/orgs/:orgId/invites — 보낸 초대 중 아직 쓰이지도 취소되지도 않은 것(대표 전용, 021). 만료된 것도 expired로 함께 나온다.
+invitesRouter.get(
+  '/orgs/:orgId/invites',
+  validate({ params: orgIdParamsSchema }),
+  authenticate,
+  requireSameOrg,
+  requireRepresentative,
+  async (req, res) => {
+    const { orgId } = req.params as z.infer<typeof orgIdParamsSchema>;
+    res.status(200).json({ data: { invites: await listInvites(orgId) } });
+  },
+);
+
+const inviteIdParamsSchema = z.object({ orgId: z.string().uuid(), inviteId: z.string().uuid() });
+
+// DELETE /api/orgs/:orgId/invites/:inviteId — 초대 취소(대표 전용, 021). 취소한 링크로는 가입할 수 없다(410 INVITE_REVOKED).
+invitesRouter.delete(
+  '/orgs/:orgId/invites/:inviteId',
+  validate({ params: inviteIdParamsSchema }),
+  authenticate,
+  requireSameOrg,
+  requireRepresentative,
+  async (req, res) => {
+    const { orgId, inviteId } = req.params as z.infer<typeof inviteIdParamsSchema>;
+    res.status(200).json({ data: await revokeInvite(orgId, req.user!.id, inviteId) });
   },
 );
 

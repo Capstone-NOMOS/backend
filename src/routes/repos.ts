@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { TEAM_ROLES } from '../domain/roles.js';
 import { authenticate, orgIdOf, requireRepresentative, requireSameOrg } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
-import { connectRepos, createGithubRepo, listGithubOrgs, listRepos, updateRepoSettings } from '../domain/repo/service.js';
+import { connectRepos, createGithubRepo, disconnectRepo, listGithubOrgs, listRepos, updateRepoSettings } from '../domain/repo/service.js';
 
 export const reposRouter = Router();
 
@@ -126,5 +126,18 @@ reposRouter.patch(
       ...(body.cloneUrl === undefined ? {} : { cloneUrl: body.cloneUrl }),
     });
     res.status(200).json({ data: { repo } });
+  },
+);
+
+// DELETE /api/repos/:repoId — 레포 연결 해제(대표, 021). 진행 중 프로젝트가 쓰면 409 REPO_IN_ACTIVE_PROJECT.
+// GitHub의 레포는 그대로다. 같은 레포를 다시 연결하면 경로 규칙·소유권과 함께 되살아난다.
+reposRouter.delete(
+  '/repos/:repoId',
+  validate({ params: repoIdParamsSchema }),
+  authenticate,
+  requireRepresentative,
+  async (req, res) => {
+    const { repoId } = req.params as z.infer<typeof repoIdParamsSchema>;
+    res.status(200).json({ data: await disconnectRepo(orgIdOf(req), req.user!.id, repoId) });
   },
 );

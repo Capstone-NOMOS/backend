@@ -1,4 +1,10 @@
 export type EventType =
+  | 'AGENT_DISCONNECTED'
+  | 'GITHUB_COLLABORATORS_REMOVED'
+  | 'PROJECT_ABORTED'
+  | 'ORG_MEMBER_REMOVED'
+  | 'REPO_DISCONNECTED'
+  | 'INVITE_REVOKED'
   | 'USER_SIGNED_UP'
   | 'CONNECT_KEY_ROTATED'
   | 'AGENT_CONNECTED'
@@ -83,6 +89,8 @@ export type RepoConnectedPayload = {
   seededPathCount: number;
   // NOMOS가 GitHub 조직에 직접 만든 레포일 때만 있다(POST /orgs/:orgId/github/repos). 이미 있던 레포를 연결하면 없다.
   createdOnGithub?: { githubOrg: string; githubRepoId: number };
+  // 해제했던 레포를 다시 연결해 예전 행·경로 규칙을 되살렸다(021). 이때 seededPathCount는 0이다.
+  revived?: boolean;
 };
 
 export type RepoPathUpdatedPayload = {
@@ -313,7 +321,33 @@ export type MemberAssignedPayload = {
 export type MemberUnassignedPayload = {
   agentId: string;
   teamRole: string;
+  // 무엇 때문에 빠졌나(021) — 없으면 대표의 직접 해제.
+  cause?: 'agent_disconnected' | 'org_member_removed';
 };
+
+// 021 해제·삭제. 행은 지우지 않고 표시만 한다(되살릴 수 있고, 기록이 가리킨다).
+export type AgentDisconnectedPayload = { agentId: string; userId: string; name: string; byOwner: boolean; unassignedFrom: string | null };
+export type OrgMemberRemovedPayload = { userId: string; self: boolean; agentIds: string[]; unassignedFrom: string[] };
+export type RepoDisconnectedPayload = { repoId: string; fullName: string };
+export type InviteRevokedPayload = { inviteId: string };
+
+// 빠진 사람의 GitHub 레포 접근 회수(021) — 대표의 GitHub 토큰으로. 실패해도 해제는 그대로다(결과만 남긴다).
+export type GithubRevokeResult = {
+  repoId: string;
+  fullName: string;
+  status: 'removed' | 'invitation_cancelled' | 'not_collaborator' | 'skipped' | 'failed';
+  reason?: string;
+};
+export type GithubCollaboratorsRemovedPayload = {
+  agentId: string | null;
+  userId: string;
+  githubLogin: string | null;
+  trigger: 'unassign' | 'agent_disconnected' | 'org_member_removed';
+  results: GithubRevokeResult[];
+};
+
+// 프로젝트 중단(021). 지우지 않고 aborted로 닫는다 — 이벤트·태스크·노트가 가리킨다.
+export type ProjectAbortedPayload = { previousStatus: string; reason: string | null; openTaskCount: number; expiredQuestionIds: string[] };
 
 // 역할 배정(또는 재초대) 때 에이전트 주인을 프로젝트의 GitHub 레포에 협업자로 초대한 결과. 레포마다 한 줄.
 // 실패해도 배정은 그대로다 — GitHub 사정이 우리 기능을 멈추지 않는다. 토큰은 넣지 않는다.
@@ -526,6 +560,12 @@ export type EventPayloadMap = {
   QUESTION_DRAFTED: QuestionDraftedPayload;
   TASK_BLOCKED_ON_QUESTION: TaskBlockedOnQuestionPayload;
   MEMBER_UNASSIGNED: MemberUnassignedPayload;
+  AGENT_DISCONNECTED: AgentDisconnectedPayload;
+  ORG_MEMBER_REMOVED: OrgMemberRemovedPayload;
+  REPO_DISCONNECTED: RepoDisconnectedPayload;
+  INVITE_REVOKED: InviteRevokedPayload;
+  GITHUB_COLLABORATORS_REMOVED: GithubCollaboratorsRemovedPayload;
+  PROJECT_ABORTED: ProjectAbortedPayload;
   GITHUB_COLLABORATORS_INVITED: GithubCollaboratorsInvitedPayload;
   TASK_DISPATCHED: TaskDispatchedPayload;
   AGENT_RUN_STARTED: AgentRunStartedPayload;

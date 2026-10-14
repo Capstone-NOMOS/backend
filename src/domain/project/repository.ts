@@ -182,7 +182,7 @@ export type RepoRow = { id: string; orgId: string; fullName: string };
 
 export async function findReposByIds(db: Queryable, repoIds: string[]): Promise<RepoRow[]> {
   const { rows } = await db.query(
-    `SELECT id, org_id, full_name FROM repos WHERE id = ANY($1::uuid[])`,
+    `SELECT id, org_id, full_name FROM repos WHERE id = ANY($1::uuid[]) AND disconnected_at IS NULL`,
     [repoIds],
   );
   return rows.map((r) => ({ id: r.id, orgId: r.org_id, fullName: r.full_name }));
@@ -282,8 +282,9 @@ export async function deleteProjectMember(
   return rows[0]?.team_role ?? null;
 }
 
+// 연결 해제된 에이전트(021)는 없는 것으로 본다 — 배정할 수 없다.
 export async function findAgentOrg(db: Queryable, agentId: string): Promise<string | null | undefined> {
-  const { rows } = await db.query(`SELECT org_id FROM agents WHERE id = $1`, [agentId]);
+  const { rows } = await db.query(`SELECT org_id FROM agents WHERE id = $1 AND disconnected_at IS NULL`, [agentId]);
   return rows.length === 0 ? undefined : (rows[0]!.org_id as string | null);
 }
 
@@ -396,4 +397,71 @@ export async function listLatestInvites(db: Queryable, projectId: string): Promi
 export async function updateQuestionRelay(db: Queryable, projectId: string, enabled: boolean): Promise<Project> {
   const { rows } = await db.query(`UPDATE projects SET question_relay = $2 WHERE id = $1 RETURNING *`, [projectId, enabled]);
   return toProject(rows[0]!);
+}
+
+// 그 에이전트가 이 프로젝트에서 붙잡고 있는 진행 중 태스크(021) — 있으면 멤버에서 뺄 수 없다(대표 결정).
+// VERIFYING도 넣는다: 제출 뒤 V2·V4는 그 에이전트의 Executor가 보고해야 결론이 난다.
+export async function listActiveTasksOfAgent(
+  db: Queryable,
+  projectId: string,
+  agentId: string,
+): Promise<{ taskId: string; title: string; state: string }[]> {
+  const { rows } = await db.query(
+    `SELECT id, title, state FROM tasks
+      WHERE project_id = $1 AND assignee_agent_id = $2 AND state IN ('CLAIMED', 'IN_PROGRESS', 'VERIFYING')
+      ORDER BY created_at`,
+    [projectId, agentId],
+  );
+  return rows.map((r) => ({ taskId: r.id as string, title: r.title as string, state: r.state as string }));
+}
+
+// ── GitHub 접근 회수·프로젝트 중단(021) ─────────────────────────────────
+
+// 조직의 GitHub 레포(연결된 것만) — 조직에서 빠진 사람의 접근을 전부 회수할 때.
+export async function listOrgGithubRepos(db: Queryable, orgId: string): Promise<RepoRow[]> {
+  const { rows } = await db.query(
+    `SELECT id, org_id, full_name FROM repos
+      WHERE org_id = $1 AND github_repo_id IS NOT NULL AND disconnected_at IS NULL
+      ORDER BY full_name`,
+    [orgId],
+  );
+  return rows.map((r) => ({ id: r.id, orgId: r.org_id, fullName: r.full_name }));
+}
+
+export async function findUserGithubLogin(db: Queryable, userId: string): Promise<string | null> {
+  const { rows } = await db.query(`SELECT github_login FROM users WHERE id = $1`, [userId]);
+  return (rows[0]?.github_login as string | null | undefined) ?? null;
+}
+
+// 그 사람의 다른 에이전트가 아직 이 프로젝트 멤버인가 — 그러면 레포 접근을 회수하지 않는다(한 사람이 두 역할을 맡은 경우).
+export async function userStillInProject(db: Queryable, projectId: string, userId: string): Promise<boolean> {
+  const { rows } = await db.query(
+    `SELECT 1 FROM project_members m JOIN agents a ON a.id = m.agent_id WHERE m.project_id = $1 AND a.user_id = $2 LIMIT 1`,
+    [projectId, userId],
+  );
+  return rows.length > 0;
+}
+
+// 진행 중(planning·active·halted)인 프로젝트만 중단된다. 아니면 null.
+export async function markProjectAborted(db: Queryable, projectId: string): Promise<Project | null> {
+  const { rows } = await db.query(
+    `UPDATE projects SET status = 'aborted' WHERE id = $1 AND status IN ('planning', 'active', 'halted') RETURNING *`,
+    [projectId],
+  );
+  return rows[0] ? toProject(rows[0]) : null;
+}
+
+export async function countOpenTasks(db: Queryable, projectId: string): Promise<number> {
+  const { rows } = await db.query(`SELECT count(*)::int AS n FROM tasks WHERE project_id = $1 AND state <> 'DONE'`, [projectId]);
+  return Number(rows[0]?.n ?? 0);
+}
+
+// 중단한 프로젝트의 대기 질문은 만료로 닫는다 — 남겨 두면 3일 뒤 만료 정리가 끝난 프로젝트의 태스크를 ESCALATED로 올린다.
+// 이 변화는 PROJECT_ABORTED.payload.expiredQuestionIds로 같은 트랜잭션에 남는다.
+export async function expirePendingQuestions(db: Queryable, projectId: string): Promise<string[]> {
+  const { rows } = await db.query(
+    `UPDATE agent_questions SET status = 'expired' WHERE project_id = $1 AND status = 'pending' RETURNING id`,
+    [projectId],
+  );
+  return rows.map((r) => r.id as string);
 }

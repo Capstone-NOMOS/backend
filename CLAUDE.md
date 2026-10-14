@@ -143,7 +143,8 @@ await withTransaction(async (tx) => {
 
 `organizations.created_by → users.id`와 `users.org_id → organizations.id`가 서로를 참조한다. 해법은 두 UUID를 `randomUUID()`로 **애플리케이션에서 미리 생성**하고, `fk_org_created_by`를 `DEFERRABLE INITIALLY DEFERRED`로 선언해 커밋 시점에 검사되게 하는 것이다(`migrations/001_init.sql`).
 
-003 이후에는 사용자가 가입으로 먼저 생기고, 조직을 만들거나 초대를 수락할 때 `users.org_id`를 NULL→값으로 채운다(`assignUserToOrg`). `org_id`는 **한 번만** 바뀐다 — 단일 조직 규칙은 `UPDATE ... WHERE org_id IS NULL` 조건 하나로 지켜지므로 이걸 빼면 안 된다. 같은 순간에 `agents.org_id`도 채운다(`assignAgentsToOrg`, 불변식: `agents.org_id = users.org_id`).
+003 이후에는 사용자가 가입으로 먼저 생기고, 조직을 만들거나 초대를 수락할 때 `users.org_id`를 NULL→값으로 채운다(`assignUserToOrg`). 단일 조직 규칙은 `UPDATE ... WHERE org_id IS NULL` 조건 하나로 지켜지므로 이걸 빼면 안 된다. 같은 순간에 `agents.org_id`도 채운다(`assignAgentsToOrg`, 불변식: `agents.org_id = users.org_id`).
+값→NULL로 되돌리는 경로는 **조직에서 빠질 때 하나뿐이다**(`removeUserFromOrg`, 021 — 계정은 남고 다른 조직에 다시 들어갈 수 있다). 그때 에이전트의 `org_id`도 함께 비운다(008의 FK가 커밋 시점에 본다).
 
 ### GitHub 레포 만들기·협업자 초대 (`domain/github/rep-api.ts`)
 
@@ -539,7 +540,7 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
   두 곳에 배정되면 먼저 배정된 쪽은 조용히 못 쓰게 된다. "진행 중"의 정의는 `findAgentMembership`과 같아야 한다.
 - **프로젝트 시작(G1) = `POST /projects/:id/start`**(대표 전용, `startProject`). 이 순간부터 실행이 시작된다.
   - 시작 조건(위반은 전부 모아 422 `PROJECT_START_INVALID`): 태스크 1개 이상, 끝나지 않은 태스크가 요구하는 **역할마다 배정된 에이전트**.
-    시작 뒤에는 멤버를 바꿀 수 없으므로 역할 공백을 여기서 막는다. 적용(계획 → 태스크)과 시작은 따로다 — 적용은 여러 번, 시작은 한 번.
+    시작하는 순간 역할 공백이 없게 여기서 막는다(시작 뒤 교체는 아래 021 규칙). 적용(계획 → 태스크)과 시작은 따로다 — 적용은 여러 번, 시작은 한 번.
   - 시작하면 `planning → active`·`started_at`, 그 시점의 명세·적용된 계획에 `approved_at`(잠김), `PROJECT_STARTED`(멤버·태스크 수 — 지표의 기준점).
   - **시작 전에는 태스크를 가져갈 수 없다**(claim 409 `PROJECT_NOT_STARTED`). 정책 거부가 아니라 아직 때가 아닌 것이라 `TOOL_DENIED`로 남기지 않는다(M5′ 분모 아님).
   - 시작과 멤버 변경은 프로젝트 행 잠금으로 직렬화한다(시작 `FOR NO KEY UPDATE`, 배정·해제 `FOR SHARE`) — 시작과 동시에 들어온 배정이 고정을 빠져나가지 않게.
@@ -567,8 +568,23 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
   - 인증은 첫 메시지(사람 JWT, `resolveUserToken` — HTTP `authenticate`와 한 벌). Origin은 CORS 허용 목록 + 서버 자신만 받는다(Origin 없음 = 브라우저 아님 → 통과).
   - 에이전트 접속 상태(`presence.ts`)는 이벤트가 아니라서 `onPresenceChanged`로 따로 받는다. 바뀐 순간에만 알리고, 60초가 지나 offline이 되는 것은 10초마다 훑는다.
   - 웹소켓 경로는 `realtime/upgrade-router.ts`가 서버당 하나의 upgrade 리스너로 나눈다. 스트림마다 `server.on('upgrade')`를 걸면 서로의 소켓을 끊는다.
-- **G1(`projects.started_at`) 이후에는 멤버를 바꿀 수 없다**(403). 역할 교체는 해제 후 재배정이다 —
-  UPDATE 경로를 두면 한 역할에 둘이 잠깐 겹친다.
+- **멤버는 시작(G1) 뒤에도 바꿀 수 있다**(021, 대표 결정 — 사람이 빠지거나 교체해야 할 때). 단 그 에이전트가 진행 중 태스크(CLAIMED·IN_PROGRESS·VERIFYING)를
+  붙잡고 있으면 409 `ACTIVE_TASKS_HELD`(details에 태스크) — 빼 버리면 그 태스크는 아무도 끝내지 못한다. 끝난 프로젝트(completed·aborted)의 멤버는 기록이라 409 `PROJECT_NOT_OPEN`.
+  빠진 역할의 태스크는 새 사람을 배정할 때까지 READY로 기다린다. 역할 교체는 해제 후 재배정이다 — UPDATE 경로를 두면 한 역할에 둘이 잠깐 겹친다.
+  멤버를 빼는 경로는 **`removeMemberInTx` 한 벌**이다(직접 해제·에이전트 연결 해제·조직 탈퇴가 같은 규칙을 탄다, `MEMBER_UNASSIGNED.payload.cause`로 가른다).
+- **해제·삭제(021)는 행을 지우지 않는다** — events·태스크·노트가 가리키고(P5), 다시 연결할 수 있어야 한다.
+  - 에이전트 연결 해제(`DELETE /agents/:agentId`, 주인·대표): `agents.disconnected_at` + refresh token 폐기 + 진행 중 프로젝트에서 빠짐. 남은 access token은 `agent-auth`가
+    401 `AGENT_DISCONNECTED`로 거부하고, 태스크 스트림은 `dispatch/agent-revoked` 신호로 바로 끊는다. 같은 사용자·이름으로 다시 connect하면 `upsertAgent`가 되살린다.
+  - 조직에서 내보내기·탈퇴(`DELETE /orgs/:orgId/members/:userId`): 대표가 남을, 멤버는 자기를. 대표는 못 나간다(`REPRESENTATIVE_CANNOT_LEAVE`). 그 사람의 에이전트는 위와 같이 해제된다.
+    화면 스트림은 `ORG_MEMBER_REMOVED`를 보고 조직 연결을 다시 확인해 끊는다(4403 `NOT_IN_ORG`).
+  - 레포 연결 해제(`DELETE /repos/:repoId`, 대표): 진행 중 프로젝트가 쓰면 409 `REPO_IN_ACTIVE_PROJECT`(`findRepoUsage` 한 벌). `repos.disconnected_at` — 해제된 레포는
+    목록·프로젝트 생성·경로 API에서 없는 것으로 본다(`findConnectedRepoById`). 같은 레포를 다시 연결하면 행·경로 규칙·소유권이 되살아난다(`REPO_CONNECTED.payload.revived`).
+  - 초대 목록·취소(`GET`·`DELETE /orgs/:orgId/invites`, 대표): `invites.revoked_at`. 쓰인 초대는 취소 대상이 아니다(들어온 사람은 멤버 내보내기로 뺀다).
+  - **GitHub 접근 회수**(`revokeGithubAccess`): 사람이 빠지는 모든 경로(직접 해제·에이전트 연결 해제 → 그 프로젝트 레포, 조직 탈퇴 → 조직 GitHub 레포 전부)에서
+    배정 때 초대의 반대로 대표 토큰으로 회수한다 — 수락 안 한 초대는 취소, 아니면 협업자에서 뺀다. 해제를 먼저 커밋하고 그 뒤에 부른다(**회수 실패가 해제를 막지 않는다**,
+    결과는 응답 `githubRevocations`·이벤트 `GITHUB_COLLABORATORS_REMOVED`). 대표 본인은 회수하지 않고, 같은 사람의 다른 에이전트가 그 프로젝트에 남아 있으면 건너뛴다.
+  - **프로젝트 중단**(`POST /projects/:id/abort`, 대표): 지우지 않고 `aborted`. 에이전트·레포가 풀리고(진행 중 정의에서 빠진다), 대기 질문은 만료로 닫고(`PROJECT_ABORTED.payload.expiredQuestionIds`),
+    대기 승인 카드는 대기열에서 빠지며 결정할 수 없다(409). GitHub 권한은 회수하지 않는다(레포·코드는 팀의 것). 실행 중인 CLI는 `NOT_PROJECT_MEMBER`를 보고 다시 배정을 기다린다.
 - **멤버 배정 뒤 그 에이전트는 토큰을 재발급해야 한다.** 배정 전 토큰에는 `project_id`가 없다.
   배정 응답의 `notice`와 openapi 설명에 그 안내가 들어 있다.
 - 허용 레벨 어휘 위반은 zod(400)가 아니라 서비스가 **422**로 답한다 — 무엇이 허용되는지 함께 알려주기 위해서다.

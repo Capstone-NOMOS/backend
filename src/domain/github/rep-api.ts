@@ -16,6 +16,8 @@ export const INITIAL_COMMIT_MESSAGE = 'Chore: 레포 초기화';
 export type CreatedGithubRepo = { fullName: string; githubRepoId: number; defaultBranch: string };
 export type GithubRepoInfo = CreatedGithubRepo;
 export type InviteOutcome = 'invited' | 'already_collaborator';
+// 회수 결과(021): 협업자에서 뺐다 · 아직 수락 안 한 초대를 취소했다 · 원래 협업자가 아니었다.
+export type RevokeOutcome = 'removed' | 'invitation_cancelled' | 'not_collaborator';
 
 export type GithubRepApi = {
   listOrgs(token: string): Promise<string[]>;
@@ -26,6 +28,8 @@ export type GithubRepApi = {
   isCollaborator(token: string, fullName: string, githubLogin: string): Promise<boolean>;
   createOrgRepo(token: string, input: { org: string; name: string; description?: string }): Promise<CreatedGithubRepo>;
   inviteCollaborator(token: string, fullName: string, githubLogin: string): Promise<InviteOutcome>;
+  // 프로젝트·조직에서 빠진 사람의 접근을 회수한다(021) — 대기 중 초대가 있으면 그걸 취소하고, 아니면 협업자에서 뺀다.
+  revokeCollaborator(token: string, fullName: string, githubLogin: string): Promise<RevokeOutcome>;
 };
 
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
@@ -153,6 +157,23 @@ export function createGithubRepApi(options: { fetchImpl?: FetchLike; apiBase?: s
       if (res.status === 201) return 'invited';
       if (res.status === 204) return 'already_collaborator';
       throw await failure(res, `협업자 초대(${fullName} ← ${githubLogin})`);
+    },
+
+    async revokeCollaborator(token, fullName, githubLogin) {
+      // 초대를 수락하지 않았으면 아직 협업자가 아니다 — 초대를 취소해야 나중에 수락해도 들어오지 못한다.
+      const list = await call(token, 'GET', `/repos/${fullName}/invitations?per_page=100`);
+      if (!list.ok) throw await failure(list, `초대 목록(${fullName})`);
+      const invitations = await json<Array<{ id: number; invitee: { login: string } | null }>>(list);
+      const pending = invitations.find((i) => i.invitee?.login.toLowerCase() === githubLogin.toLowerCase());
+      if (pending) {
+        const cancelled = await call(token, 'DELETE', `/repos/${fullName}/invitations/${pending.id}`);
+        if (cancelled.status === 204) return 'invitation_cancelled';
+        throw await failure(cancelled, `초대 취소(${fullName} ← ${githubLogin})`);
+      }
+      const res = await call(token, 'DELETE', `/repos/${fullName}/collaborators/${encodeURIComponent(githubLogin)}`);
+      if (res.status === 204) return 'removed';
+      if (res.status === 404) return 'not_collaborator';
+      throw await failure(res, `협업자 회수(${fullName} ← ${githubLogin})`);
     },
   };
 }

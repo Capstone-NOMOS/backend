@@ -178,3 +178,13 @@ export async function listUsersByOrg(db: Queryable, orgId: string): Promise<User
   ]);
   return rows.map(toUser);
 }
+
+// 조직에서 빠진다(021) — 계정은 남고 조직만 비운다(대표 결정). 다른 조직의 초대를 받으면 assignUserToOrg가 다시 채운다.
+// 가입이 org_id IS NULL 조건으로 단일 조직을 지키는 것과 짝이다 — 비우는 경로는 여기 하나다.
+export async function removeUserFromOrg(db: Queryable, userId: string, orgId: string): Promise<boolean> {
+  const { rowCount } = await db.query(
+    `UPDATE users SET org_id = NULL, org_role = 'MEMBER' WHERE id = $1 AND org_id = $2`,
+    [userId, orgId],
+  );
+  return (rowCount ?? 0) > 0;
+}
