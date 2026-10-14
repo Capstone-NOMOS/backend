@@ -208,7 +208,7 @@ export class NomosClient {
     return (await this.request('POST', `/api/tasks/${taskId}/runs/end`, body)) as { submitted: boolean; taskState: string; blocked: boolean };
   }
 
-  async postActivity(taskId: string, items: { kind: string; target: string }[]): Promise<void> {
+  async postActivity(taskId: string, items: { kind: string; target: string; ok?: boolean; added?: number; removed?: number }[]): Promise<void> {
     await this.request('POST', `/api/tasks/${taskId}/activity`, { items });
   }
 

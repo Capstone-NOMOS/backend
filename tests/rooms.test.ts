@@ -98,7 +98,7 @@ async function world(options: { started?: boolean } = {}) {
   };
 }
 
-type Msg = { speaker: string; type: string; text: string; taskId: string | null };
+type Msg = { speaker: string; type: string; text: string; taskId: string | null; questionId: string | null; activity: { kind: string; target: string; ok: boolean | null; added: number | null; removed: number | null } | null };
 
 async function feed(token: string, projectId: string, role: string, query = ''): Promise<{ messages: Msg[]; nextBefore: string | null; status: number }> {
   await drainTasksChanged();
@@ -282,6 +282,38 @@ describe('Executor 보고 규칙', () => {
     await http('POST', `/tasks/${w.beTaskId}/runs/start`, w.beAgentToken);
     expect((await http('POST', `/tasks/${w.beTaskId}/activity`, w.beAgentToken, { items: [{ kind: 'think', target: 'x' }] })).status).toBe(400);
     expect((await http('POST', `/tasks/${w.beTaskId}/activity`, w.beAgentToken, { items: [{ kind: 'read', target: 'x'.repeat(301) }] })).status).toBe(400);
+    // 에이전트의 말(say)은 500자까지(020).
+    expect((await http('POST', `/tasks/${w.beTaskId}/activity`, w.beAgentToken, { items: [{ kind: 'say', target: 'x'.repeat(501) }] })).status).toBe(400);
+    expect((await http('POST', `/tasks/${w.beTaskId}/activity`, w.beAgentToken, { items: [{ kind: 'say', target: 'x'.repeat(500) }] })).status).toBe(201);
+    expect((await http('POST', `/tasks/${w.beTaskId}/activity`, w.beAgentToken, { items: [{ kind: 'edit', target: 'a.ts', added: -1 }] })).status).toBe(400);
+  });
+
+  it('Claude Code 화면처럼 — 에이전트의 말·도구 성공 여부·수정 줄 수가 activity로 함께 나온다(파일 내용은 없다)', async () => {
+    const w = await world();
+    await http('POST', `/tasks/${w.beTaskId}/claim`, w.beAgentToken);
+    await http('POST', `/tasks/${w.beTaskId}/runs/start`, w.beAgentToken);
+    expect(
+      (await http('POST', `/tasks/${w.beTaskId}/activity`, w.beAgentToken, {
+        items: [
+          { kind: 'say', target: '레포 구조를 먼저 살펴보겠습니다.' },
+          { kind: 'edit', target: 'src/api/join.ts', ok: true, added: 12, removed: 3 },
+          { kind: 'run', target: 'npm test', ok: false },
+          { kind: 'read', target: 'README.md' },
+        ],
+      })).status,
+    ).toBe(201);
+    const { messages } = await feed(w.rep.token, w.projectId, 'BACKEND');
+    const acts = [...messages].reverse().filter((m) => m.activity !== null);
+    expect(acts.map((m) => [m.type, m.text])).toEqual([
+      ['ACTIVITY_SAY', '레포 구조를 먼저 살펴보겠습니다.'],
+      ['ACTIVITY_EDIT', 'src/api/join.ts 수정 (+12 −3)'],
+      ['ACTIVITY_RUN', 'npm test 실행 — 실패'],
+      ['ACTIVITY_READ', 'README.md 읽는 중'],
+    ]);
+    expect(acts[1]!.activity).toEqual({ kind: 'edit', target: 'src/api/join.ts', ok: true, added: 12, removed: 3 });
+    expect(acts[3]!.activity).toEqual({ kind: 'read', target: 'README.md', ok: null, added: null, removed: null });
+    // 이벤트 줄에는 activity가 없다.
+    expect(messages.filter((m) => m.activity === null).every((m) => !m.type.startsWith('ACTIVITY_'))).toBe(true);
   });
 });
 
@@ -339,6 +371,13 @@ describe('질문 중계와 룸', () => {
     // 답할 역할(BACKEND)의 룸에도 질문이 보인다 — 거기서 답을 준비한다.
     const be = (await feed(w.be.token, w.projectId, 'BACKEND')).messages.map((m) => m.text);
     expect(be).toContain('FRONTEND 에이전트가 BACKEND에게 질문했습니다 (1개)');
+
+    // 질문 줄에는 questionId가 붙는다 — 화면이 같은 id의 질문으로 카드(선택지·답)를 그린다.
+    const lines = (await feed(w.rep.token, w.projectId, 'FRONTEND')).messages;
+    const questionLines = lines.filter((m) => m.type.startsWith('QUESTION_') || m.type === 'TASK_BLOCKED_ON_QUESTION');
+    expect(questionLines.length).toBeGreaterThanOrEqual(3);
+    expect(questionLines.every((m) => m.questionId === questionId)).toBe(true);
+    expect(lines.filter((m) => !questionLines.includes(m)).every((m) => m.questionId === null)).toBe(true);
   });
 
   it('답이 종료 보고보다 먼저 와도(이미 READY·다시 수령) 그 실행은 "제출함"도 "멈춤"도 아니다 — 판정은 실행 안의 이벤트로 (실험 C1)', async () => {

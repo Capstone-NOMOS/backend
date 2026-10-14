@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { ActivityReporter, activityFromStreamLine, RunObserver, toActivity, type ActivityItem } from '../src/executor/activity.js';
+import { ActivityReporter, ActivityTracker, RunObserver, toActivity, type ActivityItem } from '../src/executor/activity.js';
 
 // Claude stream-json → 룸 활동 한 줄. 보내는 것은 도구 종류와 대상(작업공간 기준 경로·명령 첫 줄)뿐이다.
 const cwd = path.resolve('/work/space');
@@ -40,24 +40,52 @@ describe('도구 → 활동', () => {
   });
 });
 
-describe('stream-json 줄 → 활동', () => {
-  it('assistant 메시지의 tool_use만 뽑고, 설명 문장(text)은 버린다', () => {
-    const line = assistant(
-      { type: 'text', text: '가입 라우트에 이메일 중복 검사를 추가하겠습니다' },
-      { type: 'tool_use', name: 'Read', input: { file_path: inWs('src/a.ts') } },
-      { type: 'tool_use', name: 'Bash', input: { command: 'npm test' } },
-    );
-    expect(activityFromStreamLine(line, cwd)).toEqual([
-      { kind: 'read', target: 'src/a.ts' },
-      { kind: 'run', target: 'npm test' },
+describe('stream-json 줄 → 활동(ActivityTracker)', () => {
+  const user = (...blocks: unknown[]) => JSON.stringify({ type: 'user', message: { content: blocks } });
+
+  it('에이전트의 말(text)은 바로, 도구 줄은 결과가 온 뒤 성공 여부를 붙여 낸다 — 결과 내용은 보내지 않는다', () => {
+    const t = new ActivityTracker(cwd);
+    expect(
+      t.observe(
+        assistant(
+          { type: 'text', text: `가입 라우트(${cwd.split(path.sep).join('/')}/src/a.ts)에 중복 검사를 추가하겠습니다` },
+          { type: 'tool_use', id: 'u1', name: 'Read', input: { file_path: inWs('src/a.ts') } },
+          { type: 'tool_use', id: 'u2', name: 'Bash', input: { command: 'npm test' } },
+        ),
+      ),
+    ).toEqual([{ kind: 'say', target: '가입 라우트(./src/a.ts)에 중복 검사를 추가하겠습니다' }]);
+    expect(t.observe(user({ type: 'tool_result', tool_use_id: 'u1', content: 'SECRET' }))).toEqual([{ kind: 'read', target: 'src/a.ts', ok: true }]);
+    expect(t.observe(user({ type: 'tool_result', tool_use_id: 'u2', is_error: true, content: 'FAIL SECRET' }))).toEqual([
+      { kind: 'run', target: 'npm test', ok: false },
     ]);
+    expect(JSON.stringify(t.finish())).not.toContain('SECRET');
   });
 
-  it('도구 결과(user)·시스템·깨진 줄은 무시한다', () => {
-    expect(activityFromStreamLine(JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', content: 'SECRET' }] } }), cwd)).toEqual([]);
-    expect(activityFromStreamLine(JSON.stringify({ type: 'system', subtype: 'init' }), cwd)).toEqual([]);
-    expect(activityFromStreamLine('{not json', cwd)).toEqual([]);
-    expect(activityFromStreamLine('', cwd)).toEqual([]);
+  it('수정·작성은 줄 수만 센다(내용은 보내지 않는다)', () => {
+    const t = new ActivityTracker(cwd);
+    t.observe(
+      assistant(
+        { type: 'tool_use', id: 'e', name: 'Edit', input: { file_path: inWs('src/a.ts'), old_string: 'a\nb\nc', new_string: 'a\nSECRET_B' } },
+        { type: 'tool_use', id: 'w', name: 'Write', input: { file_path: inWs('src/n.ts'), content: 'SECRET_X\ny\n' } },
+        { type: 'tool_use', id: 'm', name: 'MultiEdit', input: { file_path: inWs('src/m.ts'), edits: [{ old_string: 'p', new_string: 'p\nq' }, { old_string: 'r', new_string: '' }] } },
+      ),
+    );
+    const done = t.finish();
+    expect(done).toEqual([
+      { kind: 'edit', target: 'src/a.ts', added: 2, removed: 3 },
+      { kind: 'write', target: 'src/n.ts', added: 2 },
+      { kind: 'edit', target: 'src/m.ts', added: 2, removed: 2 },
+    ]);
+    expect(JSON.stringify(done)).not.toContain('SECRET');
+  });
+
+  it('긴 말은 500자로 자르고, 빈 말·시스템·깨진 줄·짝 없는 결과는 무시한다', () => {
+    const t = new ActivityTracker(cwd);
+    expect(t.observe(assistant({ type: 'text', text: 'x'.repeat(800) }))[0]!.target).toHaveLength(500);
+    expect(t.observe(assistant({ type: 'text', text: '   ' }))).toEqual([]);
+    expect(t.observe(JSON.stringify({ type: 'system', subtype: 'init' }))).toEqual([]);
+    expect(t.observe('{not json')).toEqual([]);
+    expect(t.observe(user({ type: 'tool_result', tool_use_id: 'nope' }))).toEqual([]);
   });
 });
 
@@ -87,6 +115,26 @@ describe('활동 묶어 보내기', () => {
     reporter.push(Array.from({ length: 70 }, (_, i) => ({ kind: 'read' as const, target: `f${i}` })));
     await reporter.close();
     expect(sent.map((b) => b.length)).toEqual([50, 20]);
+  });
+
+  it('옛 서버(020 전)가 400으로 거부하면 그 묶음부터 도구·대상만 보낸다 — 에이전트의 말은 빠진다', async () => {
+    const sent: unknown[][] = [];
+    const reporter = new ActivityReporter(
+      {
+        async postActivity(_taskId: string, items: { kind: string; target: string }[]) {
+          if (items.some((i) => i.kind === 'say' || Object.keys(i).length > 2)) throw Object.assign(new Error('bad'), { status: 400 });
+          sent.push(items);
+        },
+      },
+      'task-1',
+      () => {},
+      60_000,
+    );
+    reporter.push([{ kind: 'say', target: '살펴보겠습니다' }, { kind: 'run', target: 'npm test', ok: false }]);
+    await reporter.flush();
+    reporter.push([{ kind: 'edit', target: 'a.ts', ok: true, added: 1, removed: 0 }]);
+    await reporter.close();
+    expect(sent).toEqual([[{ kind: 'run', target: 'npm test' }], [{ kind: 'edit', target: 'a.ts' }]]);
   });
 });
 
