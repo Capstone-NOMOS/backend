@@ -57,6 +57,7 @@ Table invites {
   team_role  text        [note: '★ 003: FRONTEND | BACKEND. NULL이면 미지정']
   used_by    uuid        [note: 'NULL이면 미사용']
   used_at    timestamptz
+  revoked_at timestamptz [note: '★ 021: 대표가 취소. 취소한 링크로는 가입할 수 없다']
   created_at timestamptz [not null, default: `now()`]
 
   indexes {
@@ -86,6 +87,7 @@ Table agents {
   org_key        text        [not null, note: '★ 008: GENERATED. (user_id, org_key)로 users를 참조해 org 불변식을 DB가 강제']
   settings_hash  text        [note: '.claude/settings.json 해시 — 서버 기대값과 대조. policy_hash와 다른 질문에 답한다(아래)']
   last_seen_at   timestamptz
+  disconnected_at timestamptz [note: '★ 021: 연결 해제(주인·대표). 토큰 폐기·인증 거부. 같은 사용자·이름으로 다시 connect하면 NULL로 되살아난다']
   created_at     timestamptz [not null, default: `now()`]
 
   indexes {
@@ -126,12 +128,13 @@ Table repos {
   dev_base_url text [note: '★ dev 배포 주소. V1B·통합 테스트가 호출. NULL이면 V1B는 SKIPPED']
   clone_url    text [note: '012. 서버가 커밋 diff를 읽을 곳(V3). NULL이면 V3는 SKIPPED']
   default_branch text        [not null, default: 'main']
+  disconnected_at timestamptz [note: '★ 021: 조직에서 연결 해제(대표, 진행 중 프로젝트가 쓰지 않을 때만). 다시 연결하면 되살아난다']
   created_at     timestamptz [not null, default: `now()`]
 
   indexes {
     (org_id, full_name) [unique]
   }
-  Note: '삭제·연결해제 API 없음 — repo_paths가 태스크·검증에서 참조됨'
+  Note: '행은 지우지 않는다(021) — repo_paths·태스크·검증이 참조한다. 연결 해제는 disconnected_at'
 }
 
 Table repo_paths {

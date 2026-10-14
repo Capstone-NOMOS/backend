@@ -6,11 +6,11 @@ import { assignAgentsToOrg } from '../agent/repository.js';
 import { appendEvent } from '../events/append.js';
 import { assignUserToOrg, findOrganizationById, findUserById } from '../org/repository.js';
 import type { TeamRole } from '../roles.js';
-import { findInviteByToken, insertInvite, markInviteUsed } from './repository.js';
+import { findInviteByToken, insertInvite, listPendingInvites, markInviteUsed, revokePendingInvite } from './repository.js';
 
 const DEFAULT_EXPIRES_IN_DAYS = 7;
 
-export type CreateInviteResult = { token: string; url: string; expiresAt: string; teamRole: TeamRole | null };
+export type CreateInviteResult = { inviteId: string; token: string; url: string; expiresAt: string; teamRole: TeamRole | null };
 
 export async function createInvite(
   orgId: string,
@@ -34,6 +34,7 @@ export async function createInvite(
   });
 
   return {
+    inviteId,
     token,
     // 사람이 여는 링크이므로 프론트 주소다. 프론트의 /invites/:token 화면이 GET /api/invites/:token으로
     // 미리보기를 그리고, 로그인 후 POST .../accept를 부른다.
@@ -49,7 +50,7 @@ export type InvitePreview = {
   teamRole: TeamRole | null;
   // 없는 토큰이면 null(존재 여부를 숨긴다). 만료·사용된 초대도 원래 만료 시각을 준다.
   expiresAt: string | null;
-  reason?: 'expired' | 'used' | 'not_found';
+  reason?: 'expired' | 'used' | 'revoked' | 'not_found';
 };
 
 // 존재하지 않는 토큰도 404가 아니라 valid:false로 응답해 토큰 존재 여부를 숨긴다.
@@ -66,6 +67,9 @@ export async function previewInvite(token: string): Promise<InvitePreview> {
 
   if (invite.usedBy !== null) {
     return { orgName, valid: false, teamRole, expiresAt, reason: 'used' };
+  }
+  if (invite.revokedAt !== null) {
+    return { orgName, valid: false, teamRole, expiresAt, reason: 'revoked' };
   }
   if (new Date(invite.expiresAt).getTime() < Date.now()) {
     return { orgName, valid: false, teamRole, expiresAt, reason: 'expired' };
@@ -95,6 +99,9 @@ export async function acceptInvite(token: string, userId: string): Promise<Accep
 
     if (invite.usedBy !== null) {
       throw new AppError('INVITE_ALREADY_USED', 'invite has already been used');
+    }
+    if (invite.revokedAt !== null) {
+      throw new AppError('INVITE_REVOKED', 'invite was cancelled by the representative');
     }
     if (new Date(invite.expiresAt).getTime() < Date.now()) {
       throw new AppError('INVITE_EXPIRED', 'invite has expired');
@@ -128,5 +135,32 @@ export async function acceptInvite(token: string, userId: string): Promise<Accep
     });
 
     return { userId, orgId: invite.orgId };
+  });
+}
+
+export type PendingInviteView = { inviteId: string; url: string; teamRole: TeamRole | null; expiresAt: string; expired: boolean; createdAt: string };
+
+// 보낸 초대 중 아직 쓰이지도 취소되지도 않은 것(대표, 021). 링크를 다시 복사하거나 취소할 때 쓴다.
+export async function listInvites(orgId: string): Promise<PendingInviteView[]> {
+  const invites = await listPendingInvites(pool, orgId);
+  const now = Date.now();
+  return invites.map((i) => ({
+    inviteId: i.id,
+    url: `${env.FRONTEND_BASE_URL}/invites/${i.token}`,
+    teamRole: i.teamRole,
+    expiresAt: new Date(i.expiresAt).toISOString(),
+    expired: new Date(i.expiresAt).getTime() < now,
+    createdAt: new Date(i.createdAt).toISOString(),
+  }));
+}
+
+// 초대 취소(대표, 021). 쓰인 초대·이미 취소한 초대·다른 조직 초대는 404 — 가입을 되돌리는 건 멤버 내보내기다.
+export async function revokeInvite(orgId: string, actorUserId: string, inviteId: string): Promise<{ inviteId: string }> {
+  return withTransaction(async (tx) => {
+    if (!(await revokePendingInvite(tx, orgId, inviteId))) {
+      throw new AppError('INVITE_NOT_FOUND', `no pending invite ${inviteId}`);
+    }
+    await appendEvent(tx, { orgId, type: 'INVITE_REVOKED', onBehalfOf: actorUserId, payload: { inviteId } });
+    return { inviteId };
   });
 }

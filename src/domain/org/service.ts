@@ -1,7 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import { pool, withTransaction } from '../../config/db.js';
 import { AppError } from '../../errors.js';
-import { assignAgentsToOrg } from '../agent/repository.js';
+import {
+  assignAgentsToOrg,
+  detachUserAgentsFromOrg,
+  listConnectedAgentsOfUser,
+  markAgentDisconnected,
+  revokeAgentTokens,
+} from '../agent/repository.js';
+import { agentRevoked } from '../dispatch/agent-revoked.js';
+import { tasksChanged } from '../dispatch/tasks-changed.js';
+import type { GithubRevokeResult } from '../events/types.js';
+import { detachAgentFromActiveProject, revokeGithubAccess } from '../project/service.js';
 import { appendEvent } from '../events/append.js';
 import { logger } from '../../config/logger.js';
 import { githubRepApi, type GithubRepoInfo } from '../github/rep-api.js';
@@ -13,6 +23,7 @@ import {
   findUserById,
   insertOrganization,
   listUsersByOrg,
+  removeUserFromOrg,
 } from './repository.js';
 
 export type CreateOrgResult = {
@@ -139,4 +150,59 @@ export async function getMe(userId: string): Promise<MeView> {
     orgName: org?.name ?? null,
     orgRole: user.orgId === null ? null : user.orgRole,
   };
+}
+
+// 조직에서 멤버를 뺀다(021). 대표가 다른 멤버를 내보내거나, 멤버 본인이 나간다. 대표는 나갈 수 없다(조직에 대표가 없어진다).
+// - 계정은 남고 조직만 비운다(대표 결정) — 다른 조직의 초대를 받을 수 있다. 지난 기록(이벤트·노트·제출)은 그대로 남는다.
+// - 그 사람의 에이전트는 맡은 진행 중 프로젝트에서 빠지고 연결이 해제된다. 진행 중 태스크를 붙잡고 있으면 409 ACTIVE_TASKS_HELD.
+export async function removeOrgMember(
+  actor: { userId: string; orgId: string; orgRole: string },
+  orgId: string,
+  userId: string,
+): Promise<{ userId: string; agentIds: string[]; unassignedFrom: string[]; githubRevocations: GithubRevokeResult[] }> {
+  const self = actor.userId === userId;
+  if (!self && actor.orgRole !== 'REPRESENTATIVE') {
+    throw new AppError('NOT_REPRESENTATIVE', 'only the representative can remove other members');
+  }
+  const target = await findUserById(pool, userId);
+  if (!target || target.orgId !== orgId) throw new AppError('ORG_MEMBER_NOT_FOUND', `user ${userId} is not a member of this organization`);
+  if (target.orgRole === 'REPRESENTATIVE') {
+    throw new AppError('REPRESENTATIVE_CANNOT_LEAVE', 'the representative cannot leave or be removed from the organization');
+  }
+
+  const result = await withTransaction(async (tx) => {
+    const agents = await listConnectedAgentsOfUser(tx, userId);
+    const unassignedFrom: string[] = [];
+    for (const agent of agents) {
+      const projectId = await detachAgentFromActiveProject(tx, agent.id, actor.userId, 'org_member_removed');
+      if (projectId) unassignedFrom.push(projectId);
+      await markAgentDisconnected(tx, agent.id);
+      await revokeAgentTokens(tx, agent.id);
+    }
+    await detachUserAgentsFromOrg(tx, userId);
+    if (!(await removeUserFromOrg(tx, userId, orgId))) {
+      throw new AppError('ORG_MEMBER_NOT_FOUND', `user ${userId} is not a member of this organization`);
+    }
+    const agentIds = agents.map((a) => a.id as string);
+    await appendEvent(tx, {
+      orgId,
+      type: 'ORG_MEMBER_REMOVED',
+      onBehalfOf: actor.userId,
+      payload: { userId, self, agentIds, unassignedFrom },
+    });
+    return { userId, agentIds, unassignedFrom };
+  });
+  for (const projectId of result.unassignedFrom) tasksChanged(projectId);
+  for (const agentId of result.agentIds) agentRevoked(agentId);
+  // 조직의 GitHub 레포 전부에서 접근을 회수한다(커밋 뒤 — 실패해도 탈퇴는 그대로).
+  const githubRevocations = await revokeGithubAccess({
+    orgId,
+    onBehalfOf: actor.userId,
+    projectId: null,
+    agentId: null,
+    userId,
+    scope: { kind: 'org' },
+    trigger: 'org_member_removed',
+  });
+  return { ...result, githubRevocations };
 }

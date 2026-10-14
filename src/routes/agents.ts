@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { connectAgent, listOrgAgents, refreshAgentToken } from '../domain/agent/service.js';
+import { connectAgent, disconnectAgent, listOrgAgents, refreshAgentToken } from '../domain/agent/service.js';
 import {
   decideDeviceRequestByUser,
   getDeviceRequest,
@@ -58,6 +58,16 @@ agentsRouter.get(
     res.status(200).json({ data: { agents: await listOrgAgents(orgId) } });
   },
 );
+
+const agentIdParamsSchema = z.object({ agentId: z.string().uuid() });
+
+// DELETE /api/agents/:agentId — 에이전트 연결 해제(사람 토큰: 그 에이전트의 주인 또는 같은 조직의 대표, 021).
+// 맡은 진행 중 프로젝트에서 빠지고(진행 중 태스크가 있으면 409 ACTIVE_TASKS_HELD) 토큰이 폐기된다. 같은 노트북에서 다시 connect하면 되살아난다.
+agentsRouter.delete('/agents/:agentId', validate({ params: agentIdParamsSchema }), authenticate, async (req, res) => {
+  const { agentId } = req.params as z.infer<typeof agentIdParamsSchema>;
+  const user = req.user!;
+  res.status(200).json({ data: await disconnectAgent({ userId: user.id, orgId: user.orgId, orgRole: user.orgRole }, agentId) });
+});
 
 // ── 브라우저 승인(device flow, RFC 8628) ─────────────────────────────────
 // CLI: start → 코드 출력·브라우저 열기 → poll. 웹: 로그인된 사람이 확인하고 승인·거부. 연결 키 경로는 SSH 등 브라우저가 없는 환경용으로 남는다.

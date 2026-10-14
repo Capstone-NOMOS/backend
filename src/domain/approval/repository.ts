@@ -116,7 +116,7 @@ export async function listApprovals(
        LEFT JOIN tasks t ON t.id = a.subject_id
       WHERE ($1::uuid IS NULL OR p.org_id = $1)
         AND ($2::uuid IS NULL OR a.project_id = $2)
-        AND ($3 = 'all' OR ($3 = 'pending' AND a.decision IS NULL) OR ($3 = 'decided' AND a.decision IS NOT NULL))
+        AND ($3 = 'all' OR ($3 = 'pending' AND a.decision IS NULL AND p.status <> 'aborted') OR ($3 = 'decided' AND a.decision IS NOT NULL))
       ORDER BY a.requested_at DESC, a.id
       LIMIT $4`,
     [filter.orgId ?? null, filter.projectId ?? null, filter.status, filter.limit],

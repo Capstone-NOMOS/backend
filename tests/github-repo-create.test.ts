@@ -43,6 +43,10 @@ function fakeApi(overrides: Partial<GithubRepApi> = {}): GithubRepApi {
       calls.push({ method: 'inviteCollaborator', args });
       return 'invited';
     },
+    async revokeCollaborator(...args) {
+      calls.push({ method: 'revokeCollaborator', args });
+      return 'removed';
+    },
     async listRepos(...args) {
       calls.push({ method: 'listRepos', args });
       return [{ fullName: 'acme-gh/existing', githubRepoId: 4242, defaultBranch: 'develop' }];
@@ -332,6 +336,65 @@ describe('GitHub 호출 모양 (rep-api)', () => {
     await expect(invited.api.inviteCollaborator('tok', 'acme-gh/shop', 'octo')).resolves.toBe('invited');
     expect(invited.reqs[0]).toMatchObject({ method: 'PUT', url: 'https://gh.test/repos/acme-gh/shop/collaborators/octo', body: { permission: 'push' } });
     await expect(recorder([[204, null]]).api.inviteCollaborator('tok', 'acme-gh/shop', 'octo')).resolves.toBe('already_collaborator');
+  });
+
+  it('회수: 수락 안 한 초대가 있으면 초대를 취소하고, 없으면 협업자에서 뺀다(404는 원래 아님)', async () => {
+    const pending = recorder([[200, [{ id: 9, invitee: { login: 'Octo' } }]], [204, null]]);
+    await expect(pending.api.revokeCollaborator('tok', 'acme-gh/shop', 'octo')).resolves.toBe('invitation_cancelled');
+    expect(pending.reqs.map((r) => `${r.method} ${r.url}`)).toEqual([
+      'GET https://gh.test/repos/acme-gh/shop/invitations?per_page=100',
+      'DELETE https://gh.test/repos/acme-gh/shop/invitations/9',
+    ]);
+    const member = recorder([[200, []], [204, null]]);
+    await expect(member.api.revokeCollaborator('tok', 'acme-gh/shop', 'octo')).resolves.toBe('removed');
+    expect(member.reqs[1]).toMatchObject({ method: 'DELETE', url: 'https://gh.test/repos/acme-gh/shop/collaborators/octo' });
+    await expect(recorder([[200, []], [404, { message: 'Not Found' }]]).api.revokeCollaborator('tok', 'acme-gh/shop', 'octo')).resolves.toBe('not_collaborator');
+  });
+});
+
+describe('빠진 사람의 GitHub 접근 회수 (021)', () => {
+  async function setupAssigned() {
+    const w = await world();
+    await linkGithub(w.rep.userId, 1, 'octo-rep');
+    await linkGithub(w.be.userId, 2, 'octo-be');
+    const created = await http('POST', `/orgs/${w.orgId}/github/repos`, w.rep.token, { githubOrg: 'acme-gh', name: 'shop-api', ownerRole: 'BACKEND' });
+    const repoId = (created.body.data!.repo as { id: string }).id;
+    const project = await createProject(w.orgId, w.rep.userId, { name: 'p', autonomyPreset: 'L2', pmBudgetUsd: 1, repoIds: [repoId] });
+    await http('POST', `/projects/${project.project.id}/members`, w.rep.token, { agentId: w.beAgentId, teamRole: 'BACKEND' });
+    calls = [];
+    return { w, repoId, projectId: project.project.id };
+  }
+
+  it('프로젝트에서 빼면 그 프로젝트의 GitHub 레포에서 협업자를 회수하고 결과를 응답·이벤트로 남긴다', async () => {
+    const { w, repoId, projectId } = await setupAssigned();
+    const res = await http('DELETE', `/projects/${projectId}/members/${w.beAgentId}`, w.rep.token);
+    expect(res.status).toBe(200);
+    expect(res.body.data!.githubRevocations).toEqual([{ repoId, fullName: 'acme-gh/shop-api', status: 'removed' }]);
+    expect(calls).toEqual([{ method: 'revokeCollaborator', args: ['gho_octo-rep', 'acme-gh/shop-api', 'octo-be'] }]);
+    const { rows } = await testPool.query(`SELECT on_behalf_of, payload FROM events WHERE type = 'GITHUB_COLLABORATORS_REMOVED'`);
+    expect(rows[0].on_behalf_of).toBe(w.rep.userId);
+    expect(rows[0].payload).toMatchObject({ agentId: w.beAgentId, githubLogin: 'octo-be', trigger: 'unassign' });
+    expect(JSON.stringify(rows[0].payload)).not.toContain('gho_');
+  });
+
+  it('조직에서 내보내면 조직의 GitHub 레포 전부에서 회수한다 — GitHub가 실패해도 탈퇴는 그대로다', async () => {
+    const { w } = await setupAssigned();
+    setGithubRepApi(fakeApi({ async revokeCollaborator() { throw new Error('GitHub 500'); } }));
+    const res = await http('DELETE', `/orgs/${w.orgId}/members/${w.be.userId}`, w.rep.token);
+    expect(res.status).toBe(200);
+    expect(res.body.data!.githubRevocations).toEqual([expect.objectContaining({ fullName: 'acme-gh/shop-api', status: 'failed', reason: 'GitHub 500' })]);
+    expect((await http('GET', '/me', w.be.token)).body.data).toMatchObject({ orgId: null });
+  });
+
+  it('대표 본인의 에이전트를 빼도 대표의 접근은 회수하지 않는다', async () => {
+    const { w, projectId } = await setupAssigned();
+    await http('DELETE', `/projects/${projectId}/members/${w.beAgentId}`, w.rep.token);
+    const repAgent = await connectAgent({ connectKey: w.rep.connectKey, agentName: 'rep-laptop', harness: 'claude-code', skills: [], maxConcurrent: 1 });
+    await http('POST', `/projects/${projectId}/members`, w.rep.token, { agentId: repAgent.agentId, teamRole: 'BACKEND' });
+    calls = [];
+    const res = await http('DELETE', `/projects/${projectId}/members/${repAgent.agentId}`, w.rep.token);
+    expect(res.body.data!.githubRevocations).toEqual([]);
+    expect(calls.filter((c) => c.method === 'revokeCollaborator')).toEqual([]);
   });
 });
 

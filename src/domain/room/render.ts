@@ -75,6 +75,8 @@ function eventText(row: FeedRow): { speaker: RoomMessage['speaker']; text: strin
   switch (row.type) {
     case 'PROJECT_STARTED':
       return { speaker: 'pm', text: '프로젝트를 시작합니다' };
+    case 'PROJECT_ABORTED':
+      return { speaker: 'pm', text: `프로젝트가 중단되었습니다${str(p.reason) ? `: ${str(p.reason)}` : ''}` };
     case 'PLAN_APPLIED':
       return { speaker: 'pm', text: '계획을 적용했습니다' };
     case 'RELEASE_REQUESTED': {

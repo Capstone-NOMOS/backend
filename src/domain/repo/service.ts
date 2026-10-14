@@ -13,6 +13,7 @@ import { logger } from '../../config/logger.js';
 import { validateCloneUrl } from './clone-url.js';
 import { validatePattern } from './glob.js';
 import {
+  findConnectedRepoById,
   findOtherRepoByGithubId,
   findRepoById,
   findRepoPathById,
@@ -22,7 +23,9 @@ import {
   listRepoIdsWithOwnership,
   listRepoPaths,
   listReposByOrg,
+  markRepoDisconnected,
   maxPriorityInBand,
+  reviveDisconnectedRepo,
   updateRepoPathOwnership,
   updateRepoSettings as updateRepoSettingsRow,
   type Repo,
@@ -33,7 +36,8 @@ import type { OwnerRole, RepoPath } from './types.js';
 // repoId가 orgId 소속인지 확인한다. 존재하지 않으면 404, 다른 조직 소유면 403(CROSS_ORG_ACCESS).
 // 모든 라우트가 이 검사를 거치도록 강제해 다른 조직의 리소스 접근을 막는다.
 async function assertRepoInOrg(db: Queryable, orgId: string, repoId: string): Promise<Repo> {
-  const repo = await findRepoById(db, repoId);
+  // 연결 해제된 레포(021)는 없는 것으로 본다.
+  const repo = await findConnectedRepoById(db, repoId);
   if (!repo) {
     throw new AppError('REPO_NOT_FOUND', `repo ${repoId} not found`);
   }
@@ -114,14 +118,11 @@ async function connectOneRepo(
   actorUserId: string,
   r: ConnectRepoInput & { cloneUrl?: string; createdOnGithub?: { githubOrg: string; githubRepoId: number } },
 ): Promise<ConnectRepoResult> {
-  const repo = await insertRepo(tx, {
-    orgId: orgId,
-    fullName: r.fullName,
-    githubRepoId: r.githubRepoId,
-    defaultBranch: r.defaultBranch,
-    cloneUrl: r.cloneUrl,
-  });
-  const seeded = await insertSeedRepoPaths(tx, repo.id, SEED_PATH_RULES);
+  // 해제했던 같은 레포면 그 행을 되살린다(021) — 경로 규칙·소유권이 그대로 돌아온다. 아니면 새로 넣고 시드 규칙을 깐다.
+  const repoInput = { orgId, fullName: r.fullName, githubRepoId: r.githubRepoId, defaultBranch: r.defaultBranch, cloneUrl: r.cloneUrl };
+  const revived = await reviveDisconnectedRepo(tx, repoInput);
+  const repo = revived ?? (await insertRepo(tx, repoInput));
+  const seeded = revived ? [] : await insertSeedRepoPaths(tx, repo.id, SEED_PATH_RULES);
   await appendEvent(tx, {
     orgId: orgId,
     type: 'REPO_CONNECTED',
@@ -131,11 +132,13 @@ async function connectOneRepo(
       fullName: repo.fullName,
       seededPathCount: seeded.length,
       ...(r.createdOnGithub === undefined ? {} : { createdOnGithub: r.createdOnGithub }),
+      ...(revived ? { revived: true } : {}),
     },
   });
   let rootOwnerRole: OwnerRole | null = null;
   if (r.ownerRole !== undefined) {
-    const root = seeded.find((p) => p.pathPattern === '**');
+    const paths = revived ? await listRepoPaths(tx, repo.id) : seeded;
+    const root = paths.find((p) => p.pathPattern === '**' && p.source === 'seed');
     if (!root) throw new Error('seed rules must include "**"');
     const updated = await updateRepoPathOwnership(tx, root.id, { ownerRole: r.ownerRole });
     await appendEvent(tx, {
@@ -422,5 +425,26 @@ export async function listRepos(orgId: string): Promise<RepoListItem[]> {
       activeProjectId: used?.projectId ?? null,
       activeProjectName: used?.projectName ?? null,
     };
+  });
+}
+
+// 레포 연결 해제(대표, 021). 진행 중(planning·active·halted) 프로젝트가 쓰고 있으면 409 REPO_IN_ACTIVE_PROJECT —
+// 그 프로젝트의 판정·검증이 이 레포의 경로 규칙을 읽는다. 행과 경로 규칙은 지우지 않는다(끝난 프로젝트의 태스크·검증이 가리킨다).
+// GitHub의 레포는 건드리지 않는다. 같은 레포를 다시 연결하면 되살아난다.
+export async function disconnectRepo(orgId: string, actorUserId: string, repoId: string): Promise<{ repoId: string; fullName: string }> {
+  return withTransaction(async (tx) => {
+    const repo = await assertRepoInOrg(tx, orgId, repoId);
+    const usage = await findRepoUsage(tx, [repo.id]);
+    if (usage.length > 0) {
+      throw new AppError('REPO_IN_ACTIVE_PROJECT', `${repo.fullName} is used by an active project; finish or abort it first`, usage);
+    }
+    if (!(await markRepoDisconnected(tx, repo.id))) throw new AppError('REPO_NOT_FOUND', `repo ${repoId} not found`);
+    await appendEvent(tx, {
+      orgId,
+      type: 'REPO_DISCONNECTED',
+      onBehalfOf: actorUserId,
+      payload: { repoId: repo.id, fullName: repo.fullName },
+    });
+    return { repoId: repo.id, fullName: repo.fullName };
   });
 }

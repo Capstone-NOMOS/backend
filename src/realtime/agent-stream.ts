@@ -3,6 +3,7 @@ import type { Duplex } from 'node:stream';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 import { logger } from '../config/logger.js';
 import { markAgentSeen, streamClosed, streamOpened } from '../domain/agent/presence.js';
+import { onAgentRevoked } from '../domain/dispatch/agent-revoked.js';
 import { onQuestionsChanged } from '../domain/dispatch/questions-changed.js';
 import { onTasksChanged } from '../domain/dispatch/tasks-changed.js';
 import { listClaimableTasksForAgent, type AgentContext } from '../domain/task/service.js';
@@ -96,6 +97,15 @@ export function attachAgentStream(server: Server): AgentStream {
     await Promise.all([...set].map(pushSnapshot));
   });
 
+  // 연결 해제·조직 탈퇴(021) — 그 에이전트의 스트림을 바로 끊는다. 4401이면 클라이언트가 재발급을 시도하지만 토큰이 폐기돼 거기서 멈춘다.
+  const unsubscribeRevoked = onAgentRevoked((agentId) => {
+    for (const set of byProject.values()) {
+      for (const conn of set) {
+        if (conn.ctx.agentId === agentId) closeWith(conn.ws, 4401, 'AGENT_DISCONNECTED', 'this agent was disconnected; run connect again to reconnect');
+      }
+    }
+  });
+
   const unsubscribeQuestions = onQuestionsChanged((projectId, targetRole) => {
     for (const conn of byProject.get(projectId) ?? []) send(conn.ws, { type: 'questions', projectId, targetRole });
   });
@@ -179,6 +189,7 @@ export function attachAgentStream(server: Server): AgentStream {
       clearInterval(ping);
       unsubscribe();
       unsubscribeQuestions();
+      unsubscribeRevoked();
       unroute();
       for (const ws of wss.clients) ws.terminate();
       await new Promise<void>((resolve) => wss.close(() => resolve()));

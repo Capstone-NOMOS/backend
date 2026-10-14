@@ -112,7 +112,7 @@ describe('프로젝트 시작(G1)', () => {
     expect((await pool.query(`SELECT status, started_at FROM projects WHERE id = $1`, [w.projectId])).rows[0]).toEqual({ status: 'planning', started_at: null });
   });
 
-  it('시작하면 active·startedAt, 명세 승인 시각, PROJECT_STARTED가 남고 멤버가 고정된다', async () => {
+  it('시작하면 active·startedAt, 명세 승인 시각, PROJECT_STARTED가 남는다', async () => {
     const w = await world();
     const agent = await backendAgent(w);
     await backendTask(w);
@@ -134,9 +134,8 @@ describe('프로젝트 시작(G1)', () => {
       approvedPlanIds: [],
     });
 
-    // 다시 시작 409, 멤버 변경 403, 팀원은 시작할 수 없다.
+    // 다시 시작 409, 팀원은 시작할 수 없다. 시작 뒤 멤버 교체는 된다(021 — tests/removals.test.ts).
     expect((await call('POST', `/projects/${w.projectId}/start`, w.rep.token)).body.error!.code).toBe('PROJECT_ALREADY_STARTED');
-    expect((await call('DELETE', `/projects/${w.projectId}/members/${agent.agentId}`, w.rep.token)).status).toBe(403);
     expect((await call('POST', `/projects/${w.projectId}/start`, w.be.token)).status).toBe(403);
   });
 });

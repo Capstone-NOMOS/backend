@@ -5,6 +5,7 @@ import { pool } from '../config/db.js';
 import { logger } from '../config/logger.js';
 import { onPresenceChanged, sweepPresence } from '../domain/agent/presence.js';
 import { agentOrgId } from '../domain/agent/service.js';
+import { findUserById } from '../domain/org/repository.js';
 import { assertProjectVisibleToUser, type UserContext } from '../domain/project/visibility.js';
 import { AppError } from '../errors.js';
 import { resolveUserToken } from '../middleware/auth.js';
@@ -109,6 +110,15 @@ export function attachUserStream(server: Server, options: UserStreamOptions): Us
     }
   };
 
+  // 조직에서 빠진 사람(021)의 연결은 끊는다 — 남겨 두면 그 조직의 신호를 계속 받는다. 이벤트에는 누가 빠졌는지가 없어 연결마다 다시 읽는다.
+  const recheckOrg = async (orgId: string, conns: Connection[]) => {
+    for (const conn of conns) {
+      if (conn.ctx.orgRole === 'REPRESENTATIVE') continue;
+      const user = await findUserById(pool, conn.ctx.userId);
+      if (!user || user.orgId !== orgId) closeWith(conn.ws, 4403, 'NOT_IN_ORG', 'you are no longer a member of this organization');
+    }
+  };
+
   const onEvent = (event: CommittedEvent) => {
     if (!event.orgId) return;
     const conns = byOrg.get(event.orgId);
@@ -120,6 +130,9 @@ export function attachUserStream(server: Server, options: UserStreamOptions): Us
       // org 토픽은 그 이벤트의 프로젝트를 함께 알려 준다(대시보드가 어느 프로젝트의 카드인지 안다). 화면은 조직 단위로 다시 읽는다.
       if (orgTopics.length > 0) queue(conn, null, orgTopics, event.id);
       if (event.projectId && conn.projects.has(event.projectId)) queue(conn, event.projectId, project, event.id);
+    }
+    if (event.type === 'ORG_MEMBER_REMOVED') {
+      void recheckOrg(event.orgId, list).catch((err: unknown) => logger.warn('user stream org recheck failed', { error: String(err) }));
     }
     if (event.type === 'MEMBER_UNASSIGNED' && event.projectId) {
       void recheck(event.projectId, list).catch((err: unknown) => logger.warn('user stream recheck failed', { error: String(err) }));
