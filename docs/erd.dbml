@@ -295,6 +295,7 @@ Table plans {
   approved_at  timestamptz [note: 'G1 승인 = 잠김. 적용(applied_at)과 다르다 — G1이 생길 때까지 비워 둔다']
   created_at   timestamptz [not null, default: `now()`]
   status                text        [not null, default: 'pending', note: '★ 014: pending | ready | failed | applied | rejected']
+  kind                  text        [not null, default: 'tasks', note: '★ 022: feature(기능 명세 초안) | tasks(태스크 분할 초안). 이전 계획은 전부 tasks']
   instruction           text        [note: '★ 014: 대표의 지시']
   feedback              text        [note: '★ 014: 수정 요청이면 대표의 피드백']
   parent_plan_id        uuid        [note: '★ 014: 수정 요청이면 이전 초안']
@@ -338,7 +339,9 @@ Table specs {
   project_id    uuid        [not null]
   feature_key   text        [not null, note: 'F-01, F-03']
   title         text        [not null]
-  content       text        [not null, note: 'EARS 마크다운']
+  content       text        [not null, note: 'EARS 마크다운. 022 이후 PM 명세는 개발 용어 없는 기능 설명 + 수용 기준']
+  needs_api     boolean     [not null, default: false, note: '★ 022: 이 기능에 API가 필요한가 — 필요하면 계약 단계로 간다']
+  api_needs     text        [note: '★ 022: 어떤 데이터가 오가야 하는가(사람 말로). needs_api면 필수(specs_api_needs_chk)']
   version       integer     [not null, default: 1]
   superseded_by uuid
   approved_at   timestamptz [note: 'G1 또는 G2 승인']
@@ -368,22 +371,31 @@ Table spec_tests {
 }
 
 Table contracts {
-  id            uuid        [pk, default: `gen_random_uuid()`]
-  project_id    uuid        [not null]
-  spec_id       uuid        [not null]
-  version       integer     [not null, default: 1]
-  schema_yaml   text        [not null, note: 'OpenAPI 조각']
-  status        text        [not null, default: 'negotiating', note: 'negotiating | locked | superseded']
-  round         integer     [not null, default: 0, note: '3 초과 시 PM 중재']
-  proposed_by   uuid        [not null, note: 'BE가 초안']
-  locked_at     timestamptz
-  superseded_by uuid
-  created_at    timestamptz [not null, default: `now()`]
+  id               uuid        [pk, default: `gen_random_uuid()`]
+  project_id       uuid        [not null]
+  spec_id          uuid        [not null, note: 'API가 필요한 기능 명세(specs.needs_api). 명세당 하나(uq_contracts_spec)']
+  status           text        [not null, default: 'pending', note: '★ 023: pending(작성 대기) | draft(BE 개발자 확인 대기) | approved(확정·잠김) | failed']
+  attempt          integer     [not null, default: 1, note: '작성 회차 — 수정 요청마다 +1']
+  feedback         text        [note: '마지막 수정 요청(BE 개발자)']
+  schema_yaml      text        [note: 'OpenAPI 조각(paths·components). 서버가 형식을 검사한 뒤에만 들어간다. V1A가 이걸로 대조한다']
+  summary          text        [note: '사람이 읽는 요약']
+  open_questions   jsonb       [not null, default: `'[]'`, note: '작성한 에이전트가 정하지 못한 것']
+  drafted_by_agent uuid        [note: '초안을 쓴 BE 에이전트']
+  drafted_at       timestamptz
+  approved_by      uuid        [note: '확정한 사람(BE 담당, 없으면 대표)']
+  approved_at      timestamptz
+  error_reason     text        [note: 'failed면 필수']
+  created_at       timestamptz [not null, default: `now()`]
+  updated_at       timestamptz [not null, default: `now()`]
 
-  indexes {
-    (project_id, spec_id, version) [unique]
-  }
-  Note: 'v1→v1.1은 UPDATE가 아니라 새 행'
+  Note: '''
+  ★ 023 새 계획 흐름 2단계. BE 노트북의 에이전트가 BE 코드를 읽고 초안을 쓰고 BE 개발자가 확정한다. 고친 이력은 events(CONTRACT_*).
+  contracts_status_chk   status IN ('pending','draft','approved','failed')
+  contracts_draft_chk    status NOT IN ('draft','approved') OR (schema_yaml IS NOT NULL AND summary IS NOT NULL)
+  contracts_approved_chk (status = 'approved') = (approved_at IS NOT NULL AND approved_by IS NOT NULL)
+  contracts_failed_chk   (status = 'failed') = (error_reason IS NOT NULL)
+  tasks_contract_fk      tasks.contract_id → contracts.id (006에서 컬럼만 있던 것)
+  '''
 }
 
 Table contract_proposals {
@@ -806,10 +818,10 @@ Ref: plans.requested_by > users.id
 Ref: specs.project_id > projects.id [delete: cascade]
 Ref: specs.superseded_by > specs.id
 Ref: spec_tests.spec_id > specs.id [delete: cascade]
-Ref: contracts.project_id > projects.id [delete: cascade]
+Ref: contracts.project_id > projects.id
 Ref: contracts.spec_id > specs.id
-Ref: contracts.proposed_by > agents.id
-Ref: contracts.superseded_by > contracts.id
+Ref: contracts.drafted_by_agent > agents.id
+Ref: contracts.approved_by > users.id
 Ref: contract_proposals.contract_id > contracts.id [delete: cascade]
 Ref: contract_proposals.agent_id > agents.id
 
@@ -918,10 +930,6 @@ Ref: plans.requested_by > users.id
 Ref: specs.project_id > projects.id [delete: cascade]
 Ref: specs.superseded_by > specs.id
 Ref: spec_tests.spec_id > specs.id [delete: cascade]
-Ref: contracts.project_id > projects.id [delete: cascade]
-Ref: contracts.spec_id > specs.id
-Ref: contracts.proposed_by > agents.id
-Ref: contracts.superseded_by > contracts.id
 Ref: contract_proposals.contract_id > contracts.id [delete: cascade]
 Ref: contract_proposals.agent_id > agents.id
 

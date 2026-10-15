@@ -362,15 +362,20 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     await call('GET', `/projects/${projectId}/notes`, agent);
     await call('GET', `/projects/${projectId}/notes?since_seq=0`, rep);
 
-    // 내장 PM(가짜 모델) — 요청 → 초안 → 수정 요청 → 적용
-    const draft = (key: string, suffix: string) => ({
+    // 내장 PM(가짜 모델) — 새 계획 흐름: 기능 명세 → API 계약 → 태스크 나누기(요청 → 수정 요청 → 적용)
+    // 태스크 나누기는 명세를 만들지 않는다 — 확정한 기능 명세 F-30에 태스크를 붙인다.
+    const draft = (_key: string, suffix: string) => ({
       mode: 'SEQUENTIAL',
       rationale: '작다',
       estimate: { workingDays: 3, notes: '' },
-      specs: [{ featureKey: key, title: '출석', content: 'WHEN 출석하면 THEN 기록한다' }],
-      tasks: [{ ref: 'att', title: `T-20 출석 API${suffix}`, repo: 'acme/study-api', teamRole: 'BACKEND', kind: 'IMPLEMENT', spec: key, dependsOn: [] }],
+      tasks: [{ ref: 'att', title: `T-20 출석 API${suffix}`, repo: 'acme/study-api', teamRole: 'BACKEND', kind: 'IMPLEMENT', spec: 'F-30', dependsOn: [] }],
     });
-    const drafts = [draft('F-20', ''), draft('F-21', ' v2')];
+    const feature = {
+      summary: '출석을 남긴다',
+      assumptions: [],
+      features: [{ featureKey: 'F-30', title: '출석 체크', description: '출석 버튼을 누르면 오늘 출석이 남는다', acceptance: ['누르면 출석했다고 보인다'], needsApi: true, apiNeeds: '오늘 출석 기록' }],
+    };
+    const drafts: unknown[] = [feature, draft('F-20', ''), draft('F-21', ' v2')];
     setPmModel({
       kind: 'fake',
       async generate() {
@@ -380,6 +385,21 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     });
     try {
       await call('GET', `/projects/${projectId}/pm/status`, rep);
+      // 기능 명세(새 흐름 1단계, 022)
+      const featureReq = await call('POST', `/projects/${projectId}/pm/features`, rep, { instruction: '출석 체크' });
+      await drainPmJobs();
+      await call('POST', `/projects/${projectId}/pm/plans/${featureReq.data.id as string}/apply`, rep);
+      // API 계약(새 흐름 2단계, 023) — BE 에이전트 초안 → 수정 요청 → 실패 → 다시 → 확정
+      const contractId = ((await call('GET', `/projects/${projectId}/contracts`, rep)).data.contracts as { id: string }[])[0]!.id;
+      await call('GET', '/agents/me/contract-jobs', agent);
+      const yaml = ['paths:', '  /api/attendance:', '    post:', '      responses:', '        "201": { description: 출석 기록 }'].join('\n');
+      await call('POST', `/contracts/${contractId}/draft`, agent, { attempt: 1, openapiYaml: yaml, summary: '출석을 남긴다', openQuestions: [] });
+      await call('POST', `/contracts/${contractId}/revise`, be, { feedback: '응답에 출석 시각' });
+      await call('POST', `/contracts/${contractId}/failure`, agent, { attempt: 2, reason: '형식을 못 맞췄다' });
+      await call('POST', `/contracts/${contractId}/revise`, be, {});
+      await call('POST', `/contracts/${contractId}/draft`, agent, { attempt: 3, openapiYaml: yaml, summary: '출석을 남긴다(시각 포함)' });
+      await call('POST', `/contracts/${contractId}/approve`, be);
+      // 태스크 나누기(새 흐름 3단계) — 확정한 명세·계약 위에서
       const requested = await call('POST', `/projects/${projectId}/pm/plans`, rep, { instruction: '출석 기능' });
       await drainPmJobs();
       const planId = requested.data.id as string;

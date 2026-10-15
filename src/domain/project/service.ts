@@ -12,6 +12,7 @@ import { violatedConstraint } from '../pg-errors.js';
 import { recomputeProjectPolicyHash } from '../policy/policy-hash.js';
 import { findUserById } from '../org/repository.js';
 import { findAgentMembership } from '../policy/repository.js';
+import { listUnconfirmedContractsForOpenTasks } from '../contract/repository.js';
 import type { TeamRole } from '../roles.js';
 import {
   approveAppliedPlans,
@@ -432,6 +433,10 @@ export async function startProject(actor: Actor, projectId: string): Promise<Pro
     const problems: { where: string; message: string }[] = [];
     if (total === 0) {
       problems.push({ where: 'tasks', message: '태스크가 없다 — PM 계획을 적용하거나 태스크를 만든 뒤 시작한다' });
+    }
+    // API가 필요한 기능은 BE 담당이 계약을 확정한 뒤에 시작한다(023) — 계약 없이 시작하면 FE·BE가 서로 다른 API를 짐작해 만든다.
+    for (const key of await listUnconfirmedContractsForOpenTasks(tx, projectId)) {
+      problems.push({ where: `contracts.${key}`, message: `${key}의 API 계약이 확정되지 않았다 — BACKEND 담당이 계약을 확정한 뒤 시작한다` });
     }
     const assigned = new Set(members.map((m) => m.teamRole));
     for (const role of openRoles.filter((r) => !assigned.has(r))) {

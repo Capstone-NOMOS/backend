@@ -21,6 +21,8 @@ export type TaskSource = {
   // 지금 상담할 질문 목록(GET /agents/me/questions)을 읽어야 하는가. 부르면 "읽었다"로 친다.
   // 푸시는 신호가 왔을 때·느린 안전망 간격마다만, 폴링은 매번 true다.
   consultDue(role: string): boolean;
+  // 지금 계약 작업 목록(GET /agents/me/contract-jobs)을 읽어야 하는가 — consultDue와 같은 규칙(신호 { type: 'contracts' }).
+  contractDue(role: string): boolean;
   close(): void;
 };
 
@@ -34,6 +36,7 @@ export function pollingTaskSource(client: NomosClient): TaskSource {
     },
     waitForChange: (maxMs) => new Promise((resolve) => setTimeout(resolve, maxMs)),
     consultDue: () => true,
+    contractDue: () => true,
     close: () => {},
   };
 }

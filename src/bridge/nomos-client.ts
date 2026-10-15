@@ -8,6 +8,17 @@ export type Tokens = { accessToken: string; refreshToken: string };
 
 export type ConsultJob = { id: string; askerRole: string; questions: { question: string }[] };
 
+export type ContractJobPayload = {
+  id: string;
+  featureKey: string;
+  specTitle: string;
+  attempt: number;
+  feedback: string | null;
+  specContent: string;
+  apiNeeds: string | null;
+  previous: { schemaYaml: string; summary: string } | null;
+};
+
 export type QuestionState = {
   id: string;
   status: 'pending' | 'agent_answered' | 'answered' | 'expired' | 'self_owned';
@@ -153,6 +164,23 @@ export class NomosClient {
 
   async submitDraft(questionId: string, draft: { answers: Record<string, string>; decided: Record<string, boolean>; basis: Record<string, string[]> }): Promise<QuestionState> {
     return (await this.request('POST', `/api/questions/${questionId}/draft`, draft)) as QuestionState;
+  }
+
+  // 계약 작성(Executor, 023): BACKEND 에이전트가 쓸 계약 작업·확정한 계약·읽을 레포, 그리고 초안 제출·실패 보고.
+  async listContractJobs(): Promise<{
+    contracts: ContractJobPayload[];
+    approved: { featureKey: string; title: string; schemaYaml: string }[];
+    repos: { id: string; fullName: string; cloneUrl: string | null; defaultBranch: string }[];
+  }> {
+    return (await this.request('GET', '/api/agents/me/contract-jobs')) as Awaited<ReturnType<NomosClient['listContractJobs']>>;
+  }
+
+  async submitContractDraft(contractId: string, draft: { attempt: number; openapiYaml: string; summary: string; openQuestions: string[] }): Promise<{ status: string }> {
+    return (await this.request('POST', `/api/contracts/${contractId}/draft`, draft)) as { status: string };
+  }
+
+  async failContractDraft(contractId: string, input: { attempt: number; reason: string }): Promise<{ status: string }> {
+    return (await this.request('POST', `/api/contracts/${contractId}/failure`, input)) as { status: string };
   }
 
   // Executor 폴링용. 에이전트 토큰이면 서버가 자기 역할로 강제 필터한다.

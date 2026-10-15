@@ -29,6 +29,9 @@ export const specInputSchema = z
     title: z.string().trim().min(1).max(200),
     content: z.string().trim().min(1).max(20_000),
     tests: z.array(specTestInputSchema).max(AUTHORING_LIMITS.testsPerSpec).default([]),
+    // 이 기능에 API가 필요한가, 필요하면 어떤 데이터가 오가야 하는가(사람 말로, 022). 필요한 기능만 계약 단계로 간다.
+    needsApi: z.boolean().default(false),
+    apiNeeds: z.string().trim().min(1).max(2000).nullable().default(null),
   })
   .strict();
 

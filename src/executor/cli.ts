@@ -43,6 +43,7 @@ import { pollingTaskSource, type TaskSource, type TaskSummary } from './task-sou
 import { runLint, runSpecTests, type SpecTest, type StageReport } from './verify.js';
 import { ensureRepo } from './repo-checkout.js';
 import { runConsult } from './consult.js';
+import { runContractDraft } from './contract.js';
 import { cleanWorkspaces, headSha, prepareWorkspace } from './workspace.js';
 
 // 푸시가 오지 않아도 이 간격으로 한 번씩 다시 본다(끊겼을 때는 이 간격으로 폴링한다).
@@ -69,6 +70,8 @@ type Briefing = {
   task: { id: string; title: string; teamRole: string | null; branchName: string | null };
   repo: { fullName: string; defaultBranch: string; cloneUrl?: string | null };
   spec: { featureKey: string; title: string; content: string } | null;
+  // 확정한 API 계약(서버 023). 옛 서버면 없다.
+  contract?: { featureKey: string; summary: string; schemaYaml: string } | null;
   notes: { id: string }[];
   lastRejection: { reason: string; commitSha: string | null } | null;
   answeredQuestions?: { question: string; answer: string; source: string }[];
@@ -109,6 +112,53 @@ async function consultPending(client: NomosClient, role: string): Promise<void> 
       log(`  상담 실패 — 담당자가 직접 답한다: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       consulting.delete(job.id);
+    }
+  })();
+}
+
+// 계약 작성(023) — BACKEND 노트북만. 기능 명세에 API가 필요하면 BE 레포를 읽기만 해서 계약 초안을 올린다(본인 구독).
+// 한 번에 하나씩. 형식 위반(422)이면 위반 목록을 붙여 한 번만 다시 쓰고, 그래도 안 되거나 실행이 실패하면 실패로 보고한다 —
+// 다시 시킬지는 BE 개발자가 정한다(수정 요청). 같은 회차를 자동으로 다시 돌리지 않는다.
+let drafting = false;
+const contractGaveUp = new Set<string>();
+
+async function contractPending(client: NomosClient): Promise<void> {
+  if (drafting) return;
+  const { contracts, approved, repos } = await client.listContractJobs();
+  const job = contracts.find((c) => !contractGaveUp.has(`${c.id}:${c.attempt}`));
+  if (!job) return;
+  drafting = true;
+  void (async () => {
+    const key = `${job.id}:${job.attempt}`;
+    try {
+      const active = [...activeWorkspaces.values()].find((w) => repos.some((r) => r.fullName === w.repo));
+      const repo = active ? repos.find((r) => r.fullName === active.repo)! : repos[0];
+      if (!repo) throw new Error('BACKEND가 소유한 레포가 프로젝트에 없다');
+      const dir = active ? active.dir : ensureRepo({ fullName: repo.fullName, cloneUrl: repo.cloneUrl }, { log }).path;
+      log(`계약 작성: ${job.featureKey} ${job.specTitle} (${job.attempt}회차) — ${repo.fullName}`);
+      let draft = await runContractDraft({ dir, repoName: repo.fullName, job, approved });
+      try {
+        await client.submitContractDraft(job.id, { attempt: job.attempt, ...draft });
+      } catch (err) {
+        if (!(err instanceof NomosApiError && err.code === 'CONTRACT_INVALID')) throw err;
+        const problems = Array.isArray(err.details) ? err.details.map(String) : [err.message];
+        log(`  형식 위반 ${problems.length}개 — 한 번 고쳐 쓴다`);
+        draft = await runContractDraft({ dir, repoName: repo.fullName, job, approved, problems });
+        await client.submitContractDraft(job.id, { attempt: job.attempt, ...draft });
+      }
+      log('  초안 올림 — BE 담당이 웹에서 확정하거나 수정을 요청한다');
+    } catch (err) {
+      contractGaveUp.add(key);
+      // 그 사이 수정 요청이 와서 회차가 바뀌었다 — 새 회차는 다음 확인에서 다시 쓴다.
+      if (err instanceof NomosApiError && err.code === 'CONTRACT_STALE') {
+        log('  그 사이 계약이 바뀌었다 — 이 회차는 버린다');
+        return;
+      }
+      const reason = err instanceof Error ? err.message : String(err);
+      log(`  계약 작성 실패 — BE 담당이 다시 요청할 수 있다: ${reason}`);
+      await client.failContractDraft(job.id, { attempt: job.attempt, reason: reason.slice(0, 1000) }).catch(() => {});
+    } finally {
+      drafting = false;
     }
   })();
 }
@@ -321,6 +371,13 @@ async function start(): Promise<'disconnected' | 'unassigned'> {
       if (self.teamRole && source.consultDue(self.teamRole)) await consultPending(client, self.teamRole);
     } catch (err) {
       log(`상담할 질문 목록 실패: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    // API 계약 작성(023) — BACKEND만. 기능 명세가 확정되면 서버가 { type: 'contracts' }로 깨운다.
+    try {
+      if (self.teamRole === 'BACKEND' && source.contractDue(self.teamRole)) await contractPending(client);
+    } catch (err) {
+      // 옛 서버(023 전)에는 이 API가 없다 — 조용히 넘어간다.
+      if (!(err instanceof NomosApiError && err.status === 404)) log(`계약 작업 목록 실패: ${err instanceof Error ? err.message : String(err)}`);
     }
     await Promise.race([source.waitForChange(POLL_INTERVAL_MS), new Promise<void>((resolve) => (finished = resolve))]);
   }

@@ -63,6 +63,8 @@ export type SpecView = {
   featureKey: string;
   title: string;
   content: string;
+  needsApi: boolean;
+  apiNeeds: string | null;
   version: number;
   createdAt: string;
   tests: SpecTestView[];
@@ -75,12 +77,13 @@ function toSpecTest(row: QueryResultRow): SpecTestView {
 export async function insertSpec(
   db: Queryable,
   projectId: string,
-  spec: { featureKey: string; title: string; content: string },
+  spec: { featureKey: string; title: string; content: string; needsApi: boolean; apiNeeds: string | null },
 ): Promise<Omit<SpecView, 'tests'>> {
   const { rows } = await db.query(
-    `INSERT INTO specs (project_id, feature_key, title, content) VALUES ($1, $2, $3, $4)
-     RETURNING id, feature_key, title, content, version, created_at`,
-    [projectId, spec.featureKey, spec.title, spec.content],
+    `INSERT INTO specs (project_id, feature_key, title, content, needs_api, api_needs) VALUES ($1, $2, $3, $4, $5, $6)
+     RETURNING id, feature_key, title, content, needs_api, api_needs, version, created_at`,
+    // 스키마를 거치지 않고 부르는 곳(서비스 함수 직접 호출)도 있어 기본값을 여기서 한 번 더 채운다 — API 불필요.
+    [projectId, spec.featureKey, spec.title, spec.content, spec.needsApi ?? false, spec.apiNeeds ?? null],
   );
   const row = rows[0]!;
   return {
@@ -88,6 +91,8 @@ export async function insertSpec(
     featureKey: row.feature_key,
     title: row.title,
     content: row.content,
+    needsApi: row.needs_api,
+    apiNeeds: row.api_needs ?? null,
     version: row.version,
     createdAt: row.created_at,
   };
@@ -115,8 +120,10 @@ export async function insertTask(
   task: { repoId: string; specId: string | null; title: string; kind: TaskKind; teamRole: TeamRole | null; planId: string | null },
 ): Promise<string> {
   const { rows } = await db.query(
-    `INSERT INTO tasks (project_id, repo_id, spec_id, title, kind, team_role, state, plan_id)
-     VALUES ($1, $2, $3, $4, $5, $6, 'READY', $7) RETURNING id`,
+    // 명세에 확정한 API 계약이 있으면 그 계약을 태스크에 붙인다(023) — 무엇을 보고 만든 태스크인지의 기록. 확정한 계약은 바뀌지 않는다.
+    `INSERT INTO tasks (project_id, repo_id, spec_id, title, kind, team_role, state, plan_id, contract_id)
+     VALUES ($1, $2, $3, $4, $5, $6, 'READY', $7,
+             (SELECT c.id FROM contracts c WHERE c.spec_id = $3 AND c.status = 'approved')) RETURNING id`,
     [projectId, task.repoId, task.specId, task.title, task.kind, task.teamRole, task.planId],
   );
   return rows[0]!.id as string;
@@ -133,7 +140,7 @@ export async function listSpecs(
   options: { lockedTestsOnly: boolean },
 ): Promise<SpecView[]> {
   const specs = await db.query(
-    `SELECT id, feature_key, title, content, version, created_at FROM specs
+    `SELECT id, feature_key, title, content, needs_api, api_needs, version, created_at FROM specs
       WHERE project_id = $1 AND superseded_by IS NULL
       ORDER BY feature_key, version`,
     [projectId],
@@ -150,6 +157,8 @@ export async function listSpecs(
     featureKey: r.feature_key,
     title: r.title,
     content: r.content,
+    needsApi: r.needs_api,
+    apiNeeds: r.api_needs ?? null,
     version: r.version,
     createdAt: r.created_at,
     tests: tests.rows.filter((t) => t.spec_id === r.id).map(toSpecTest),

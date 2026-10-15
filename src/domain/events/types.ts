@@ -1,5 +1,10 @@
 export type EventType =
   | 'AGENT_DISCONNECTED'
+  | 'CONTRACT_REQUESTED'
+  | 'CONTRACT_DRAFTED'
+  | 'CONTRACT_REVISION_REQUESTED'
+  | 'CONTRACT_APPROVED'
+  | 'CONTRACT_FAILED'
   | 'GITHUB_COLLABORATORS_REMOVED'
   | 'PROJECT_ABORTED'
   | 'ORG_MEMBER_REMOVED'
@@ -346,6 +351,13 @@ export type GithubCollaboratorsRemovedPayload = {
   results: GithubRevokeResult[];
 };
 
+// API 계약(023, 새 계획 흐름 2단계). 기능 명세를 확정하면 API가 필요한 기능마다 작성 대기 → BE 노트북이 초안 → BE 개발자가 확정·수정 요청.
+export type ContractRequestedPayload = { contractIds: string[]; specIds: string[] };
+export type ContractDraftedPayload = { contractId: string; featureKey: string; attempt: number; operations: string[]; openQuestionCount: number };
+export type ContractRevisionRequestedPayload = { contractId: string; featureKey: string; attempt: number; feedback: string | null };
+export type ContractApprovedPayload = { contractId: string; featureKey: string; attempt: number; byRepresentative: boolean };
+export type ContractFailedPayload = { contractId: string; featureKey: string; attempt: number; reason: string };
+
 // 프로젝트 중단(021). 지우지 않고 aborted로 닫는다 — 이벤트·태스크·노트가 가리킨다.
 export type ProjectAbortedPayload = { previousStatus: string; reason: string | null; openTaskCount: number; expiredQuestionIds: string[] };
 
@@ -498,7 +510,7 @@ export type TaskCreatedPayload = {
 
 // ── 내장 PM(domain/pm) ──
 // 요청·적용은 대표 명의, 초안 생성·호출은 system:pm 명의다(P3).
-export type PmPlanRequestedPayload = { planId: string; parentPlanId: string | null; kind: 'draft' | 'revise' };
+export type PmPlanRequestedPayload = { planId: string; parentPlanId: string | null; kind: 'draft' | 'revise'; planKind?: 'feature' | 'tasks' };
 
 // PM의 모델 호출 한 번. 비용은 events.token_cost(USD)에 싣는다 — 프로젝트 PM 예산은 이 합계로 검사한다.
 // interrupted면 실제 사용량을 모른다(재시작·시간 제한) — 호출 전에 잡아 둔 최대치로 정산한 것이다.
@@ -515,7 +527,7 @@ export type PmCallPayload = {
   attempts: { model: string; inputTokens: number; outputTokens: number; cacheWriteTokens: number; cacheReadTokens: number }[];
 };
 
-export type PmPlanDraftedPayload = { planId: string; dagHash: string; specCount: number; taskCount: number; repaired: boolean };
+export type PmPlanDraftedPayload = { planId: string; planKind?: 'feature' | 'tasks'; dagHash: string; specCount: number; taskCount: number; repaired: boolean };
 export type PmPlanFailedPayload = { planId: string; reason: string };
 // 대표가 초안을 버렸다. 사유는 선택이다. 지표: PM 초안이 얼마나 반려되나(수정 요청과 구분된다).
 export type PlanRejectedPayload = {
@@ -524,7 +536,8 @@ export type PlanRejectedPayload = {
   reason: string | null;
 };
 
-export type PlanAppliedPayload = { planId: string; specIds: string[]; taskIds: string[] };
+// planKind(022): feature = 기능 명세 확정, tasks = 태스크 적용. 이전 이벤트에는 없다(tasks).
+export type PlanAppliedPayload = { planId: string; planKind?: 'feature' | 'tasks'; specIds: string[]; taskIds: string[] };
 
 // CLI 브라우저 승인. 요청 시점에는 승인할 사람이 아직 없다 — on_behalf_of는 system:device-flow.
 // 결정(승인·거부)은 결정한 사람 명의다. 토큰 발급은 AGENT_CONNECTED(method: 'device')로 남는다.
@@ -566,6 +579,11 @@ export type EventPayloadMap = {
   INVITE_REVOKED: InviteRevokedPayload;
   GITHUB_COLLABORATORS_REMOVED: GithubCollaboratorsRemovedPayload;
   PROJECT_ABORTED: ProjectAbortedPayload;
+  CONTRACT_REQUESTED: ContractRequestedPayload;
+  CONTRACT_DRAFTED: ContractDraftedPayload;
+  CONTRACT_REVISION_REQUESTED: ContractRevisionRequestedPayload;
+  CONTRACT_APPROVED: ContractApprovedPayload;
+  CONTRACT_FAILED: ContractFailedPayload;
   GITHUB_COLLABORATORS_INVITED: GithubCollaboratorsInvitedPayload;
   TASK_DISPATCHED: TaskDispatchedPayload;
   AGENT_RUN_STARTED: AgentRunStartedPayload;

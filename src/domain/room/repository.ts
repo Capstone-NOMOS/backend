@@ -125,7 +125,19 @@ export const TASK_FEED_EVENTS = [
   'APPROVAL_RESULT',
   'NOTE_PUBLISHED',
 ] as const;
-export const PROJECT_FEED_EVENTS = ['PROJECT_STARTED', 'PLAN_APPLIED', 'RELEASE_REQUESTED', 'RELEASE_DECIDED', 'PROJECT_ABORTED'] as const;
+export const PROJECT_FEED_EVENTS = [
+  'PROJECT_STARTED',
+  'PLAN_APPLIED',
+  'RELEASE_REQUESTED',
+  'RELEASE_DECIDED',
+  'PROJECT_ABORTED',
+  // API 계약(023) — 계획 단계에서 모든 룸에 보인다(FE도 어떤 계약이 정해지는지 본다).
+  'CONTRACT_REQUESTED',
+  'CONTRACT_DRAFTED',
+  'CONTRACT_REVISION_REQUESTED',
+  'CONTRACT_APPROVED',
+  'CONTRACT_FAILED',
+] as const;
 
 export type FeedRow = {
   source: 'e' | 'a';
