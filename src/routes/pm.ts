@@ -24,15 +24,18 @@ export const pmRouter = Router();
 const projectParams = z.object({ projectId: z.string().uuid() });
 const planParams = projectParams.extend({ planId: z.string().uuid() });
 
-// POST /api/projects/:projectId/pm/plans — 대표의 지시로 계획 초안을 요청한다.
+// POST /api/projects/:projectId/pm/plans — 태스크 나누기(새 계획 흐름 3단계). 확정한 기능 명세·API 계약을 PM이 태스크로 나눈다.
+// 지시는 선택이다(대표가 버튼만 눌러도 된다).
+const splitBody = z.object({ instruction: z.string().trim().max(8000).optional() }).strict().optional();
 pmRouter.post(
   '/projects/:projectId/pm/plans',
-  validate({ params: projectParams, body: z.object({ instruction: z.string().trim().min(1).max(8000) }).strict() }),
+  validate({ params: projectParams, body: splitBody }),
   authenticate,
   requireRepresentative,
   async (req, res) => {
     const { projectId } = req.params as z.infer<typeof projectParams>;
-    res.status(202).json({ data: await requestPlan(req.user!.id, projectId, req.body.instruction as string) });
+    const instruction = (req.body as z.infer<typeof splitBody>)?.instruction;
+    res.status(202).json({ data: await requestPlan(req.user!.id, projectId, instruction ?? '') });
   },
 );
 

@@ -6,6 +6,8 @@ export type PromptBriefing = {
   task: { id: string; title: string; teamRole: string | null };
   repo: { fullName: string };
   spec: { featureKey: string; title: string; content: string } | null;
+  // 확정한 API 계약(서버 023). 옛 서버면 필드가 없다.
+  contract?: { featureKey: string; summary: string; schemaYaml: string } | null;
   notesBlock: string;
   lastRejection?: { reason: string; commitSha: string | null } | null;
   answeredQuestions?: { question: string; answer: string; source: string }[];
@@ -37,6 +39,19 @@ export function buildTaskPrompt(briefing: PromptBriefing, branch: string, enviro
 
   if (spec) {
     sections.push(`# 명세 ${spec.featureKey} — ${spec.title}\n${spec.content}`);
+  }
+  // 확정한 API 계약 — BE 담당이 확정했고 FE·BE가 같은 것을 받는다. 다르게 만들면 서로 붙지 않는다.
+  if (briefing.contract) {
+    sections.push(
+      [
+        `# 확정한 API 계약 (${briefing.contract.featureKey}) — 백엔드 담당이 확정했다. 경로·메서드·필드·상태 코드를 이대로 구현하거나 이대로 호출한다`,
+        briefing.contract.summary,
+        '```yaml',
+        briefing.contract.schemaYaml.trimEnd(),
+        '```',
+        '계약을 바꿔야 할 이유가 생기면 계약과 다르게 구현하지 말고, 그 사실을 GOTCHA 노트로 남긴다.',
+      ].join('\n'),
+    );
   }
 
   // 직전 제출이 반려됐다 — 같은 태스크 브랜치에 이전 작업이 남아 있으니 이어서 고친다.

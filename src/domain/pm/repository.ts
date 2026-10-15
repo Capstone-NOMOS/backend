@@ -227,6 +227,20 @@ export async function findProjectForPm(db: Queryable, projectId: string): Promis
     : null;
 }
 
+// 태스크 나누기 전제(023): 확정한 기능 명세가 있고, API가 필요한 명세의 계약이 전부 확정됐는가.
+export async function findTaskSplitBlockers(db: Queryable, projectId: string): Promise<{ specCount: number; unapprovedContracts: string[] }> {
+  const { rows } = await db.query(
+    `SELECT s.feature_key, s.needs_api, c.status AS contract_status
+       FROM specs s LEFT JOIN contracts c ON c.spec_id = s.id
+      WHERE s.project_id = $1 AND s.superseded_by IS NULL ORDER BY s.feature_key`,
+    [projectId],
+  );
+  return {
+    specCount: rows.length,
+    unapprovedContracts: rows.filter((r) => r.needs_api && r.contract_status !== 'approved').map((r) => r.feature_key as string),
+  };
+}
+
 export async function loadPlanContext(db: Queryable, project: ProjectForPm): Promise<PlanContext> {
   const repos = await db.query(
     `SELECT r.full_name, coalesce(array_agg(DISTINCT p.owner_role) FILTER (WHERE p.owner_role IS NOT NULL), '{}') AS roles
@@ -242,8 +256,12 @@ export async function loadPlanContext(db: Queryable, project: ProjectForPm): Pro
     `SELECT m.team_role, a.name FROM project_members m JOIN agents a ON a.id = m.agent_id WHERE m.project_id = $1 ORDER BY m.team_role`,
     [project.id],
   );
+  // 확정한 기능 명세와 그 API 계약(023) — 태스크 분할은 이것만 보고 태스크를 붙인다.
   const specs = await db.query(
-    `SELECT feature_key, title FROM specs WHERE project_id = $1 AND superseded_by IS NULL ORDER BY feature_key`,
+    `SELECT s.feature_key, s.title, s.content, s.needs_api, c.summary AS contract_summary, c.schema_yaml AS contract_yaml,
+            coalesce((SELECT array_agg(t.title ORDER BY t.created_at) FROM tasks t WHERE t.spec_id = s.id), '{}') AS task_titles
+       FROM specs s LEFT JOIN contracts c ON c.spec_id = s.id AND c.status = 'approved'
+      WHERE s.project_id = $1 AND s.superseded_by IS NULL ORDER BY s.feature_key`,
     [project.id],
   );
   const tasks = await db.query(`SELECT title FROM tasks WHERE project_id = $1 ORDER BY created_at`, [project.id]);
@@ -254,6 +272,14 @@ export async function loadPlanContext(db: Queryable, project: ProjectForPm): Pro
     repos: repos.rows.map((r) => ({ fullName: r.full_name as string, ownerRoles: r.roles as string[] })),
     members: members.rows.map((m) => ({ teamRole: m.team_role as string, agentName: m.name as string })),
     existingSpecs: specs.rows.map((s) => ({ featureKey: s.feature_key as string, title: s.title as string })),
+    specs: specs.rows.map((s) => ({
+      featureKey: s.feature_key as string,
+      title: s.title as string,
+      content: s.content as string,
+      needsApi: s.needs_api as boolean,
+      contract: s.contract_yaml ? { summary: (s.contract_summary as string | null) ?? '', schemaYaml: s.contract_yaml as string } : null,
+      taskTitles: s.task_titles as string[],
+    })),
     existingTaskTitles: tasks.rows.map((t) => t.title as string),
     constitution: constitution.rows[0]?.constitution ?? {},
   };

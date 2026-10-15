@@ -17,7 +17,8 @@ const nullable = (schema: Record<string, unknown>) => ({ anyOf: [schema, { type:
 export const PLAN_DRAFT_JSON_SCHEMA: Record<string, unknown> = {
   type: 'object',
   additionalProperties: false,
-  required: ['mode', 'rationale', 'estimate', 'specs', 'tasks', 'integrationChecks'],
+  // specs는 없다 — 태스크 분할은 확정한 기능 명세만 쓴다(새 계획 흐름 3단계). 명세는 기능 명세(kind=feature)가 만든다.
+  required: ['mode', 'rationale', 'estimate', 'tasks', 'integrationChecks'],
   properties: {
     mode: { type: 'string', enum: [...PLAN_MODES] },
     rationale: { type: 'string' },
@@ -26,19 +27,6 @@ export const PLAN_DRAFT_JSON_SCHEMA: Record<string, unknown> = {
       additionalProperties: false,
       required: ['workingDays', 'notes'],
       properties: { workingDays: { type: 'number' }, notes: { type: 'string' } },
-    },
-    specs: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['featureKey', 'title', 'content'],
-        properties: {
-          featureKey: { type: 'string' },
-          title: { type: 'string' },
-          content: { type: 'string' },
-        },
-      },
     },
     tasks: {
       type: 'array',
@@ -75,7 +63,9 @@ export const planDraftSchema = z.object({
         content: z.string().trim().min(1).max(20_000),
       }),
     )
-    .max(AUTHORING_LIMITS.specs),
+    .max(AUTHORING_LIMITS.specs)
+    // 옛 초안(022 이전)에만 있다. 새 초안은 비어 있어야 한다(pmOnlyProblems).
+    .default([]),
   tasks: z
     .array(
       z.object({
@@ -96,10 +86,13 @@ export const planDraftSchema = z.object({
 
 // PM은 INTEGRATION 태스크를 만들지 않는다(운영 테스트 4-3: 통합 태스크는 선행 코드·상대 레포·실행 수단이 없어 늘 멈췄다).
 // 통합 확인은 integrationChecks로 적고, 대표가 G3에서 확인한다. 형식(zod)이 아니라 위반으로 돌려줘 교정 1회에 싣는다.
+// 태스크 분할은 명세를 만들지 않는다 — 확정한 기능 명세(featureKey)에 태스크를 붙이기만 한다(023 이후 새 흐름).
 export function pmOnlyProblems(draft: PlanDraft): string[] {
-  return draft.tasks
+  const problems = draft.tasks
     .filter((t) => t.kind === 'INTEGRATION')
     .map((t) => `tasks[${t.ref}] INTEGRATION 태스크를 만들지 않는다 — 통합 확인은 integrationChecks에 확인 항목으로 적는다(대표가 모든 태스크가 끝난 뒤 확인한다)`);
+  if (draft.specs.length > 0) problems.unshift('specs: 명세를 새로 만들지 않는다 — 태스크의 spec에는 "확정한 기능 명세"의 featureKey를 쓴다');
+  return problems;
 }
 
 export type PlanDraft = z.infer<typeof planDraftSchema>;
@@ -148,7 +141,8 @@ export function planStructure(draft: PlanDraft): {
   const byRef = new Map(draft.tasks.map((t) => [t.ref, key(t)]));
   return {
     mode: draft.mode,
-    specKeys: draft.specs.map((s) => s.featureKey).sort(),
+    // 태스크가 붙은 명세 키 — 태스크 분할은 명세를 만들지 않으므로 초안의 specs가 아니라 태스크에서 읽는다.
+    specKeys: [...new Set(draft.tasks.flatMap((t) => (t.spec === null ? [] : [t.spec])))].sort(),
     tasks: draft.tasks.map(key).sort(),
     edges: draft.tasks
       .flatMap((t) => t.dependsOn.map((d) => `${byRef.get(d) ?? `?${d}`} -> ${key(t)}`))

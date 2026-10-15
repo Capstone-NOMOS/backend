@@ -120,8 +120,10 @@ export async function insertTask(
   task: { repoId: string; specId: string | null; title: string; kind: TaskKind; teamRole: TeamRole | null; planId: string | null },
 ): Promise<string> {
   const { rows } = await db.query(
-    `INSERT INTO tasks (project_id, repo_id, spec_id, title, kind, team_role, state, plan_id)
-     VALUES ($1, $2, $3, $4, $5, $6, 'READY', $7) RETURNING id`,
+    // 명세에 확정한 API 계약이 있으면 그 계약을 태스크에 붙인다(023) — 무엇을 보고 만든 태스크인지의 기록. 확정한 계약은 바뀌지 않는다.
+    `INSERT INTO tasks (project_id, repo_id, spec_id, title, kind, team_role, state, plan_id, contract_id)
+     VALUES ($1, $2, $3, $4, $5, $6, 'READY', $7,
+             (SELECT c.id FROM contracts c WHERE c.spec_id = $3 AND c.status = 'approved')) RETURNING id`,
     [projectId, task.repoId, task.specId, task.title, task.kind, task.teamRole, task.planId],
   );
   return rows[0]!.id as string;

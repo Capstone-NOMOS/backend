@@ -156,3 +156,30 @@ export async function listBackendRepos(db: Queryable, projectId: string): Promis
   );
   return rows.map((r) => ({ id: r.id as string, fullName: r.full_name as string, cloneUrl: (r.clone_url as string | null) ?? null, defaultBranch: r.default_branch as string }));
 }
+
+// 태스크 브리핑에 실을 계약 — 그 명세의 확정한 계약(FE·BE 둘 다 같은 계약을 받는다).
+export async function findApprovedContractForSpec(
+  db: Queryable,
+  specId: string,
+): Promise<{ id: string; featureKey: string; summary: string; schemaYaml: string } | null> {
+  const { rows } = await db.query(
+    `SELECT c.id, s.feature_key, c.summary, c.schema_yaml FROM contracts c JOIN specs s ON s.id = c.spec_id
+      WHERE c.spec_id = $1 AND c.status = 'approved'`,
+    [specId],
+  );
+  const r = rows[0];
+  return r ? { id: r.id as string, featureKey: r.feature_key as string, summary: (r.summary as string | null) ?? '', schemaYaml: r.schema_yaml as string } : null;
+}
+
+// 프로젝트 시작 조건: 끝나지 않은 태스크가 붙은, API가 필요한 명세 중 계약이 확정되지 않은 것.
+export async function listUnconfirmedContractsForOpenTasks(db: Queryable, projectId: string): Promise<string[]> {
+  const { rows } = await db.query(
+    `SELECT DISTINCT s.feature_key FROM specs s
+       JOIN tasks t ON t.spec_id = s.id AND t.state <> 'DONE'
+       LEFT JOIN contracts c ON c.spec_id = s.id AND c.status = 'approved'
+      WHERE s.project_id = $1 AND s.needs_api AND c.id IS NULL
+      ORDER BY s.feature_key`,
+    [projectId],
+  );
+  return rows.map((r) => r.feature_key as string);
+}

@@ -964,7 +964,7 @@ components:
         ownerRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true }
     TaskBriefing:
       type: object
-      required: [task, repo, spec, notes, notesBlock, writablePaths, claudeSettings, specTests, policyHash, lastRejection, answeredQuestions, questionRelay]
+      required: [task, repo, spec, contract, notes, notesBlock, writablePaths, claudeSettings, specTests, policyHash, lastRejection, answeredQuestions, questionRelay]
       properties:
         task: { $ref: '#/components/schemas/Task' }
         repo:
@@ -977,6 +977,16 @@ components:
             devBranch: { type: string }
             cloneUrl: { type: string, nullable: true, description: 'CLI가 노트북에 레포가 없으면 여기서 받아 둔다(null이면 https://github.com/{fullName})' }
         spec: { $ref: '#/components/schemas/TaskSpec', nullable: true }
+        contract:
+          type: object
+          nullable: true
+          description: '이 태스크 명세의 확정한 API 계약(023). FE·BE 태스크가 같은 계약을 받는다. 계약이 없는 기능이면 null'
+          required: [id, featureKey, summary, schemaYaml]
+          properties:
+            id: { type: string, format: uuid }
+            featureKey: { type: string }
+            summary: { type: string }
+            schemaYaml: { type: string, description: 'OpenAPI 조각(paths·components) YAML' }
         notes: { type: array, items: { $ref: '#/components/schemas/Note' } }
         notesBlock: { type: string }
         writablePaths: { type: array, items: { $ref: '#/components/schemas/BriefingPath' } }
@@ -3691,11 +3701,15 @@ paths:
                 data: { plans: [] }
     post:
       tags: [내장 PM]
-      summary: 계획 초안 요청 (대표 전용)
+      summary: 태스크 나누기 (대표 전용)
       description: |
-        대표의 지시로 PM(NOMOS 내장)이 명세(API·화면 계약 + 수용 기준)와 태스크 DAG(어느 레포·어느 역할이 무엇을 어떤 순서로) 초안을 만든다.
+        새 계획 흐름 3단계. **확정한 기능 명세와 확정한 API 계약**을 PM(NOMOS 내장)이 태스크 DAG(어느 레포·어느 역할이 무엇을 어떤 순서로)로 나눈다.
+        PM은 명세·계약을 만들지 않는다 — 태스크의 `spec`은 확정한 기능 명세의 featureKey이고, 태스크에는 그 명세의 확정한 계약이 붙는다(브리핑 `contract`).
+        `instruction`은 선택(버튼만 눌러도 된다). 초안의 `specs`는 항상 빈 배열이다(옛 초안 호환용 필드).
         **202로 바로 답하고 PM은 뒤에서 돈다**(수십 초~수 분). `GET .../pm/plans/{planId}`를 몇 초 간격으로 폴링해 `ready`·`failed`를 본다.
 
+        - 확정한 기능 명세가 없으면 409 `NO_FEATURE_SPECS`(먼저 `POST .../pm/features` → 확정)
+        - API가 필요한 기능의 계약이 확정되지 않았으면 409 `CONTRACTS_NOT_APPROVED`, details `{ featureKeys }` (BE 담당이 `POST /contracts/{id}/approve`)
         - 프로젝트당 진행 중인 요청은 하나(409 `PM_PLAN_IN_PROGRESS`)
         - 호출 전에 "누적 PM 비용 + 이번 호출의 최대치 > PM 예산"이면 409 `PM_BUDGET_EXCEEDED` —
           설계상 예산 초과는 대표 승인 카드가 떠야 하지만 **승인 경로 미구현**이라 거절만 한다
@@ -3704,16 +3718,15 @@ paths:
       security: [{ userToken: [] }]
       parameters: [{ $ref: '#/components/parameters/ProjectId' }]
       requestBody:
-        required: true
+        required: false
         content:
           application/json:
             schema:
               type: object
-              required: [instruction]
               properties:
-                instruction: { type: string, maxLength: 8000 }
+                instruction: { type: string, maxLength: 8000, description: '나눌 때 덧붙일 지시(선택)' }
             example:
-              instruction: 3주 안에 사내 스터디 관리 웹앱. 회원가입, 스터디 개설, 참여신청, 출석체크. 모바일 대응 필수.
+              instruction: 백엔드 API를 먼저 끝내고 화면은 병행해 주세요
       responses:
         '202':
           description: 접수됨(status=pending)

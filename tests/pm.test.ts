@@ -12,6 +12,7 @@ import type { PlanDraft } from '../src/domain/pm/draft.js';
 import { setPmModel, type PmModel, type PmModelRequest, type PmModelResponse } from '../src/domain/pm/model.js';
 import { costOfAttempts } from '../src/domain/pm/pricing.js';
 import { drainPmJobs, recoverInterruptedPlans } from '../src/domain/pm/service.js';
+import { createSpec } from '../src/domain/authoring/service.js';
 import { assignMember, createProject } from '../src/domain/project/service.js';
 import { connectAgent } from '../src/domain/agent/service.js';
 import { connectRepos } from '../src/domain/repo/service.js';
@@ -62,7 +63,8 @@ async function account(loginId: string) {
   return { userId, token: accessToken, connectKey };
 }
 
-async function world(pmBudgetUsd = 40) {
+// 태스크 나누기(새 흐름 3단계)는 확정한 기능 명세 위에서만 한다 — 기본으로 명세 F-10(API 불필요)을 하나 둔다.
+async function world(pmBudgetUsd = 40, options: { withSpec?: boolean } = {}) {
   const rep = await account('rep');
   const { orgId } = await createOrganization(rep.userId, 'Acme Inc.');
   const be = await account('be-dev');
@@ -78,6 +80,14 @@ async function world(pmBudgetUsd = 40) {
   const { project } = await createProject(orgId, rep.userId, {
     name: '스터디', autonomyPreset: 'L2', pmBudgetUsd, repoIds: [api!.id, web!.id],
   });
+  if (options.withSpec ?? true) {
+    await createSpec(rep.userId, project.id, {
+      featureKey: 'F-10',
+      title: '스터디 참여 신청',
+      content: 'WHEN 정원이 차면 THEN 시스템은 409를 반환한다',
+      tests: [],
+    });
+  }
   return { rep, be, orgId, projectId: project.id };
 }
 
@@ -85,13 +95,7 @@ const DRAFT: PlanDraft = {
   mode: 'SEQUENTIAL',
   rationale: '작고 명확하다',
   estimate: { workingDays: 5, notes: '' },
-  specs: [
-    {
-      featureKey: 'F-10',
-      title: '스터디 참여 신청',
-      content: 'WHEN 정원이 차면 THEN 시스템은 409를 반환한다',
-    },
-  ],
+  specs: [], // 태스크 나누기는 명세를 만들지 않는다
   tasks: [
     { ref: 'api', title: 'T-10 참여 신청 API', repo: 'acme/study-api', teamRole: 'BACKEND', kind: 'IMPLEMENT', spec: 'F-10', dependsOn: [] },
     { ref: 'web', title: 'T-11 참여 신청 버튼', repo: 'acme/study-web', teamRole: 'FRONTEND', kind: 'IMPLEMENT', spec: 'F-10', dependsOn: ['api'] },
@@ -140,7 +144,7 @@ async function events(type: string) {
 }
 
 describe('계획 요청 → 초안 → 적용', () => {
-  it('초안이 ready가 되고, 적용하면 명세·태스크가 plan_id와 함께 생긴다 — PM은 시험지를 만들지 않는다', async () => {
+  it('초안이 ready가 되고, 적용하면 태스크가 plan_id와 함께 생긴다 — PM은 명세·시험지를 만들지 않는다', async () => {
     const w = await world();
     const calls = fakeModel(() => respond(DRAFT));
     const plan = await requestAndWait(w);
@@ -152,6 +156,9 @@ describe('계획 요청 → 초안 → 적용', () => {
     // 지시와 연결된 레포가 PM에게 간다. 지침(system)은 바뀌지 않는 부분이다.
     expect(calls[0]!.user).toContain('참여 신청 기능');
     expect(calls[0]!.user).toContain('acme/study-api — 소유 역할: BACKEND');
+    // 확정한 기능 명세가 본문째 간다.
+    expect(calls[0]!.user).toContain('### F-10 스터디 참여 신청');
+    expect(calls[0]!.user).toContain('WHEN 정원이 차면');
     expect(calls[0]!.model).toBe(env.PM_MODEL);
 
     // 요청은 대표 명의, 호출·초안은 system:pm 명의(P3). 비용은 events.token_cost에.
@@ -364,10 +371,10 @@ describe('요청 규칙', () => {
 describe('적용 규칙', () => {
   it('두 번 적용할 수 없고, 수정 체인에서 이미 적용됐으면 옛 초안도 적용할 수 없다', async () => {
     const w = await world();
-    const revised: PlanDraft = { ...DRAFT, tasks: DRAFT.tasks.map((t) => ({ ...t, title: `${t.title} v2` })), specs: [{ ...DRAFT.specs[0]!, featureKey: 'F-11' }] };
+    const revised: PlanDraft = { ...DRAFT, tasks: DRAFT.tasks.map((t) => ({ ...t, title: `${t.title} v2` })) };
     fakeModel(() => respond(DRAFT), (req) => {
       expect(req.user).toContain('정원도 보여줘'); // 피드백이 간다
-      return respond({ ...revised, tasks: revised.tasks.map((t) => ({ ...t, spec: 'F-11' })) });
+      return respond(revised);
     });
     const first = await requestAndWait(w);
     const rev = await call('POST', `/projects/${w.projectId}/pm/plans/${first.id}/revise`, w.rep.token, { feedback: '정원도 보여줘' });
@@ -388,15 +395,19 @@ describe('적용 규칙', () => {
     const w = await world();
     fakeModel(() => respond(DRAFT));
     const plan = await requestAndWait(w);
-    // 그사이 대표가 같은 명세 키를 손으로 만들었다.
-    await call('POST', `/projects/${w.projectId}/specs`, w.rep.token, { featureKey: 'F-10', title: 'x', content: 'y', tests: [] });
+    // 그사이 대표가 같은 제목의 태스크를 손으로 만들었다.
+    const ids = (await pool.query(`SELECT (SELECT id FROM repos WHERE full_name = 'acme/study-api') AS repo_id, (SELECT id FROM specs WHERE feature_key = 'F-10') AS spec_id`)).rows[0];
+    const created = await call('POST', `/projects/${w.projectId}/tasks`, w.rep.token, {
+      title: 'T-10 참여 신청 API', repoId: ids.repo_id, specId: ids.spec_id, teamRole: 'BACKEND', kind: 'IMPLEMENT',
+    });
+    expect(created.status).toBe(201);
 
     const res = await call('POST', `/projects/${w.projectId}/pm/plans/${plan.id}/apply`, w.rep.token);
     expect(res.status).toBe(422);
     expect(res.body.error!.code).toBe('PLAN_INVALID');
     const after = (await call('GET', `/projects/${w.projectId}/pm/plans/${plan.id}`, w.rep.token)).body.data as unknown as { status: string };
     expect(after.status).toBe('ready');
-    expect((await pool.query(`SELECT count(*)::int AS n FROM tasks`)).rows[0].n).toBe(0);
+    expect((await pool.query(`SELECT count(*)::int AS n FROM tasks`)).rows[0].n).toBe(1);
   });
 });
 
@@ -563,7 +574,7 @@ async function requestFeatureAndWait(w: { projectId: string; rep: { token: strin
 
 describe('기능 명세 (POST /pm/features)', () => {
   it('PM은 기능 명세 지침·형식으로 불리고, 초안은 featureDraft로 나온다 — 확정하면 명세만 생기고(API 필요 여부 포함) 태스크는 없다', async () => {
-    const w = await world();
+    const w = await world(40, { withSpec: false });
     const calls = fakeModel(() => respond(FEATURE_DRAFT));
     const plan = await requestFeatureAndWait(w);
     expect(plan).toMatchObject({ kind: 'feature', status: 'ready', draft: null, featureDraft: FEATURE_DRAFT });
@@ -593,7 +604,7 @@ describe('기능 명세 (POST /pm/features)', () => {
   });
 
   it('API가 필요한데 오가는 데이터를 안 적으면 한 번 고치게 하고, 수정 요청도 기능 명세로 이어진다', async () => {
-    const w = await world();
+    const w = await world(40, { withSpec: false });
     const broken = { ...FEATURE_DRAFT, features: [{ ...FEATURE_DRAFT.features[0]!, apiNeeds: null }] };
     const calls = fakeModel(() => respond(broken), () => respond(FEATURE_DRAFT), () => respond(FEATURE_DRAFT));
     const plan = await requestFeatureAndWait(w);
@@ -606,5 +617,26 @@ describe('기능 명세 (POST /pm/features)', () => {
     expect((revised.body.data as unknown as { kind: string }).kind).toBe('feature');
     expect(calls[2]!.system).toContain('기능 명세');
     expect(calls[2]!.user).toContain('가입 날짜는 빼 줘');
+  });
+});
+
+describe('태스크 나누기의 전제 (새 계획 흐름 3단계)', () => {
+  it('확정한 기능 명세가 없으면 나눌 수 없다(409 NO_FEATURE_SPECS)', async () => {
+    const w = await world(40, { withSpec: false });
+    const calls = fakeModel();
+    const res = await call('POST', `/projects/${w.projectId}/pm/plans`, w.rep.token, { instruction: '참여 신청 기능' });
+    expect(res.status).toBe(409);
+    expect(res.body.error!.code).toBe('NO_FEATURE_SPECS');
+    expect(calls).toHaveLength(0);
+  });
+
+  it('PM이 명세를 새로 만들면 위반으로 돌려준다(교정 1회) — 태스크는 확정한 명세에만 붙는다', async () => {
+    const w = await world();
+    const withSpec = { ...DRAFT, specs: [{ featureKey: 'F-99', title: '지어낸 명세', content: 'x' }] };
+    const calls = fakeModel(() => respond(withSpec), () => respond(DRAFT));
+    const plan = await requestAndWait(w);
+    expect(plan.status).toBe('ready');
+    expect(calls[1]!.user).toContain('명세를 새로 만들지 않는다');
+    expect(plan.draft!.specs).toEqual([]);
   });
 });

@@ -242,3 +242,88 @@ describe('API 계약 흐름', () => {
     );
   });
 });
+
+// 새 계획 흐름 3단계 — 확정한 명세·계약 위에서만 태스크를 나누고, 태스크에는 그 계약이 붙는다.
+describe('태스크 나누기 → 시작 → 브리핑', () => {
+  const SPLIT = {
+    mode: 'CONTRACT_PARALLEL',
+    rationale: '계약이 확정돼 병행',
+    estimate: { workingDays: 3, notes: '' },
+    tasks: [
+      { ref: 'api', title: '멤버 목록 API', repo: 'acme/api', teamRole: 'BACKEND', kind: 'IMPLEMENT', spec: 'F-20', dependsOn: [] },
+      { ref: 'list', title: '멤버 목록 화면', repo: 'acme/web', teamRole: 'FRONTEND', kind: 'IMPLEMENT', spec: 'F-20', dependsOn: [] },
+      { ref: 'copy', title: '링크 복사 버튼', repo: 'acme/web', teamRole: 'FRONTEND', kind: 'IMPLEMENT', spec: 'F-21', dependsOn: [] },
+    ],
+    integrationChecks: ['상세 화면이 멤버 목록 API 응답의 멤버를 보여 준다'],
+  };
+
+  function splitModel(): string[] {
+    const users: string[] = [];
+    setPmModel({
+      kind: 'fake',
+      async generate(req) {
+        users.push(req.user);
+        return { stopReason: 'end_turn', servedModel: 'fake', text: JSON.stringify(SPLIT), attempts: [] };
+      },
+    });
+    return users;
+  }
+
+  async function approve(w: Awaited<ReturnType<typeof world>>) {
+    const [c] = await contracts(w);
+    await http('POST', `/contracts/${c!.id}/draft`, w.beToken, { attempt: 1, openapiYaml: GOOD_YAML, summary: '기존 /api/studies 아래에 둔다' });
+    expect((await http('POST', `/contracts/${c!.id}/approve`, w.be.token)).status).toBe(200);
+    return c!;
+  }
+
+  it('API 계약이 확정되기 전에는 나눌 수 없다(409 CONTRACTS_NOT_APPROVED, 어느 기능인지)', async () => {
+    const w = await world();
+    splitModel();
+    const res = await http('POST', `/projects/${w.projectId}/pm/plans`, w.rep.token, {});
+    expect(res).toMatchObject({ status: 409, error: { code: 'CONTRACTS_NOT_APPROVED', details: { featureKeys: ['F-20'] } } });
+  });
+
+  it('확정하면 지시 없이도 나누고, PM은 명세·계약 본문을 받는다 — 태스크에 계약이 붙고 FE·BE 브리핑에 같은 계약이 간다', async () => {
+    const w = await world();
+    const contract = await approve(w);
+    const users = splitModel();
+    const req = await http('POST', `/projects/${w.projectId}/pm/plans`, w.rep.token);
+    expect(req.status).toBe(202);
+    await drainPmJobs();
+    expect(users[0]).toContain('### F-20 스터디 멤버 목록');
+    expect(users[0]).toContain('/api/studies/{studyId}/members');
+    expect(users[0]).toContain('(서버 API가 필요 없는 기능)'); // F-21
+    expect(users[0]).toContain('(추가 지시 없음');
+    expect((await http('POST', `/projects/${w.projectId}/pm/plans/${req.data.id as string}/apply`, w.rep.token)).status).toBe(200);
+
+    const tasks = (await testPool.query(`SELECT id, title, contract_id FROM tasks ORDER BY title`)).rows;
+    expect(tasks.map((t) => [t.title, t.contract_id])).toEqual([
+      ['링크 복사 버튼', null],
+      ['멤버 목록 API', contract.id],
+      ['멤버 목록 화면', contract.id],
+    ]);
+
+    expect((await http('POST', `/projects/${w.projectId}/start`, w.rep.token)).status).toBe(200);
+    const byTitle = new Map(tasks.map((t) => [t.title as string, t.id as string]));
+    const fe = await http('GET', `/tasks/${byTitle.get('멤버 목록 화면')!}/briefing`, w.feToken);
+    expect(fe.data.contract).toMatchObject({ id: contract.id, featureKey: 'F-20', schemaYaml: GOOD_YAML, summary: '기존 /api/studies 아래에 둔다' });
+    const be = await http('GET', `/tasks/${byTitle.get('멤버 목록 API')!}/briefing`, w.beToken);
+    expect((be.data.contract as { id: string }).id).toBe(contract.id);
+    expect((await http('GET', `/tasks/${byTitle.get('링크 복사 버튼')!}/briefing`, w.feToken)).data.contract).toBeNull();
+  });
+
+  it('계약이 확정되지 않은 기능의 태스크가 있으면 시작할 수 없다(사람이 직접 만든 태스크도)', async () => {
+    const w = await world();
+    const ids = (await testPool.query(`SELECT (SELECT id FROM repos WHERE full_name = 'acme/api') AS repo_id, (SELECT id FROM specs WHERE feature_key = 'F-20') AS spec_id`)).rows[0];
+    const created = await http('POST', `/projects/${w.projectId}/tasks`, w.rep.token, {
+      title: '손으로 만든 API 태스크', repoId: ids.repo_id, specId: ids.spec_id, teamRole: 'BACKEND', kind: 'IMPLEMENT',
+    });
+    expect(created.status).toBe(201);
+    const start = await http('POST', `/projects/${w.projectId}/start`, w.rep.token);
+    expect(start.status).toBe(422);
+    expect(start.error!.details).toEqual(expect.arrayContaining([expect.objectContaining({ where: 'contracts.F-20' })]));
+
+    await approve(w);
+    expect((await http('POST', `/projects/${w.projectId}/start`, w.rep.token)).status).toBe(200);
+  });
+});

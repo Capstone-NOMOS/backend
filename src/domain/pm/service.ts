@@ -42,6 +42,7 @@ import {
   findPendingPlan,
   findPlan,
   findProjectForPm,
+  findTaskSplitBlockers,
   insertPendingPlan,
   listAllPendingPlans,
   listPlans,
@@ -227,6 +228,21 @@ async function assertWithinBudget(tx: PoolClient, project: ProjectForPm, maxCost
   }
 }
 
+// 태스크 나누기(새 계획 흐름 3단계)는 확정한 기능 명세와 확정한 API 계약 위에서만 한다 — PM이 명세·계약을 지어내지 않게.
+async function assertReadyToSplit(tx: PoolClient, projectId: string): Promise<void> {
+  const { specCount, unapprovedContracts } = await findTaskSplitBlockers(tx, projectId);
+  if (specCount === 0) {
+    throw new AppError('NO_FEATURE_SPECS', 'there is no confirmed feature spec to split into tasks; request a feature spec (POST /pm/features) and confirm it first');
+  }
+  if (unapprovedContracts.length > 0) {
+    throw new AppError(
+      'CONTRACTS_NOT_APPROVED',
+      `the API contract is not confirmed yet for ${unapprovedContracts.join(', ')}; the BACKEND member confirms it first`,
+      { featureKeys: unapprovedContracts },
+    );
+  }
+}
+
 async function openRequest(
   actorUserId: string,
   projectId: string,
@@ -255,6 +271,7 @@ async function openRequest(
         );
       }
     }
+    if (input.kind === 'tasks') await assertReadyToSplit(tx, projectId);
     const project = (await findProjectForPm(tx, projectId))!;
     await assertWithinBudget(tx, project, await nextCallMaxCost(tx, project, input.kind, input.instruction, input.parent?.draft ?? undefined));
 

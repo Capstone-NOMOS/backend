@@ -70,6 +70,8 @@ type Briefing = {
   task: { id: string; title: string; teamRole: string | null; branchName: string | null };
   repo: { fullName: string; defaultBranch: string; cloneUrl?: string | null };
   spec: { featureKey: string; title: string; content: string } | null;
+  // 확정한 API 계약(서버 023). 옛 서버면 없다.
+  contract?: { featureKey: string; summary: string; schemaYaml: string } | null;
   notes: { id: string }[];
   lastRejection: { reason: string; commitSha: string | null } | null;
   answeredQuestions?: { question: string; answer: string; source: string }[];

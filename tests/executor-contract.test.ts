@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildContractPrompt, CONTRACT_JSON_SCHEMA, parseContractDraft, type ContractJob } from '../src/executor/contract.js';
 import { readOnlyClaudeArgs } from '../src/executor/consult.js';
+import { buildTaskPrompt } from '../src/executor/prompt.js';
 
 const job: ContractJob = {
   id: 'c1',
@@ -53,5 +54,19 @@ describe('계약 작성 실행', () => {
     expect(parseContractDraft(JSON.stringify({ openapiYaml: 'paths: {}', summary: '요약' })).openQuestions).toEqual([]);
     expect(() => parseContractDraft({ summary: '요약' })).toThrow();
     expect(() => parseContractDraft({ openapiYaml: 'paths: {}', summary: ' ' })).toThrow();
+  });
+});
+
+// 태스크 실행 프롬프트(새 계획 흐름 3단계) — 확정한 계약이 FE·BE 프롬프트에 그대로 들어간다.
+describe('태스크 프롬프트의 확정한 계약', () => {
+  const base = { task: { id: 't1', title: 'T', teamRole: 'FRONTEND' }, repo: { fullName: 'a/web' }, spec: null, notesBlock: '', writablePaths: [{ pathPattern: '**' }] };
+
+  it('계약이 있으면 요약과 YAML을 싣고, 없거나 옛 서버면 절이 없다', () => {
+    const prompt = buildTaskPrompt({ ...base, contract: { featureKey: 'F-20', summary: '멤버 목록', schemaYaml: 'paths:\n  /api/members: {}\n' } }, 'task/t1');
+    expect(prompt).toContain('# 확정한 API 계약 (F-20)');
+    expect(prompt).toContain('멤버 목록');
+    expect(prompt).toContain('```yaml\npaths:\n  /api/members: {}\n```');
+    expect(buildTaskPrompt({ ...base, contract: null }, 'task/t1')).not.toContain('확정한 API 계약');
+    expect(buildTaskPrompt(base, 'task/t1')).not.toContain('확정한 API 계약');
   });
 });
