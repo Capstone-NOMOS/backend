@@ -1,14 +1,16 @@
 import type { QueryResultRow } from 'pg';
 import type { Queryable } from '../../config/db.js';
-import type { PlanDraft } from './draft.js';
 import type { PlanContext } from './prompt.js';
 
 export type PlanStatus = 'pending' | 'ready' | 'failed' | 'applied' | 'rejected';
+// 022: 기능 명세 초안(feature) | 태스크 분할 초안(tasks). 초안 형식은 kind로 갈린다.
+export type PlanKind = 'feature' | 'tasks';
 export type PlanErrorReason = 'refused' | 'truncated' | 'timeout' | 'invalid' | 'restart' | 'budget' | 'api_error';
 
 export type PlanRow = {
   id: string;
   projectId: string;
+  kind: PlanKind;
   status: PlanStatus;
   instruction: string | null;
   feedback: string | null;
@@ -16,7 +18,8 @@ export type PlanRow = {
   rootPlanId: string;
   requestedBy: string;
   mode: string | null;
-  draft: PlanDraft | null;
+  // kind에 따라 PlanDraft(tasks) 또는 FeatureDraft(feature). 서비스가 kind를 보고 읽는다.
+  draft: unknown;
   dagHash: string | null;
   errorReason: PlanErrorReason | null;
   errorDetail: unknown;
@@ -31,6 +34,7 @@ function toPlan(row: QueryResultRow): PlanRow {
   return {
     id: row.id,
     projectId: row.project_id,
+    kind: row.kind,
     status: row.status,
     instruction: row.instruction,
     feedback: row.feedback,
@@ -55,6 +59,7 @@ export async function insertPendingPlan(
   plan: {
     id: string;
     projectId: string;
+    kind: PlanKind;
     requestedBy: string;
     instruction: string;
     feedback: string | null;
@@ -63,9 +68,9 @@ export async function insertPendingPlan(
   },
 ): Promise<PlanRow> {
   const { rows } = await db.query(
-    `INSERT INTO plans (id, project_id, requested_by, instruction, feedback, parent_plan_id, root_plan_id, source, status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, 'planner', 'pending') RETURNING *`,
-    [plan.id, plan.projectId, plan.requestedBy, plan.instruction, plan.feedback, plan.parentPlanId, plan.rootPlanId],
+    `INSERT INTO plans (id, project_id, kind, requested_by, instruction, feedback, parent_plan_id, root_plan_id, source, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'planner', 'pending') RETURNING *`,
+    [plan.id, plan.projectId, plan.kind, plan.requestedBy, plan.instruction, plan.feedback, plan.parentPlanId, plan.rootPlanId],
   );
   return toPlan(rows[0]!);
 }
@@ -120,14 +125,15 @@ export async function setInflightMaxCost(db: Queryable, planId: string, usd: num
 export async function markPlanReady(
   db: Queryable,
   planId: string,
-  draft: PlanDraft,
+  draft: unknown,
   structure: unknown,
   dagHash: string,
+  mode: string | null,
 ): Promise<boolean> {
   const { rowCount } = await db.query(
     `UPDATE plans SET status = 'ready', dag_snapshot = $2, structure = $3, dag_hash = $4, mode = $5, inflight_max_cost_usd = NULL
       WHERE id = $1 AND status = 'pending'`,
-    [planId, JSON.stringify(draft), JSON.stringify(structure), dagHash, draft.mode],
+    [planId, JSON.stringify(draft), JSON.stringify(structure), dagHash, mode],
   );
   return rowCount === 1;
 }
@@ -221,6 +227,20 @@ export async function findProjectForPm(db: Queryable, projectId: string): Promis
     : null;
 }
 
+// 태스크 나누기 전제(023): 확정한 기능 명세가 있고, API가 필요한 명세의 계약이 전부 확정됐는가.
+export async function findTaskSplitBlockers(db: Queryable, projectId: string): Promise<{ specCount: number; unapprovedContracts: string[] }> {
+  const { rows } = await db.query(
+    `SELECT s.feature_key, s.needs_api, c.status AS contract_status
+       FROM specs s LEFT JOIN contracts c ON c.spec_id = s.id
+      WHERE s.project_id = $1 AND s.superseded_by IS NULL ORDER BY s.feature_key`,
+    [projectId],
+  );
+  return {
+    specCount: rows.length,
+    unapprovedContracts: rows.filter((r) => r.needs_api && r.contract_status !== 'approved').map((r) => r.feature_key as string),
+  };
+}
+
 export async function loadPlanContext(db: Queryable, project: ProjectForPm): Promise<PlanContext> {
   const repos = await db.query(
     `SELECT r.full_name, coalesce(array_agg(DISTINCT p.owner_role) FILTER (WHERE p.owner_role IS NOT NULL), '{}') AS roles
@@ -236,8 +256,12 @@ export async function loadPlanContext(db: Queryable, project: ProjectForPm): Pro
     `SELECT m.team_role, a.name FROM project_members m JOIN agents a ON a.id = m.agent_id WHERE m.project_id = $1 ORDER BY m.team_role`,
     [project.id],
   );
+  // 확정한 기능 명세와 그 API 계약(023) — 태스크 분할은 이것만 보고 태스크를 붙인다.
   const specs = await db.query(
-    `SELECT feature_key, title FROM specs WHERE project_id = $1 AND superseded_by IS NULL ORDER BY feature_key`,
+    `SELECT s.feature_key, s.title, s.content, s.needs_api, c.summary AS contract_summary, c.schema_yaml AS contract_yaml,
+            coalesce((SELECT array_agg(t.title ORDER BY t.created_at) FROM tasks t WHERE t.spec_id = s.id), '{}') AS task_titles
+       FROM specs s LEFT JOIN contracts c ON c.spec_id = s.id AND c.status = 'approved'
+      WHERE s.project_id = $1 AND s.superseded_by IS NULL ORDER BY s.feature_key`,
     [project.id],
   );
   const tasks = await db.query(`SELECT title FROM tasks WHERE project_id = $1 ORDER BY created_at`, [project.id]);
@@ -248,6 +272,14 @@ export async function loadPlanContext(db: Queryable, project: ProjectForPm): Pro
     repos: repos.rows.map((r) => ({ fullName: r.full_name as string, ownerRoles: r.roles as string[] })),
     members: members.rows.map((m) => ({ teamRole: m.team_role as string, agentName: m.name as string })),
     existingSpecs: specs.rows.map((s) => ({ featureKey: s.feature_key as string, title: s.title as string })),
+    specs: specs.rows.map((s) => ({
+      featureKey: s.feature_key as string,
+      title: s.title as string,
+      content: s.content as string,
+      needsApi: s.needs_api as boolean,
+      contract: s.contract_yaml ? { summary: (s.contract_summary as string | null) ?? '', schemaYaml: s.contract_yaml as string } : null,
+      taskTitles: s.task_titles as string[],
+    })),
     existingTaskTitles: tasks.rows.map((t) => t.title as string),
     constitution: constitution.rows[0]?.constitution ?? {},
   };

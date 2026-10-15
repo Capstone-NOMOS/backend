@@ -65,16 +65,51 @@ ${numbered}
 답은 answers 배열에 질문마다 하나씩 넣는다 — index는 위 질문 번호, answer는 답(한국어), decided는 true/false, basis는 근거 파일 경로 목록.`;
 }
 
-export function consultArgs(prompt: string, emptyMcpPath: string): string[] {
+// 읽기 전용 Claude 실행의 인자 — 상담과 계약 작성(023)이 같이 쓴다. 내장 도구는 Read·Grep·Glob뿐, 사용자 MCP 없음, 답은 구조화 출력.
+// prompt가 null이면 stdin으로 넘긴다 — 계약 작성 프롬프트는 명세·확정한 계약이 붙어 길고, Windows 명령줄은 32k자에서 잘린다(pm-worker와 같은 이유).
+export function readOnlyClaudeArgs(prompt: string | null, emptyMcpPath: string, schema: Record<string, unknown>): string[] {
   return [
-    '-p', prompt,
+    ...(prompt === null ? ['-p'] : ['-p', prompt]),
     '--output-format', 'json',
-    '--json-schema', JSON.stringify(CONSULT_JSON_SCHEMA),
+    '--json-schema', JSON.stringify(schema),
     '--permission-mode', 'default',
     '--strict-mcp-config', '--mcp-config', emptyMcpPath,
     '--tools', 'Read,Grep,Glob',
     '--allowedTools', 'Read,Grep,Glob',
   ];
+}
+
+export function consultArgs(prompt: string, emptyMcpPath: string): string[] {
+  return readOnlyClaudeArgs(prompt, emptyMcpPath, CONSULT_JSON_SCHEMA);
+}
+
+// 읽기 전용 Claude를 한 번 돌려 구조화 출력을 돌려준다(없으면 result 문자열).
+export async function runReadOnlyClaude(input: { dir: string; prompt: string; schema: Record<string, unknown>; timeoutMs: number; label: string }): Promise<unknown> {
+  const scratch = path.join(tmpdir(), 'nomos-consult');
+  mkdirSync(scratch, { recursive: true });
+  const emptyMcp = path.join(scratch, 'mcp.json');
+  writeFileSync(emptyMcp, JSON.stringify({ mcpServers: {} }));
+  const { command, commandArgs } = resolveClaudeCommand(readOnlyClaudeArgs(null, emptyMcp, input.schema));
+  const out = await new Promise<string>((resolve, reject) => {
+    const child = spawn(command, commandArgs, { cwd: input.dir, stdio: ['pipe', 'pipe', 'pipe'], env: claudeEnv() });
+    let stdout = '';
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error(`${input.label} 시간 초과`));
+    }, input.timeoutMs);
+    child.stdout.on('data', (d) => (stdout += d));
+    child.once('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on('close', () => {
+      clearTimeout(timer);
+      resolve(stdout);
+    });
+    child.stdin.end(input.prompt);
+  });
+  const result = JSON.parse(out) as { result?: string; structured_output?: unknown };
+  return result.structured_output ?? result.result ?? '';
 }
 
 // 모델 응답(구조화 출력)에서 초안을 꺼낸다. 질문 번호(1부터)로 짝짓고, 서버에는 질문 문장을 키로 넘긴다.
@@ -105,24 +140,12 @@ export function parseConsultDraft(output: unknown, questions: string[]): Consult
 }
 
 export async function runConsult(input: { dir: string; role: string; repoName: string; question: ConsultQuestion; timeoutMs?: number }): Promise<ConsultDraft> {
-  const scratch = path.join(tmpdir(), 'nomos-consult');
-  mkdirSync(scratch, { recursive: true });
-  const emptyMcp = path.join(scratch, 'mcp.json');
-  writeFileSync(emptyMcp, JSON.stringify({ mcpServers: {} }));
-  const { command, commandArgs } = resolveClaudeCommand(consultArgs(buildConsultPrompt(input), emptyMcp));
-  const out = await new Promise<string>((resolve, reject) => {
-    const child = spawn(command, commandArgs, { cwd: input.dir, stdio: ['ignore', 'pipe', 'pipe'], env: claudeEnv() });
-    let stdout = '';
-    const timer = setTimeout(() => {
-      child.kill();
-      reject(new Error('상담 실행 시간 초과'));
-    }, input.timeoutMs ?? 5 * 60_000);
-    child.stdout.on('data', (d) => (stdout += d));
-    child.on('close', () => {
-      clearTimeout(timer);
-      resolve(stdout);
-    });
+  const output = await runReadOnlyClaude({
+    dir: input.dir,
+    prompt: buildConsultPrompt(input),
+    schema: CONSULT_JSON_SCHEMA,
+    timeoutMs: input.timeoutMs ?? 5 * 60_000,
+    label: '상담 실행',
   });
-  const result = JSON.parse(out) as { result?: string; structured_output?: unknown };
-  return parseConsultDraft(result.structured_output ?? result.result ?? '', input.question.questions.map((q) => q.question));
+  return parseConsultDraft(output, input.question.questions.map((q) => q.question));
 }

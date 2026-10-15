@@ -4,6 +4,7 @@ import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 import { logger } from '../config/logger.js';
 import { markAgentSeen, streamClosed, streamOpened } from '../domain/agent/presence.js';
 import { onAgentRevoked } from '../domain/dispatch/agent-revoked.js';
+import { onContractsChanged } from '../domain/dispatch/contracts-changed.js';
 import { onQuestionsChanged } from '../domain/dispatch/questions-changed.js';
 import { onTasksChanged } from '../domain/dispatch/tasks-changed.js';
 import { listClaimableTasksForAgent, type AgentContext } from '../domain/task/service.js';
@@ -109,6 +110,10 @@ export function attachAgentStream(server: Server): AgentStream {
   const unsubscribeQuestions = onQuestionsChanged((projectId, targetRole) => {
     for (const conn of byProject.get(projectId) ?? []) send(conn.ws, { type: 'questions', projectId, targetRole });
   });
+  // 계약 작업(023) — 같은 방식으로 프로젝트 연결 전부에 보내고 받는 Executor가 자기 역할(BACKEND)만 본다.
+  const unsubscribeContracts = onContractsChanged((projectId, targetRole) => {
+    for (const conn of byProject.get(projectId) ?? []) send(conn.ws, { type: 'contracts', projectId, targetRole });
+  });
 
   const handle = (ws: WebSocket) => {
     let conn: Connection | null = null;
@@ -190,6 +195,7 @@ export function attachAgentStream(server: Server): AgentStream {
       unsubscribe();
       unsubscribeQuestions();
       unsubscribeRevoked();
+      unsubscribeContracts();
       unroute();
       for (const ws of wss.clients) ws.terminate();
       await new Promise<void>((resolve) => wss.close(() => resolve()));

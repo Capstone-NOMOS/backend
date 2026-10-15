@@ -53,6 +53,9 @@ export function validateAuthoring(
       problems.push({ where, message: `명세 ${spec.featureKey}가 프로젝트에 이미 있다 (다시 보낸 건 아닌가?)` });
     }
     newSpecKeys.add(spec.featureKey);
+    // specs_api_needs_chk와 같은 규칙 — DB에서 터지기 전에 위반 목록으로 돌려준다.
+    if (spec.needsApi && !spec.apiNeeds) problems.push({ where, message: 'API가 필요하면(needsApi) 어떤 데이터가 오가야 하는지(apiNeeds)를 적는다' });
+    if (!spec.needsApi && spec.apiNeeds) problems.push({ where, message: 'API가 필요 없으면(needsApi=false) apiNeeds를 비운다' });
   }
 
   // ── 태스크: 묶음 안 중복

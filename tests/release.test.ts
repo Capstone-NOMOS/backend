@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { createApp } from '../src/app.js';
 import { pool } from '../src/config/db.js';
 import { connectAgent } from '../src/domain/agent/service.js';
+import { createSpec } from '../src/domain/authoring/service.js';
 import { login, signup } from '../src/domain/auth/service.js';
 import { drainTasksChanged } from '../src/domain/dispatch/tasks-changed.js';
 import { acceptInvite, createInvite } from '../src/domain/invite/service.js';
@@ -72,7 +73,7 @@ function draft(extra: Partial<PlanDraft> = {}): PlanDraft {
     mode: 'SEQUENTIAL',
     rationale: '작다',
     estimate: { workingDays: 1, notes: '' },
-    specs: [{ featureKey: 'F-01', title: 'Todo', content: 'WHEN 추가하면 THEN 201' }],
+    specs: [], // 태스크 나누기는 확정한 명세(world가 만든 F-01)에 붙인다
     tasks: [
       { ref: 'a', title: 'T-1 목록 API', repo: 'acme/api', teamRole: 'BACKEND', kind: 'IMPLEMENT', spec: 'F-01', dependsOn: [] },
       { ref: 'b', title: 'T-2 추가 API', repo: 'acme/api', teamRole: 'BACKEND', kind: 'IMPLEMENT', spec: 'F-01', dependsOn: [] },
@@ -99,6 +100,7 @@ async function world() {
   const actor = { userId: rep.userId, orgId, orgRole: 'REPRESENTATIVE' };
   const { project } = await createProject(orgId, rep.userId, { name: 'p', autonomyPreset: 'L2', pmBudgetUsd: 10, repoIds: [repo!.id] });
   await assignMember(actor, project.id, agent.agentId, 'BACKEND');
+  await createSpec(rep.userId, project.id, { featureKey: 'F-01', title: 'Todo', content: 'WHEN 추가하면 THEN 201', tests: [] });
 
   setPmModel({ kind: 'fake', async generate() { return respond(draft()); } });
   const requested = await http('POST', `/projects/${project.id}/pm/plans`, rep.token, { instruction: 'Todo' });

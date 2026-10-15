@@ -7,6 +7,7 @@ import { NomosClient } from '../src/bridge/nomos-client.js';
 import { pool } from '../src/config/db.js';
 import { env } from '../src/config/env.js';
 import { connectAgent } from '../src/domain/agent/service.js';
+import { createSpec } from '../src/domain/authoring/service.js';
 import { login, signup } from '../src/domain/auth/service.js';
 import { acceptInvite, createInvite } from '../src/domain/invite/service.js';
 import { createOrganization } from '../src/domain/org/service.js';
@@ -99,6 +100,13 @@ async function world() {
   const { project } = await createProject(orgId, rep.userId, {
     name: '스터디', autonomyPreset: 'L2', pmBudgetUsd: 40, repoIds: [api!.id],
   });
+  // 태스크 나누기는 확정한 기능 명세 위에서만 한다(새 계획 흐름 3단계).
+  await createSpec(rep.userId, project.id, {
+    featureKey: 'F-10',
+    title: '스터디 참여 신청',
+    content: 'WHEN 정원이 차면 THEN 시스템은 POST /api/studies/{id}/join에 409를 반환한다',
+    tests: [],
+  });
   return { rep, be, projectId: project.id };
 }
 
@@ -106,13 +114,7 @@ const DRAFT: PlanDraft = {
   mode: 'SEQUENTIAL',
   rationale: '작고 명확하다',
   estimate: { workingDays: 3, notes: '' },
-  specs: [
-    {
-      featureKey: 'F-10',
-      title: '스터디 참여 신청',
-      content: 'WHEN 정원이 차면 THEN 시스템은 POST /api/studies/{id}/join에 409를 반환한다',
-    },
-  ],
+  specs: [],
   tasks: [{ ref: 'api', title: 'T-10 참여 신청 API', repo: 'acme/study-api', teamRole: 'BACKEND', kind: 'IMPLEMENT', spec: 'F-10', dependsOn: [] }],
 };
 
