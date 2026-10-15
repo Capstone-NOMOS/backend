@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 프로젝트
 
-NOMOS 서버 — 여러 개발자가 각자 노트북에서 Claude Code 에이전트를 돌릴 때 그 사이의 계약·권한·분쟁을 조율하는 서버. 현재 구현 범위는 조직·레포·경로 소유권·초대, 로컬 계정과 CLI 연결(브라우저 승인 포함), 프로젝트·태스크·산출물·인계 노트·검증, 명세·태스크 작성, 내장 PM의 계획 수립, 승인 대기열(ACTION 게이트), 화면용 실시간 신호, 역할별 룸 피드(마이그레이션 017까지), AWS 배포다.
+NOMOS 서버 — 여러 개발자가 각자 노트북에서 Claude Code 에이전트를 돌릴 때 그 사이의 계약·권한·분쟁을 조율하는 서버. 현재 구현 범위는 조직·레포·경로 소유권·초대, 로컬 계정과 CLI 연결(브라우저 승인 포함), 프로젝트·태스크·산출물·인계 노트·검증, 명세·태스크 작성, 새 계획 흐름(기능 명세 → API 계약 → 태스크 나누기, 마이그레이션 023까지), 승인 대기열(ACTION 게이트), 화면용 실시간 신호, 역할별 룸 피드, AWS 배포다.
 
 설계 원칙(위반 금지): **P1** 상태는 서버가 소유하고 클라이언트는 전이를 요청만 한다. **P3** 모든 행동은 사람에게 귀속된다(`on_behalf_of` 없는 이벤트는 없다). **P5** 모든 상태 변화는 `events`에 append되고 events가 유일한 진실이다.
 
@@ -390,9 +390,30 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
 - 명세 목록(`GET .../specs`)의 범위는 태스크 목록과 같다. 에이전트에게는 잠긴 시험지만 보인다(브리핑과 같은 규칙).
 - 수정·삭제·명세 개정(`superseded_by`)은 아직 없다.
 
-### 내장 PM (`domain/pm`) — 계획 수립만
+### 새 계획 흐름 (022·023) — 기능 명세 → API 계약 → 태스크 나누기
+
+대표는 개발자가 아니라 API 계약을 판단할 수 없다. 그래서 계약은 그 소관인 BE가 정하고, PM은 정해진 것 위에서 태스크만 나눈다.
+
+1. **기능 명세**(`POST /pm/features`, `plans.kind='feature'`): 대표의 자연어 요구 → PM이 **개발 용어 없이** 기능·수용 기준·API 필요 여부(`needsApi`)·
+   오가는 데이터(`apiNeeds`, 사람 말로)를 쓴다 → 대표가 확정(apply)하면 명세만 생긴다(태스크 없음). `specs_api_needs_chk`가 둘의 짝을 지킨다.
+2. **API 계약**(`domain/contract`, 023): 확정과 같은 트랜잭션에서 `needsApi` 명세마다 `contracts`가 `pending`으로 생기고 에이전트 스트림에 `{ type: 'contracts' }`.
+   BE 노트북의 Executor가 BE 레포를 **읽기만** 해서(상담과 같은 읽기 전용 실행 — `runReadOnlyClaude`, Read·Grep·Glob, 사용자 MCP 없음, 프롬프트는 stdin)
+   OpenAPI 조각 + 요약 + 정하지 못한 것을 낸다 → BE 담당이 웹에서 확정(`approved`, 잠김)하거나 수정 요청(3회까지 — `CONTRACT_MAX_REVISIONS`).
+   - **형식 판정은 코드다(P2)**: `checkContractYaml`(경로 `/` 시작, 경로마다 메서드, 메서드마다 응답 상태 코드). 422 `CONTRACT_INVALID`면 Executor가 위반을 붙여
+     **한 번만** 고쳐 쓰고, 그래도 안 되면 `failed` 보고(PM 교정과 같은 횟수). 같은 회차를 자동으로 다시 돌리지 않는다 — 다시 시킬지는 BE 담당이 정한다.
+   - 상태 전이는 전부 "그 상태·그 회차일 때만"(`attempt`) 조건부다. 늦게 온 초안은 409 `CONTRACT_STALE`.
+   - **확정은 BE 담당(그 프로젝트 BACKEND 에이전트의 주인)이 한다.** BE 담당이 없을 때만 대표가 대신한다. FE 확인 단계는 두지 않는다(대표 결정) —
+     화면에 더 필요한 것은 실행 중 AskUserQuestion으로 BE에게 묻는다(질문 중계).
+3. **태스크 나누기**(`POST /pm/plans`, `kind='tasks'`, 지시는 선택): 확정한 명세가 있어야 하고(409 `NO_FEATURE_SPECS`) API 기능의 계약이 전부
+   확정돼야 한다(409 `CONTRACTS_NOT_APPROVED { featureKeys }`). PM은 명세 본문·확정한 계약을 받고 **명세를 만들지 않는다**(만들면 `pmOnlyProblems` 위반 → 교정).
+   - 태스크를 INSERT할 때 그 명세의 확정한 계약을 `tasks.contract_id`로 붙인다(`authoring/repository.ts`의 `insertTask` — 모든 작성 경로가 한 벌).
+   - 브리핑 `contract`는 태스크 명세의 확정한 계약이다(FE·BE가 **같은** 계약을 받는다). Executor 프롬프트의 "확정한 API 계약" 절.
+   - **시작 조건**: 끝나지 않은 태스크가 붙은 API 기능의 계약이 확정되지 않았으면 시작할 수 없다(사람이 손으로 만든 태스크도) — 계약 없이 시작하면 FE·BE가 서로 다른 API를 짐작한다.
+
+### 내장 PM (`domain/pm`) — 기능 명세·태스크 나누기
 
 대표의 지시 → PM 초안(비동기, `pending → ready | failed`) → 대표 검토 → 적용(`applied`). PM은 NOMOS 키(`ANTHROPIC_API_KEY`)로 서버에서 돈다.
+종류(`plans.kind`)마다 지침·출력 형식·검증·적용 입력만 다르고(`service.ts`의 `KINDS`) 호출·교정·예산·중계·적용 흐름은 한 벌이다.
 PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
 
 - **판정은 코드가 한다(P2).** 초안은 명세·태스크 작성과 같은 검증(`domain/authoring`)을 **dry-run**으로 거친다. 위반이면 위반 목록을 붙여
@@ -433,10 +454,10 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
   작업에 프로젝트 맥락이 들어 있고 결과가 곧 초안이다. 아무도 안 가져가면 `PM_TIMEOUT_MS`로 `failed(timeout)`. 개인 구독을 여러 사용자의 PM으로
   쓰지 말 것 — 운영은 API 모드(기본)다. 워커는 지침을 파일·프롬프트를 stdin으로 넘긴다(Windows 명령줄 32k자 제한).
 - **PM은 INTEGRATION 태스크를 만들지 않는다** — 통합 확인 항목(`integrationChecks`)을 쓰고 대표가 G3에서 확인한다(위 "승인 대기열").
-- **PM 지침의 선행(dependsOn)**: 계약만 보고 만들 수 있으면 걸지 않는다(병행). 상대가 구현하며 정할 것·실제 동작하는 상대 API에 기대면 건다.
-  계약을 먼저 정해야 하는데 명세에 다 못 적으면 "계약 확정"(DECIDED 노트) 태스크로 쪼개고 상대는 거기에만 건다. 선행을 거는 것 = 그 결과와 노트를 받고 시작한다는 뜻이다.
-- **PM은 시험지(spec_tests)를 쓰지 않는다 — 의도된 결정이다. PM 명세의 `tests: []`는 버그가 아니다.** 명세 content에 계약(API: 메서드·경로·상태코드·응답 필드 /
-  화면: 경로·동작·문구)과 EARS 수용 기준을 쓰고, 태스크로 어느 레포·역할에 보낼지를 정하는 데 집중한다. 이유:
+- **PM 지침의 선행(dependsOn)**: 확정한 계약만 보고 만들 수 있으면 걸지 않는다(병행 — 계약을 먼저 확정하는 이유다). 상대가 구현하며 정할 것·
+  실제 동작하는 상대 API에 기대면 건다. 선행을 거는 것 = 그 결과와 노트를 받고 시작한다는 뜻이다.
+- **PM은 시험지(spec_tests)를 쓰지 않는다 — 의도된 결정이다. PM 명세의 `tests: []`는 버그가 아니다.** 기능 명세는 수용 기준을, 계약은 BE가 쓰고,
+  태스크 나누기는 어느 레포·역할에 보낼지를 정하는 데 집중한다. 이유:
   ① **토큰 사용량** — 시험지가 출력의 대부분이었다(같은 지시로 30.7k → 9.5k 토큰, 154초 → 57초).
   ② **품질은 다른 곳에서 올린다** — 계약 대조(V1A)·실제 diff 검사(V3)·인계 노트 확인 등. 게다가 시험지는 시험 데이터·인증·서버 기동을 아무도 마련하지 않은
   상태에서 추측(`LEADER_TOKEN`, `localStorage['token']`)으로 채워졌고, 그 코드가 팀원 노트북에서 실행되기도 한다.
@@ -701,7 +722,7 @@ const { repoId } = req.params as z.infer<typeof repoIdParamsSchema>
 
 ### 라우터 마운트
 
-라우터 14개(`auth`, `agents`, `orgs`, `repos`, `repo-paths`, `invites`, `oauth`, `approvals`, `tasks`, `notes`, `projects`, `specs`, `pm`, `rooms`)가 전부 `app.use("/api", ...)`로 마운트되고(`/health`·`/docs`는 `/api` 밖), 각 파일이 `/orgs/:orgId/...` 같은 전체 경로를 직접 선언한다. 그래서 URL 접두사가 아니라 **도메인 기준**으로 파일이 나뉜다 — 예를 들어 `POST /api/orgs/:orgId/repos`는 URL은 orgs 밑이지만 `routes/repos.ts`에 있고, `POST /api/orgs/:orgId/invites`는 `routes/invites.ts`에 있다.
+라우터 16개(`auth`, `agents`, `orgs`, `repos`, `repo-paths`, `invites`, `oauth`, `approvals`, `tasks`, `notes`, `projects`, `specs`, `pm`, `rooms`, `questions`, `contracts`)가 전부 `app.use("/api", ...)`로 마운트되고(`/health`·`/docs`는 `/api` 밖), 각 파일이 `/orgs/:orgId/...` 같은 전체 경로를 직접 선언한다. 그래서 URL 접두사가 아니라 **도메인 기준**으로 파일이 나뉜다 — 예를 들어 `POST /api/orgs/:orgId/repos`는 URL은 orgs 밑이지만 `routes/repos.ts`에 있고, `POST /api/orgs/:orgId/invites`는 `routes/invites.ts`에 있다.
 
 
 ## 스키마 변경 규칙
