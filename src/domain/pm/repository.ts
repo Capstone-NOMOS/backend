@@ -1,14 +1,16 @@
 import type { QueryResultRow } from 'pg';
 import type { Queryable } from '../../config/db.js';
-import type { PlanDraft } from './draft.js';
 import type { PlanContext } from './prompt.js';
 
 export type PlanStatus = 'pending' | 'ready' | 'failed' | 'applied' | 'rejected';
+// 022: 기능 명세 초안(feature) | 태스크 분할 초안(tasks). 초안 형식은 kind로 갈린다.
+export type PlanKind = 'feature' | 'tasks';
 export type PlanErrorReason = 'refused' | 'truncated' | 'timeout' | 'invalid' | 'restart' | 'budget' | 'api_error';
 
 export type PlanRow = {
   id: string;
   projectId: string;
+  kind: PlanKind;
   status: PlanStatus;
   instruction: string | null;
   feedback: string | null;
@@ -16,7 +18,8 @@ export type PlanRow = {
   rootPlanId: string;
   requestedBy: string;
   mode: string | null;
-  draft: PlanDraft | null;
+  // kind에 따라 PlanDraft(tasks) 또는 FeatureDraft(feature). 서비스가 kind를 보고 읽는다.
+  draft: unknown;
   dagHash: string | null;
   errorReason: PlanErrorReason | null;
   errorDetail: unknown;
@@ -31,6 +34,7 @@ function toPlan(row: QueryResultRow): PlanRow {
   return {
     id: row.id,
     projectId: row.project_id,
+    kind: row.kind,
     status: row.status,
     instruction: row.instruction,
     feedback: row.feedback,
@@ -55,6 +59,7 @@ export async function insertPendingPlan(
   plan: {
     id: string;
     projectId: string;
+    kind: PlanKind;
     requestedBy: string;
     instruction: string;
     feedback: string | null;
@@ -63,9 +68,9 @@ export async function insertPendingPlan(
   },
 ): Promise<PlanRow> {
   const { rows } = await db.query(
-    `INSERT INTO plans (id, project_id, requested_by, instruction, feedback, parent_plan_id, root_plan_id, source, status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, 'planner', 'pending') RETURNING *`,
-    [plan.id, plan.projectId, plan.requestedBy, plan.instruction, plan.feedback, plan.parentPlanId, plan.rootPlanId],
+    `INSERT INTO plans (id, project_id, kind, requested_by, instruction, feedback, parent_plan_id, root_plan_id, source, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'planner', 'pending') RETURNING *`,
+    [plan.id, plan.projectId, plan.kind, plan.requestedBy, plan.instruction, plan.feedback, plan.parentPlanId, plan.rootPlanId],
   );
   return toPlan(rows[0]!);
 }
@@ -120,14 +125,15 @@ export async function setInflightMaxCost(db: Queryable, planId: string, usd: num
 export async function markPlanReady(
   db: Queryable,
   planId: string,
-  draft: PlanDraft,
+  draft: unknown,
   structure: unknown,
   dagHash: string,
+  mode: string | null,
 ): Promise<boolean> {
   const { rowCount } = await db.query(
     `UPDATE plans SET status = 'ready', dag_snapshot = $2, structure = $3, dag_hash = $4, mode = $5, inflight_max_cost_usd = NULL
       WHERE id = $1 AND status = 'pending'`,
-    [planId, JSON.stringify(draft), JSON.stringify(structure), dagHash, draft.mode],
+    [planId, JSON.stringify(draft), JSON.stringify(structure), dagHash, mode],
   );
   return rowCount === 1;
 }

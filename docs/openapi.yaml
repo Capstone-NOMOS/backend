@@ -797,12 +797,35 @@ components:
           required: [accepted]
           properties:
             accepted: { type: boolean, enum: [true] }
+    FeatureDraft:
+      type: object
+      description: 'PM의 기능 명세 초안(022). 대표가 읽고 판단할 수 있게 개발 용어 없이 쓴다. 계약(주소·필드)은 백엔드 담당이 따로 정한다'
+      required: [summary, assumptions, features]
+      properties:
+        summary: { type: string }
+        assumptions: { type: array, items: { type: string }, description: '요구가 모호해 가정한 것 — 대표가 확인한다' }
+        features:
+          type: array
+          items:
+            type: object
+            required: [featureKey, title, description, acceptance, needsApi, apiNeeds]
+            properties:
+              featureKey: { type: string }
+              title: { type: string }
+              description: { type: string, description: '누가 어떤 화면에서 무엇을 하고 무엇을 보는지' }
+              acceptance: { type: array, items: { type: string }, description: '확인할 수 있는 수용 기준' }
+              needsApi: { type: boolean }
+              apiNeeds: { type: string, nullable: true, description: '오가야 하는 데이터(사람 말로)' }
     PmPlan:
       type: object
-      required: [id, projectId, status, instruction, feedback, parentPlanId, mode, draft, error, costUsd, createdAt, appliedAt, rejectedAt, rejectReason, assignments]
+      required: [id, projectId, kind, status, instruction, feedback, parentPlanId, mode, draft, featureDraft, error, costUsd, createdAt, appliedAt, rejectedAt, rejectReason, assignments]
       properties:
         id: { type: string, format: uuid }
         projectId: { type: string, format: uuid }
+        kind:
+          type: string
+          enum: [feature, tasks]
+          description: 'feature = 기능 명세 초안(새 흐름 1단계, featureDraft) · tasks = 태스크 분할 초안(draft)'
         status:
           type: string
           enum: [pending, ready, failed, applied, rejected]
@@ -811,7 +834,8 @@ components:
         feedback: { type: string, nullable: true, description: '수정 요청이면 대표의 피드백' }
         parentPlanId: { type: string, format: uuid, nullable: true, description: '수정 요청이면 이전 초안' }
         mode: { type: string, nullable: true }
-        draft: { $ref: '#/components/schemas/PlanDraft', nullable: true }
+        draft: { $ref: '#/components/schemas/PlanDraft', nullable: true, description: 'kind=tasks의 초안. feature면 null' }
+        featureDraft: { $ref: '#/components/schemas/FeatureDraft', nullable: true, description: 'kind=feature의 초안(022). tasks면 null' }
         error:
           type: object
           nullable: true
@@ -851,12 +875,14 @@ components:
                   nickname: { type: string, nullable: true, description: '주인의 닉네임' }
     Spec:
       type: object
-      required: [id, featureKey, title, content, version, createdAt, tests]
+      required: [id, featureKey, title, content, needsApi, apiNeeds, version, createdAt, tests]
       properties:
         id: { type: string, format: uuid }
         featureKey: { type: string, description: '프로젝트 안에서 유일(F-05 같은 기능 키)' }
         title: { type: string }
-        content: { type: string, description: 'EARS 문장 — WHEN … THEN …' }
+        content: { type: string, description: '기능 설명 + 수용 기준(022 이후 PM 명세는 개발 용어 없이). 예전 명세는 계약까지 들어 있다' }
+        needsApi: { type: boolean, description: '이 기능에 API가 필요한가(022) — 필요하면 계약 단계로 간다' }
+        apiNeeds: { type: string, nullable: true, description: '어떤 데이터가 오가야 하는가(사람 말로). needsApi면 있다' }
         version: { type: integer }
         createdAt: { type: string, format: date-time }
         tests:
@@ -3404,6 +3430,35 @@ paths:
                   projectId: '{{PROJECT_ID}}'
                   teamRole: BACKEND
                   maxConcurrent: 2
+
+  /projects/{projectId}/pm/features:
+    post:
+      tags: [내장 PM]
+      summary: 기능 명세 초안 요청 (대표 전용, 새 계획 흐름 1단계)
+      description: |
+        대표의 자연어 요구로 PM이 **기능 명세** 초안을 만든다(022). 대표가 읽고 판단할 수 있게 화면·동작·수용 기준을 개발 용어 없이 쓰고,
+        기능마다 API가 필요한지와 어떤 데이터가 오가야 하는지(사람 말로)를 적는다. API 계약은 쓰지 않는다 — 백엔드 담당이 정한다(2단계).
+        응답·폴링·수정 요청(`.../pm/plans/{planId}/revise`)·반려·확정(`.../apply`)은 계획과 같다. 확정하면 명세가 만들어지고 태스크는 만들어지지 않는다.
+        진행 중 요청 하나(409 `PM_PLAN_IN_PROGRESS`), 예산(409 `PM_BUDGET_EXCEEDED`), PM 키 없음(503 `PM_UNAVAILABLE`)도 같다.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/ProjectId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [instruction]
+              properties:
+                instruction: { type: string, minLength: 1, maxLength: 8000, description: '대표의 요구(자연어)' }
+            example:
+              instruction: 스터디 상세 화면에서 멤버 목록을 보고 싶다. 멤버마다 닉네임과 가입한 날짜가 보이면 좋겠다.
+      responses:
+        '202':
+          description: 요청됨 — 상태는 pending. GET .../pm/plans/{planId}로 폴링한다
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/PmPlan' } } }
 
   /projects/{projectId}/pm/plans:
     get:

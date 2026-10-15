@@ -4,6 +4,7 @@ import {
   applyPlan,
   getPlan,
   listProjectPlans,
+  requestFeatureSpec,
   requestPlan,
   revisePlan,
   failRelayJob,
@@ -32,6 +33,19 @@ pmRouter.post(
   async (req, res) => {
     const { projectId } = req.params as z.infer<typeof projectParams>;
     res.status(202).json({ data: await requestPlan(req.user!.id, projectId, req.body.instruction as string) });
+  },
+);
+
+// POST /api/projects/:projectId/pm/features — 기능 명세 초안 요청(새 계획 흐름 1단계, 022).
+// 대표의 자연어 요구 → PM이 개발 용어 없는 기능 명세. 수정 요청·반려·확정(apply)은 계획과 같은 API를 쓴다.
+pmRouter.post(
+  '/projects/:projectId/pm/features',
+  validate({ params: projectParams, body: z.object({ instruction: z.string().trim().min(1).max(8000) }).strict() }),
+  authenticate,
+  requireRepresentative,
+  async (req, res) => {
+    const { projectId } = req.params as z.infer<typeof projectParams>;
+    res.status(202).json({ data: await requestFeatureSpec(req.user!.id, projectId, req.body.instruction as string) });
   },
 );
 

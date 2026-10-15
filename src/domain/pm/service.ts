@@ -9,7 +9,17 @@ import { authorInTransaction } from '../authoring/apply.js';
 import { findActor, lockProjectForAuthoring } from '../authoring/repository.js';
 import { tasksChanged } from '../dispatch/tasks-changed.js';
 import { appendEvent } from '../events/append.js';
+import type { AuthoringInput } from '../authoring/apply.js';
 import { dagHashOf, draftToAuthoring, PLAN_DRAFT_JSON_SCHEMA, planDraftSchema, planStructure, pmOnlyProblems, type PlanDraft } from './draft.js';
+import {
+  FEATURE_DRAFT_JSON_SCHEMA,
+  featureDraftSchema,
+  featureDraftToAuthoring,
+  featureHashOf,
+  featureOnlyProblems,
+  featureStructure,
+  type FeatureDraft,
+} from './feature-draft.js';
 import { getPmModel, type PmModel } from './model.js';
 import {
   completeJob,
@@ -23,7 +33,7 @@ import {
 } from './relay.js';
 import { findUserById } from '../org/repository.js';
 import { costOfAttempts, estimateInputTokens, maxCallCost, type AttemptUsage } from './pricing.js';
-import { buildUserPrompt, PM_SYSTEM_PROMPT } from './prompt.js';
+import { buildFeatureUserPrompt, buildUserPrompt, FEATURE_SYSTEM_PROMPT, PM_SYSTEM_PROMPT, type PlanContext } from './prompt.js';
 import {
   chainHasAppliedPlan,
   countChainRevisions,
@@ -43,6 +53,7 @@ import {
   pmSpentUsd,
   setInflightMaxCost,
   type PlanErrorReason,
+  type PlanKind,
   type PlanRow,
   type ProjectForPm,
   type RoleAssignee,
@@ -59,17 +70,75 @@ import {
 const PM_ACTOR = 'system:pm';
 const OPEN_STATUSES = new Set(['planning', 'active']);
 
+// ── 계획 종류별 차이(022) ────────────────────────────────────────────────
+// 호출·교정·예산·시간 제한·중계·적용 흐름은 한 벌이고, 종류마다 지침·출력 형식·검증·적용 입력만 다르다.
+type Previous = { draft: unknown; feedback?: string; problems?: string[] };
+type KindSpec = {
+  system: string;
+  schema: Record<string, unknown>;
+  buildUser(context: PlanContext, instruction: string, previous?: Previous): string;
+  parse(json: unknown): { ok: true; draft: unknown } | { ok: false; problems: string[] };
+  ownProblems(draft: unknown): string[];
+  toAuthoring(draft: unknown, ctx: { projectId: string; actorUserId: string; planId: string }): AuthoringInput;
+  shape(draft: unknown): { structure: unknown; hash: string; mode: string | null; specCount: number; taskCount: number };
+};
+
+function zodProblems(issues: { path: (string | number)[]; message: string }[]): string[] {
+  return issues.map((i) => `${i.path.join('.')}: ${i.message}`);
+}
+
+const KINDS: Record<PlanKind, KindSpec> = {
+  // 기능 명세(새 흐름 1단계) — 명세만 만든다. 태스크는 대표가 나중에 따로 나눈다.
+  feature: {
+    system: FEATURE_SYSTEM_PROMPT,
+    schema: FEATURE_DRAFT_JSON_SCHEMA,
+    buildUser: (context, instruction, previous) => buildFeatureUserPrompt({ context, instruction, ...(previous ? { previous } : {}) }),
+    parse: (json) => {
+      const r = featureDraftSchema.safeParse(json);
+      return r.success ? { ok: true, draft: r.data } : { ok: false, problems: zodProblems(r.error.issues) };
+    },
+    ownProblems: (draft) => featureOnlyProblems(draft as FeatureDraft),
+    toAuthoring: (draft, ctx) => featureDraftToAuthoring(draft as FeatureDraft, ctx),
+    shape: (draft) => {
+      const d = draft as FeatureDraft;
+      const structure = featureStructure(d);
+      return { structure, hash: featureHashOf(structure), mode: null, specCount: d.features.length, taskCount: 0 };
+    },
+  },
+  tasks: {
+    system: PM_SYSTEM_PROMPT,
+    schema: PLAN_DRAFT_JSON_SCHEMA,
+    buildUser: (context, instruction, previous) =>
+      buildUserPrompt({ context, instruction, ...(previous ? { previous: { ...previous, draft: previous.draft as PlanDraft } } : {}) }),
+    parse: (json) => {
+      const r = planDraftSchema.safeParse(json);
+      return r.success ? { ok: true, draft: r.data } : { ok: false, problems: zodProblems(r.error.issues) };
+    },
+    ownProblems: (draft) => pmOnlyProblems(draft as PlanDraft),
+    toAuthoring: (draft, ctx) => draftToAuthoring(draft as PlanDraft, ctx),
+    shape: (draft) => {
+      const d = draft as PlanDraft;
+      const structure = planStructure(d);
+      return { structure, hash: dagHashOf(structure), mode: d.mode, specCount: d.specs.length, taskCount: d.tasks.length };
+    },
+  },
+};
+
 // ── 요청 ────────────────────────────────────────────────────────────────
 
 export type PlanView = {
   id: string;
   projectId: string;
+  kind: PlanKind;
   status: PlanRow['status'];
   instruction: string | null;
   feedback: string | null;
   parentPlanId: string | null;
   mode: string | null;
+  // 태스크 분할 초안(kind=tasks). 기능 명세면 null.
   draft: PlanDraft | null;
+  // 기능 명세 초안(kind=feature, 022). 태스크 분할이면 null.
+  featureDraft: FeatureDraft | null;
   error: { reason: PlanErrorReason; detail: unknown } | null;
   costUsd: number;
   createdAt: string;
@@ -101,22 +170,25 @@ function assignmentsOf(draft: PlanDraft | null, assignees: Map<string, RoleAssig
 }
 
 function toView(plan: PlanRow, costUsd: number, assignees: Map<string, RoleAssignee>): PlanView {
+  const tasksDraft = plan.kind === 'tasks' ? ((plan.draft as PlanDraft | null) ?? null) : null;
   return {
     id: plan.id,
     projectId: plan.projectId,
+    kind: plan.kind,
     status: plan.status,
     instruction: plan.instruction,
     feedback: plan.feedback,
     parentPlanId: plan.parentPlanId,
     mode: plan.mode,
-    draft: plan.draft,
+    draft: tasksDraft,
+    featureDraft: plan.kind === 'feature' ? ((plan.draft as FeatureDraft | null) ?? null) : null,
     error: plan.errorReason === null ? null : { reason: plan.errorReason, detail: plan.errorDetail ?? null },
     costUsd,
     createdAt: plan.createdAt,
     appliedAt: plan.appliedAt,
     rejectedAt: plan.rejectedAt,
     rejectReason: plan.rejectReason,
-    assignments: assignmentsOf(plan.draft, assignees),
+    assignments: assignmentsOf(tasksDraft, assignees),
   };
 }
 
@@ -135,10 +207,11 @@ function requireModel(): PmModel {
 }
 
 // 호출 전에 보는 최대 비용. 프롬프트 길이로 입력을 보수적으로 추정한다.
-async function nextCallMaxCost(tx: PoolClient, project: ProjectForPm, instruction: string, previous?: PlanDraft) {
+async function nextCallMaxCost(tx: PoolClient, project: ProjectForPm, kind: PlanKind, instruction: string, previous?: unknown) {
   const context = await loadPlanContext(tx, project);
-  const user = buildUserPrompt({ context, instruction, ...(previous ? { previous: { draft: previous, feedback: '' } } : {}) });
-  return maxCallCost(env.PM_MODEL, estimateInputTokens(PM_SYSTEM_PROMPT, user, JSON.stringify(PLAN_DRAFT_JSON_SCHEMA)), env.PM_MAX_TOKENS);
+  const spec = KINDS[kind];
+  const user = spec.buildUser(context, instruction, previous ? { draft: previous, feedback: '' } : undefined);
+  return maxCallCost(env.PM_MODEL, estimateInputTokens(spec.system, user, JSON.stringify(spec.schema)), env.PM_MAX_TOKENS);
 }
 
 async function assertWithinBudget(tx: PoolClient, project: ProjectForPm, maxCost: number): Promise<void> {
@@ -155,7 +228,7 @@ async function assertWithinBudget(tx: PoolClient, project: ProjectForPm, maxCost
 async function openRequest(
   actorUserId: string,
   projectId: string,
-  input: { instruction: string; feedback: string | null; parent: PlanRow | null },
+  input: { kind: PlanKind; instruction: string; feedback: string | null; parent: PlanRow | null },
 ): Promise<PlanView> {
   requireModel();
   const plan = await withTransaction(async (tx) => {
@@ -181,12 +254,13 @@ async function openRequest(
       }
     }
     const project = (await findProjectForPm(tx, projectId))!;
-    await assertWithinBudget(tx, project, await nextCallMaxCost(tx, project, input.instruction, input.parent?.draft ?? undefined));
+    await assertWithinBudget(tx, project, await nextCallMaxCost(tx, project, input.kind, input.instruction, input.parent?.draft ?? undefined));
 
     const id = randomUUID();
     const created = await insertPendingPlan(tx, {
       id,
       projectId,
+      kind: input.kind,
       requestedBy: actorUserId,
       instruction: input.instruction,
       feedback: input.feedback,
@@ -199,7 +273,7 @@ async function openRequest(
       type: 'PM_PLAN_REQUESTED',
       onBehalfOf: actorUserId,
       policyHash: project.policyHash,
-      payload: { planId: id, parentPlanId: input.parent?.id ?? null, kind: input.parent ? 'revise' : 'draft' },
+      payload: { planId: id, parentPlanId: input.parent?.id ?? null, kind: input.parent ? 'revise' : 'draft', planKind: input.kind },
     });
     return created;
   });
@@ -208,7 +282,12 @@ async function openRequest(
 }
 
 export async function requestPlan(actorUserId: string, projectId: string, instruction: string): Promise<PlanView> {
-  return openRequest(actorUserId, projectId, { instruction, feedback: null, parent: null });
+  return openRequest(actorUserId, projectId, { kind: 'tasks', instruction, feedback: null, parent: null });
+}
+
+// 기능 명세 요청(022, 새 흐름 1단계). 대표의 자연어 요구 → PM이 개발 용어 없는 기능 명세 초안 → 대표 확정(적용).
+export async function requestFeatureSpec(actorUserId: string, projectId: string, instruction: string): Promise<PlanView> {
+  return openRequest(actorUserId, projectId, { kind: 'feature', instruction, feedback: null, parent: null });
 }
 
 // 수정 요청. 이전 초안 + 피드백을 넣은 **새 단발 호출**이다 — 대화를 이어 붙이지 않으므로 거절된 턴이 섞일 일이 없다.
@@ -218,7 +297,7 @@ export async function revisePlan(actorUserId: string, projectId: string, planId:
   if (parent.status !== 'ready' || parent.draft === null) {
     throw new AppError('PLAN_NOT_APPLICABLE', `only a ready plan can be revised (this one is ${parent.status})`);
   }
-  return openRequest(actorUserId, projectId, { instruction: parent.instruction ?? '', feedback, parent });
+  return openRequest(actorUserId, projectId, { kind: parent.kind, instruction: parent.instruction ?? '', feedback, parent });
 }
 
 // ── 조회 ────────────────────────────────────────────────────────────────
@@ -333,7 +412,7 @@ export async function applyPlan(actorUserId: string, projectId: string, planId: 
 
   const client = await pool.connect();
   try {
-    await authorInTransaction(client, draftToAuthoring(draft, { projectId, actorUserId, planId }), {
+    await authorInTransaction(client, KINDS[plan.kind].toAuthoring(draft, { projectId, actorUserId, planId }), {
       hooks: {
         beforeValidate: async (tx) => {
           const current = await findPlan(tx, planId, { forUpdate: true });
@@ -353,7 +432,7 @@ export async function applyPlan(actorUserId: string, projectId: string, planId: 
             type: 'PLAN_APPLIED',
             onBehalfOf: actorUserId,
             policyHash: project.policyHash,
-            payload: { planId, specIds: result.specs.map((s) => s.id), taskIds: result.taskIds.map((t) => t.id) },
+            payload: { planId, planKind: plan.kind, specIds: result.specs.map((s) => s.id), taskIds: result.taskIds.map((t) => t.id) },
           });
         },
       },
@@ -430,8 +509,9 @@ async function callModel(
   planId: string,
   purpose: 'draft' | 'repair',
   user: string,
+  spec: KindSpec,
 ): Promise<CallOutcome> {
-  const maxCost = maxCallCost(env.PM_MODEL, estimateInputTokens(PM_SYSTEM_PROMPT, user, JSON.stringify(PLAN_DRAFT_JSON_SCHEMA)), env.PM_MAX_TOKENS);
+  const maxCost = maxCallCost(env.PM_MODEL, estimateInputTokens(spec.system, user, JSON.stringify(spec.schema)), env.PM_MAX_TOKENS);
 
   // 호출마다 예산을 본다(교정 호출 포함). 최대치를 계획 행에 적어 두어, 끊기면 그 값으로 정산한다.
   const reserved = await withTransaction(async (tx) => {
@@ -456,9 +536,9 @@ async function callModel(
       model: env.PM_MODEL,
       effort: env.PM_EFFORT,
       maxTokens: env.PM_MAX_TOKENS,
-      system: PM_SYSTEM_PROMPT,
+      system: spec.system,
       user,
-      jsonSchema: PLAN_DRAFT_JSON_SCHEMA,
+      jsonSchema: spec.schema,
       signal: controller.signal,
       context: { orgId: project.orgId, planId, purpose },
     });
@@ -498,13 +578,14 @@ async function callModel(
 
 // 응답 → 초안. stop_reason → JSON 해석 → 형식(zod) → 도메인 검증(dry-run) 순서.
 type Judged =
-  | { kind: 'ok'; draft: PlanDraft }
-  | { kind: 'fix'; problems: string[]; draft: PlanDraft | null }
+  | { kind: 'ok'; draft: unknown }
+  | { kind: 'fix'; problems: string[]; draft: unknown }
   | { kind: 'failed'; reason: PlanErrorReason; detail: unknown };
 
 async function judge(
   outcome: { stopReason: string | null; text: string },
   ctx: { projectId: string; actorUserId: string; planId: string },
+  spec: KindSpec,
 ): Promise<Judged> {
   if (outcome.stopReason === 'refusal') return { kind: 'failed', reason: 'refused', detail: null };
   // 출력 한도 부족이다 — 같은 한도로 교정하면 또 잘린다.
@@ -516,22 +597,20 @@ async function judge(
   } catch {
     return { kind: 'fix', problems: ['응답이 JSON이 아니다'], draft: null };
   }
-  const parsed = planDraftSchema.safeParse(json);
-  if (!parsed.success) {
-    return { kind: 'fix', problems: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`), draft: null };
-  }
+  const parsed = spec.parse(json);
+  if (!parsed.ok) return { kind: 'fix', problems: parsed.problems, draft: null };
 
-  const pmProblems = pmOnlyProblems(parsed.data);
-  if (pmProblems.length > 0) return { kind: 'fix', problems: pmProblems, draft: parsed.data };
+  const own = spec.ownProblems(parsed.draft);
+  if (own.length > 0) return { kind: 'fix', problems: own, draft: parsed.draft };
 
   const client = await pool.connect();
   try {
-    await authorInTransaction(client, draftToAuthoring(parsed.data, ctx), { dryRun: true });
-    return { kind: 'ok', draft: parsed.data };
+    await authorInTransaction(client, spec.toAuthoring(parsed.draft, ctx), { dryRun: true });
+    return { kind: 'ok', draft: parsed.draft };
   } catch (err) {
     if (err instanceof AppError && err.code === 'PLAN_INVALID') {
       const problems = (err.details as { where: string; message: string }[]).map((p) => `${p.where} ${p.message}`);
-      return { kind: 'fix', problems, draft: parsed.data };
+      return { kind: 'fix', problems, draft: parsed.draft };
     }
     if (err instanceof AppError) return { kind: 'failed', reason: 'invalid', detail: { code: err.code, message: err.message } };
     throw err;
@@ -566,32 +645,29 @@ async function runPlan(planId: string): Promise<void> {
   const ctx = { projectId: project.id, actorUserId: plan.requestedBy, planId };
   const instruction = plan.instruction ?? '';
 
-  const firstPrompt = buildUserPrompt({
-    context,
-    instruction,
-    ...(parent?.draft ? { previous: { draft: parent.draft, feedback: plan.feedback ?? '' } } : {}),
-  });
+  const spec = KINDS[plan.kind];
+  const firstPrompt = spec.buildUser(context, instruction, parent?.draft ? { draft: parent.draft, feedback: plan.feedback ?? '' } : undefined);
 
   let repaired = false;
-  let outcome = await callModel(model, project, planId, 'draft', firstPrompt);
+  let outcome = await callModel(model, project, planId, 'draft', firstPrompt, spec);
   for (;;) {
     if (outcome.kind === 'gone') return;
     if (outcome.kind === 'failed') return finishFailed(project, planId, outcome.reason, outcome.detail);
 
-    const judged = await judge(outcome, ctx);
+    const judged = await judge(outcome, ctx, spec);
     if (judged.kind === 'failed') return finishFailed(project, planId, judged.reason, judged.detail);
     if (judged.kind === 'ok') {
-      const structure = planStructure(judged.draft);
-      const dagHash = dagHashOf(structure);
+      const shaped = spec.shape(judged.draft);
+      const dagHash = shaped.hash;
       await withTransaction(async (tx) => {
-        if (!(await markPlanReady(tx, planId, judged.draft, structure, dagHash))) return;
+        if (!(await markPlanReady(tx, planId, judged.draft, shaped.structure, dagHash, shaped.mode))) return;
         await appendEvent(tx, {
           orgId: project.orgId,
           projectId: project.id,
           type: 'PM_PLAN_DRAFTED',
           onBehalfOf: PM_ACTOR,
           policyHash: project.policyHash,
-          payload: { planId, dagHash, specCount: judged.draft.specs.length, taskCount: judged.draft.tasks.length, repaired },
+          payload: { planId, planKind: plan.kind, dagHash, specCount: shaped.specCount, taskCount: shaped.taskCount, repaired },
         });
       });
       return;
@@ -599,13 +675,9 @@ async function runPlan(planId: string): Promise<void> {
     // 교정은 한 번만. 무한 재시도는 비용과 비결정성만 늘린다.
     if (repaired) return finishFailed(project, planId, 'invalid', { problems: judged.problems });
     repaired = true;
-    const repairPrompt = buildUserPrompt({
-      context,
-      instruction,
-      ...(judged.draft ? { previous: { draft: judged.draft, problems: judged.problems } } : {}),
-    });
+    const repairPrompt = spec.buildUser(context, instruction, judged.draft ? { draft: judged.draft, problems: judged.problems } : undefined);
     const withProblems = judged.draft ? repairPrompt : `${repairPrompt}\n\n## 이전 응답의 문제 — 고쳐서 다시 내라\n${judged.problems.map((p) => `- ${p}`).join('\n')}`;
-    outcome = await callModel(model, project, planId, 'repair', withProblems);
+    outcome = await callModel(model, project, planId, 'repair', withProblems, spec);
   }
 }
 

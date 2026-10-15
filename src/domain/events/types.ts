@@ -498,7 +498,7 @@ export type TaskCreatedPayload = {
 
 // ── 내장 PM(domain/pm) ──
 // 요청·적용은 대표 명의, 초안 생성·호출은 system:pm 명의다(P3).
-export type PmPlanRequestedPayload = { planId: string; parentPlanId: string | null; kind: 'draft' | 'revise' };
+export type PmPlanRequestedPayload = { planId: string; parentPlanId: string | null; kind: 'draft' | 'revise'; planKind?: 'feature' | 'tasks' };
 
 // PM의 모델 호출 한 번. 비용은 events.token_cost(USD)에 싣는다 — 프로젝트 PM 예산은 이 합계로 검사한다.
 // interrupted면 실제 사용량을 모른다(재시작·시간 제한) — 호출 전에 잡아 둔 최대치로 정산한 것이다.
@@ -515,7 +515,7 @@ export type PmCallPayload = {
   attempts: { model: string; inputTokens: number; outputTokens: number; cacheWriteTokens: number; cacheReadTokens: number }[];
 };
 
-export type PmPlanDraftedPayload = { planId: string; dagHash: string; specCount: number; taskCount: number; repaired: boolean };
+export type PmPlanDraftedPayload = { planId: string; planKind?: 'feature' | 'tasks'; dagHash: string; specCount: number; taskCount: number; repaired: boolean };
 export type PmPlanFailedPayload = { planId: string; reason: string };
 // 대표가 초안을 버렸다. 사유는 선택이다. 지표: PM 초안이 얼마나 반려되나(수정 요청과 구분된다).
 export type PlanRejectedPayload = {
@@ -524,7 +524,8 @@ export type PlanRejectedPayload = {
   reason: string | null;
 };
 
-export type PlanAppliedPayload = { planId: string; specIds: string[]; taskIds: string[] };
+// planKind(022): feature = 기능 명세 확정, tasks = 태스크 적용. 이전 이벤트에는 없다(tasks).
+export type PlanAppliedPayload = { planId: string; planKind?: 'feature' | 'tasks'; specIds: string[]; taskIds: string[] };
 
 // CLI 브라우저 승인. 요청 시점에는 승인할 사람이 아직 없다 — on_behalf_of는 system:device-flow.
 // 결정(승인·거부)은 결정한 사람 명의다. 토큰 발급은 AGENT_CONNECTED(method: 'device')로 남는다.

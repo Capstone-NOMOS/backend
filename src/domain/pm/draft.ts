@@ -121,6 +121,8 @@ export function draftToAuthoring(
       title: s.title,
       content: s.content,
       tests: [],
+      needsApi: false,
+      apiNeeds: null,
     })),
     tasks: draft.tasks.map((t) => ({
       ref: t.ref,

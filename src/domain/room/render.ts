@@ -78,7 +78,7 @@ function eventText(row: FeedRow): { speaker: RoomMessage['speaker']; text: strin
     case 'PROJECT_ABORTED':
       return { speaker: 'pm', text: `프로젝트가 중단되었습니다${str(p.reason) ? `: ${str(p.reason)}` : ''}` };
     case 'PLAN_APPLIED':
-      return { speaker: 'pm', text: '계획을 적용했습니다' };
+      return { speaker: 'pm', text: p.planKind === 'feature' ? '기능 명세를 확정했습니다' : '계획을 적용했습니다' };
     case 'RELEASE_REQUESTED': {
       const checks = num(p.checkCount);
       return { speaker: 'pm', text: `모든 태스크가 완료되었습니다 → 대표의 통합 확인을 기다립니다${checks > 0 ? ` (확인 항목 ${checks}개)` : ''}` };

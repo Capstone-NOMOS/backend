@@ -520,3 +520,91 @@ describe('수정 요청 한도', () => {
     expect((await revise(w, fresh.id)).status).toBe(202);
   });
 });
+
+// ── 기능 명세(022, 새 계획 흐름 1단계) ─────────────────────────────────────
+
+const FEATURE_DRAFT = {
+  summary: '스터디 상세에서 멤버 목록을 본다',
+  assumptions: ['멤버가 많지 않아 한 화면에 다 보여도 된다'],
+  features: [
+    {
+      featureKey: 'F-20',
+      title: '스터디 멤버 목록',
+      description: '스터디 상세 화면 아래에 멤버 목록이 보인다. 멤버마다 닉네임과 가입한 날짜가 보인다.',
+      acceptance: ['멤버가 있으면 닉네임과 가입한 날짜가 보인다', "멤버가 없으면 '아직 멤버가 없습니다'가 보인다"],
+      needsApi: true,
+      apiNeeds: '스터디의 멤버 목록 — 멤버마다 닉네임과 가입한 날짜',
+    },
+    {
+      featureKey: 'F-21',
+      title: '스터디 링크 복사',
+      description: '상단의 공유 버튼을 누르면 이 화면 주소가 복사되고 "복사했습니다"가 잠깐 보인다.',
+      acceptance: ['공유 버튼을 누르면 주소가 복사된다'],
+      needsApi: false,
+      apiNeeds: null,
+    },
+  ],
+};
+
+async function requestFeatureAndWait(w: { projectId: string; rep: { token: string } }, instruction = '멤버 목록을 보고 싶다') {
+  const res = await call('POST', `/projects/${w.projectId}/pm/features`, w.rep.token, { instruction });
+  expect(res.status).toBe(202);
+  await drainPmJobs();
+  const id = (res.body.data as unknown as { id: string }).id;
+  return (await call('GET', `/projects/${w.projectId}/pm/plans/${id}`, w.rep.token)).body.data as unknown as {
+    id: string;
+    kind: string;
+    status: string;
+    draft: unknown;
+    featureDraft: typeof FEATURE_DRAFT | null;
+    error: { reason: string; detail: unknown } | null;
+  };
+}
+
+describe('기능 명세 (POST /pm/features)', () => {
+  it('PM은 기능 명세 지침·형식으로 불리고, 초안은 featureDraft로 나온다 — 확정하면 명세만 생기고(API 필요 여부 포함) 태스크는 없다', async () => {
+    const w = await world();
+    const calls = fakeModel(() => respond(FEATURE_DRAFT));
+    const plan = await requestFeatureAndWait(w);
+    expect(plan).toMatchObject({ kind: 'feature', status: 'ready', draft: null, featureDraft: FEATURE_DRAFT });
+    // 지침은 개발 용어 없이 쓰라고 하고, 출력 형식은 기능 명세 스키마다.
+    expect(calls[0]!.system).toContain('개발 용어');
+    expect((calls[0]!.jsonSchema as { required: string[] }).required).toEqual(['summary', 'assumptions', 'features']);
+    expect(calls[0]!.user).toContain('멤버 목록을 보고 싶다');
+
+    const applied = await call('POST', `/projects/${w.projectId}/pm/plans/${plan.id}/apply`, w.rep.token);
+    expect(applied.status).toBe(200);
+    const specs = (await call('GET', `/projects/${w.projectId}/specs`, w.rep.token)).body.data as unknown as {
+      specs: { featureKey: string; content: string; needsApi: boolean; apiNeeds: string | null }[];
+    };
+    expect(specs.specs.map((s) => [s.featureKey, s.needsApi, s.apiNeeds])).toEqual([
+      ['F-20', true, '스터디의 멤버 목록 — 멤버마다 닉네임과 가입한 날짜'],
+      ['F-21', false, null],
+    ]);
+    expect(specs.specs[0]!.content).toContain('## 수용 기준');
+    const { rows: tasks } = await testPool.query(`SELECT 1 FROM tasks WHERE project_id = $1`, [w.projectId]);
+    expect(tasks).toHaveLength(0);
+    const { rows } = await testPool.query(`SELECT type, payload FROM events WHERE type IN ('PM_PLAN_REQUESTED', 'PM_PLAN_DRAFTED', 'PLAN_APPLIED') ORDER BY id`);
+    expect(rows.map((r) => [r.type, r.payload.planKind])).toEqual([
+      ['PM_PLAN_REQUESTED', 'feature'],
+      ['PM_PLAN_DRAFTED', 'feature'],
+      ['PLAN_APPLIED', 'feature'],
+    ]);
+  });
+
+  it('API가 필요한데 오가는 데이터를 안 적으면 한 번 고치게 하고, 수정 요청도 기능 명세로 이어진다', async () => {
+    const w = await world();
+    const broken = { ...FEATURE_DRAFT, features: [{ ...FEATURE_DRAFT.features[0]!, apiNeeds: null }] };
+    const calls = fakeModel(() => respond(broken), () => respond(FEATURE_DRAFT), () => respond(FEATURE_DRAFT));
+    const plan = await requestFeatureAndWait(w);
+    expect(plan.status).toBe('ready');
+    expect(calls[1]!.user).toContain('apiNeeds');
+
+    const revised = await call('POST', `/projects/${w.projectId}/pm/plans/${plan.id}/revise`, w.rep.token, { feedback: '가입 날짜는 빼 줘' });
+    expect(revised.status).toBe(202);
+    await drainPmJobs();
+    expect((revised.body.data as unknown as { kind: string }).kind).toBe('feature');
+    expect(calls[2]!.system).toContain('기능 명세');
+    expect(calls[2]!.user).toContain('가입 날짜는 빼 줘');
+  });
+});

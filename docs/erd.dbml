@@ -295,6 +295,7 @@ Table plans {
   approved_at  timestamptz [note: 'G1 승인 = 잠김. 적용(applied_at)과 다르다 — G1이 생길 때까지 비워 둔다']
   created_at   timestamptz [not null, default: `now()`]
   status                text        [not null, default: 'pending', note: '★ 014: pending | ready | failed | applied | rejected']
+  kind                  text        [not null, default: 'tasks', note: '★ 022: feature(기능 명세 초안) | tasks(태스크 분할 초안). 이전 계획은 전부 tasks']
   instruction           text        [note: '★ 014: 대표의 지시']
   feedback              text        [note: '★ 014: 수정 요청이면 대표의 피드백']
   parent_plan_id        uuid        [note: '★ 014: 수정 요청이면 이전 초안']
@@ -338,7 +339,9 @@ Table specs {
   project_id    uuid        [not null]
   feature_key   text        [not null, note: 'F-01, F-03']
   title         text        [not null]
-  content       text        [not null, note: 'EARS 마크다운']
+  content       text        [not null, note: 'EARS 마크다운. 022 이후 PM 명세는 개발 용어 없는 기능 설명 + 수용 기준']
+  needs_api     boolean     [not null, default: false, note: '★ 022: 이 기능에 API가 필요한가 — 필요하면 계약 단계로 간다']
+  api_needs     text        [note: '★ 022: 어떤 데이터가 오가야 하는가(사람 말로). needs_api면 필수(specs_api_needs_chk)']
   version       integer     [not null, default: 1]
   superseded_by uuid
   approved_at   timestamptz [note: 'G1 또는 G2 승인']
