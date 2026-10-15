@@ -397,6 +397,16 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
       const featureReq = await call('POST', `/projects/${projectId}/pm/features`, rep, { instruction: '출석 체크' });
       await drainPmJobs();
       await call('POST', `/projects/${projectId}/pm/plans/${featureReq.data.id as string}/apply`, rep);
+      // API 계약(새 흐름 2단계, 023) — BE 에이전트 초안 → 수정 요청 → 실패 → 다시 → 확정
+      const contractId = ((await call('GET', `/projects/${projectId}/contracts`, rep)).data.contracts as { id: string }[])[0]!.id;
+      await call('GET', '/agents/me/contract-jobs', agent);
+      const yaml = ['paths:', '  /api/attendance:', '    post:', '      responses:', '        "201": { description: 출석 기록 }'].join('\n');
+      await call('POST', `/contracts/${contractId}/draft`, agent, { attempt: 1, openapiYaml: yaml, summary: '출석을 남긴다', openQuestions: [] });
+      await call('POST', `/contracts/${contractId}/revise`, be, { feedback: '응답에 출석 시각' });
+      await call('POST', `/contracts/${contractId}/failure`, agent, { attempt: 2, reason: '형식을 못 맞췄다' });
+      await call('POST', `/contracts/${contractId}/revise`, be, {});
+      await call('POST', `/contracts/${contractId}/draft`, agent, { attempt: 3, openapiYaml: yaml, summary: '출석을 남긴다(시각 포함)' });
+      await call('POST', `/contracts/${contractId}/approve`, be);
     } finally {
       setPmModel(null);
     }

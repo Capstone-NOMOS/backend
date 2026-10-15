@@ -12,6 +12,7 @@ import { createOrganization } from '../src/domain/org/service.js';
 import { assignMember, createProject } from '../src/domain/project/service.js';
 import { connectRepos } from '../src/domain/repo/service.js';
 import { questionsChanged } from '../src/domain/dispatch/questions-changed.js';
+import { contractsChanged } from '../src/domain/dispatch/contracts-changed.js';
 import { streamTaskSource } from '../src/executor/stream-source.js';
 import { attachAgentStream, type AgentStream } from '../src/realtime/agent-stream.js';
 import { assignRootOwner } from './fixtures.js';
@@ -325,6 +326,18 @@ describe('Executor 쪽 수신(streamTaskSource)', () => {
 
       clock += 60_000; // 신호를 놓쳐도 안전망 간격마다 한 번
       expect(source.consultDue('BACKEND')).toBe(true);
+
+      // 계약 작성 신호(023)도 같은 규칙이고, 질문 신호와 서로 소비하지 않는다.
+      expect(source.contractDue('BACKEND')).toBe(true); // 연결 직후 한 번
+      expect(source.contractDue('BACKEND')).toBe(false);
+      questionsChanged(w.projectId, 'BACKEND');
+      await source.waitForChange(500);
+      expect(source.contractDue('BACKEND')).toBe(false);
+      const wokeForContract = source.waitForChange(2000).then(() => 'woke');
+      contractsChanged(w.projectId);
+      expect(await wokeForContract).toBe('woke');
+      expect(source.contractDue('BACKEND')).toBe(true);
+      expect(source.contractDue('BACKEND')).toBe(false);
     } finally {
       source.close();
     }

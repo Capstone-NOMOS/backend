@@ -8,8 +8,9 @@ import type { EventType } from '../domain/events/types.js';
 // Record<EventType, …>라서 이벤트 타입을 추가하면 여기를 채우기 전에는 컴파일이 안 된다.
 
 // room: 룸 피드(GET /projects/:id/rooms/:role/feed). 에이전트 활동(agent_activity)은 이벤트가 아니라 room/activity-hub로 따로 온다.
-export const PROJECT_TOPICS = ['project', 'tasks', 'specs', 'plans', 'approvals', 'notes', 'members', 'questions', 'events', 'room'] as const;
-export const ORG_TOPICS = ['projects', 'approvals', 'agents', 'repos', 'members', 'questions'] as const;
+// contracts(023): API 계약 — BE 개발자가 확정할 계약 목록.
+export const PROJECT_TOPICS = ['project', 'tasks', 'specs', 'plans', 'approvals', 'notes', 'members', 'questions', 'events', 'room', 'contracts'] as const;
+export const ORG_TOPICS = ['projects', 'approvals', 'agents', 'repos', 'members', 'questions', 'contracts'] as const;
 
 export type ProjectTopic = (typeof PROJECT_TOPICS)[number];
 export type OrgTopic = (typeof ORG_TOPICS)[number];
@@ -68,6 +69,11 @@ export const TOPICS_BY_EVENT: Record<EventType, Mapping> = {
   APPROVAL_REQUESTED: { project: ['approvals', 'tasks', 'room'], org: ['approvals'] },
   APPROVAL_RESULT: { project: ['approvals', 'tasks', 'room'], org: ['approvals'] },
   QUESTION_ASKED: { project: ['questions'], org: ['questions'] },
+  CONTRACT_REQUESTED: { project: ['contracts', 'room'], org: ['contracts'] },
+  CONTRACT_DRAFTED: { project: ['contracts', 'room'], org: ['contracts'] },
+  CONTRACT_REVISION_REQUESTED: { project: ['contracts', 'room'], org: ['contracts'] },
+  CONTRACT_APPROVED: { project: ['contracts', 'room'], org: ['contracts'] },
+  CONTRACT_FAILED: { project: ['contracts', 'room'], org: ['contracts'] },
   QUESTION_ANSWERED: { project: ['questions', 'tasks'], org: ['questions'] },
   QUESTION_EXPIRED: { project: ['questions', 'tasks'], org: ['questions'] },
   QUESTION_DRAFTED: { project: ['questions', 'tasks'], org: ['questions'] },

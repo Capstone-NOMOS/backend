@@ -75,6 +75,18 @@ function eventText(row: FeedRow): { speaker: RoomMessage['speaker']; text: strin
   switch (row.type) {
     case 'PROJECT_STARTED':
       return { speaker: 'pm', text: '프로젝트를 시작합니다' };
+    case 'CONTRACT_REQUESTED': {
+      const n = Array.isArray(p.contractIds) ? p.contractIds.length : 0;
+      return { speaker: 'pm', text: `API가 필요한 기능 ${n}개의 계약 작성을 백엔드 에이전트에게 맡겼습니다` };
+    }
+    case 'CONTRACT_DRAFTED':
+      return { speaker: 'agent', text: `${str(p.featureKey)} API 계약 초안을 썼습니다 — 백엔드 담당 확인을 기다립니다` };
+    case 'CONTRACT_REVISION_REQUESTED':
+      return { speaker: 'pm', text: `${str(p.featureKey)} API 계약 수정 요청${str(p.feedback) ? `: ${str(p.feedback)}` : ''}` };
+    case 'CONTRACT_APPROVED':
+      return { speaker: 'pm', text: `${str(p.featureKey)} API 계약을 확정했습니다` };
+    case 'CONTRACT_FAILED':
+      return { speaker: 'pm', text: `${str(p.featureKey)} API 계약 초안을 만들지 못했습니다 — 다시 요청할 수 있습니다` };
     case 'PROJECT_ABORTED':
       return { speaker: 'pm', text: `프로젝트가 중단되었습니다${str(p.reason) ? `: ${str(p.reason)}` : ''}` };
     case 'PLAN_APPLIED':

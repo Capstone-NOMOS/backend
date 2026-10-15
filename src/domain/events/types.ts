@@ -1,5 +1,10 @@
 export type EventType =
   | 'AGENT_DISCONNECTED'
+  | 'CONTRACT_REQUESTED'
+  | 'CONTRACT_DRAFTED'
+  | 'CONTRACT_REVISION_REQUESTED'
+  | 'CONTRACT_APPROVED'
+  | 'CONTRACT_FAILED'
   | 'GITHUB_COLLABORATORS_REMOVED'
   | 'PROJECT_ABORTED'
   | 'ORG_MEMBER_REMOVED'
@@ -346,6 +351,13 @@ export type GithubCollaboratorsRemovedPayload = {
   results: GithubRevokeResult[];
 };
 
+// API 계약(023, 새 계획 흐름 2단계). 기능 명세를 확정하면 API가 필요한 기능마다 작성 대기 → BE 노트북이 초안 → BE 개발자가 확정·수정 요청.
+export type ContractRequestedPayload = { contractIds: string[]; specIds: string[] };
+export type ContractDraftedPayload = { contractId: string; featureKey: string; attempt: number; operations: string[]; openQuestionCount: number };
+export type ContractRevisionRequestedPayload = { contractId: string; featureKey: string; attempt: number; feedback: string | null };
+export type ContractApprovedPayload = { contractId: string; featureKey: string; attempt: number; byRepresentative: boolean };
+export type ContractFailedPayload = { contractId: string; featureKey: string; attempt: number; reason: string };
+
 // 프로젝트 중단(021). 지우지 않고 aborted로 닫는다 — 이벤트·태스크·노트가 가리킨다.
 export type ProjectAbortedPayload = { previousStatus: string; reason: string | null; openTaskCount: number; expiredQuestionIds: string[] };
 
@@ -567,6 +579,11 @@ export type EventPayloadMap = {
   INVITE_REVOKED: InviteRevokedPayload;
   GITHUB_COLLABORATORS_REMOVED: GithubCollaboratorsRemovedPayload;
   PROJECT_ABORTED: ProjectAbortedPayload;
+  CONTRACT_REQUESTED: ContractRequestedPayload;
+  CONTRACT_DRAFTED: ContractDraftedPayload;
+  CONTRACT_REVISION_REQUESTED: ContractRevisionRequestedPayload;
+  CONTRACT_APPROVED: ContractApprovedPayload;
+  CONTRACT_FAILED: ContractFailedPayload;
   GITHUB_COLLABORATORS_INVITED: GithubCollaboratorsInvitedPayload;
   TASK_DISPATCHED: TaskDispatchedPayload;
   AGENT_RUN_STARTED: AgentRunStartedPayload;

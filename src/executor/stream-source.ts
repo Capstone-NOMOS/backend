@@ -61,6 +61,9 @@ export function streamTaskSource(deps: StreamDeps): TaskSource & { readonly conn
   // 받았지만 아직 확인하지 않은 질문 신호의 대상 역할. 연결할 때마다 '*'로 둬서 끊긴 동안 놓친 질문을 한 번 확인한다.
   const questionSignals = new Set<string>(['*']);
   let lastConsultCheck = now();
+  // 계약 작성 신호(023)도 같은 방식이다. 안전망 간격도 같다.
+  const contractSignals = new Set<string>(['*']);
+  let lastContractCheck = now();
 
   const wake = () => {
     for (const w of waiters) w();
@@ -91,12 +94,16 @@ export function streamTaskSource(deps: StreamDeps): TaskSource & { readonly conn
         delay = backoff.initialMs;
         refreshedInARow = false;
         questionSignals.add('*');
+        contractSignals.add('*');
         deps.log(`서버 푸시 연결됨 — 프로젝트 ${msg.projectId ?? '?'}`);
       } else if (msg.type === 'tasks') {
         latest = msg.tasks ?? [];
         wake();
       } else if (msg.type === 'questions') {
         if (typeof msg.targetRole === 'string') questionSignals.add(msg.targetRole);
+        wake();
+      } else if (msg.type === 'contracts') {
+        if (typeof msg.targetRole === 'string') contractSignals.add(msg.targetRole);
         wake();
       } else if (msg.type === 'error') {
         deps.log(`서버 푸시 거부: ${msg.code ?? '?'} ${msg.message ?? ''}`.trim());
@@ -155,6 +162,14 @@ export function streamTaskSource(deps: StreamDeps): TaskSource & { readonly conn
       if (due) {
         questionSignals.clear();
         lastConsultCheck = now();
+      }
+      return due;
+    },
+    contractDue(role: string): boolean {
+      const due = !connected || contractSignals.has(role) || contractSignals.has('*') || now() - lastContractCheck >= consultFallbackMs;
+      if (due) {
+        contractSignals.clear();
+        lastContractCheck = now();
       }
       return due;
     },

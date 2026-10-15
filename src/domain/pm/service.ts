@@ -7,6 +7,8 @@ import { logger } from '../../config/logger.js';
 import { AppError } from '../../errors.js';
 import { authorInTransaction } from '../authoring/apply.js';
 import { findActor, lockProjectForAuthoring } from '../authoring/repository.js';
+import { requestContractsInTx } from '../contract/service.js';
+import { contractsChanged } from '../dispatch/contracts-changed.js';
 import { tasksChanged } from '../dispatch/tasks-changed.js';
 import { appendEvent } from '../events/append.js';
 import type { AuthoringInput } from '../authoring/apply.js';
@@ -409,6 +411,7 @@ export async function applyPlan(actorUserId: string, projectId: string, planId: 
     throw new AppError('PLAN_NOT_APPLICABLE', `only a ready plan can be applied (this one is ${plan.status})`);
   }
   const draft = plan.draft;
+  let requested: string[] = [];
 
   const client = await pool.connect();
   try {
@@ -434,6 +437,10 @@ export async function applyPlan(actorUserId: string, projectId: string, planId: 
             policyHash: project.policyHash,
             payload: { planId, planKind: plan.kind, specIds: result.specs.map((s) => s.id), taskIds: result.taskIds.map((t) => t.id) },
           });
+          // 기능 명세 확정(새 흐름 1단계 → 2단계): API가 필요한 기능마다 BE가 쓸 계약 작성 대기를 같은 트랜잭션에 만든다.
+          if (plan.kind === 'feature') {
+            requested = await requestContractsInTx(tx, project, result.specs.filter((s) => s.needsApi).map((s) => s.id), actorUserId);
+          }
         },
       },
     });
@@ -442,6 +449,8 @@ export async function applyPlan(actorUserId: string, projectId: string, planId: 
   }
   // 시작한 프로젝트에 계획을 추가로 적용하면 새 태스크가 바로 담당 에이전트에게 간다. 시작 전이면 아무것도 안 간다.
   tasksChanged(projectId);
+  // 계약 작성 대기가 생겼으면 BE 노트북을 깨운다(커밋 뒤).
+  if (requested.length > 0) contractsChanged(projectId);
   return getPlan(actorUserId, projectId, planId);
 }
 
