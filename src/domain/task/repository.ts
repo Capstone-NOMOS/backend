@@ -11,6 +11,7 @@ export const TASK_STATES = [
   'BLOCKED',
   'ESCALATED',
   'DONE',
+  'CANCELLED',
 ] as const;
 
 export type TaskState =
@@ -21,7 +22,8 @@ export type TaskState =
   | 'AWAITING_APPROVAL'
   | 'BLOCKED'
   | 'ESCALATED'
-  | 'DONE';
+  | 'DONE'
+  | 'CANCELLED';
 
 export type Task = {
   id: string;
@@ -69,7 +71,7 @@ export async function countUnfinishedDeps(db: Queryable, taskId: string): Promis
   const { rows } = await db.query(
     `SELECT count(*)::int AS n FROM task_deps d
        JOIN tasks t ON t.id = d.depends_on
-      WHERE d.task_id = $1 AND t.state <> 'DONE'`,
+      WHERE d.task_id = $1 AND t.state NOT IN ('DONE', 'CANCELLED')`,
     [taskId],
   );
   return rows[0]!.n as number;
@@ -295,7 +297,7 @@ export async function listClaimableTasks(db: Queryable, projectId: string, teamR
         AND (t.team_role IS NULL OR t.team_role = $2)
         AND NOT EXISTS (
           SELECT 1 FROM task_deps d JOIN tasks dt ON dt.id = d.depends_on
-           WHERE d.task_id = t.id AND dt.state <> 'DONE')
+           WHERE d.task_id = t.id AND dt.state NOT IN ('DONE', 'CANCELLED'))
       ORDER BY t.created_at, t.id`,
     [projectId, teamRole],
   );
@@ -347,6 +349,30 @@ export async function blockStoppedTask(db: Queryable, taskId: string, agentId: s
     [taskId, agentId],
   );
   return rows[0] ? toTask(rows[0]) : null;
+}
+
+// 사람이 닫는다(027): 사람이 붙잡지 않은 태스크만(READY·BLOCKED·ESCALATED). 에이전트가 잡고 있으면 0행 —
+// 작업 중인 실행을 밑에서 끊지 않는다. 담당·멈춤 사유를 비운다(blocked_pair_chk).
+const HUMAN_CLOSABLE = ['READY', 'BLOCKED', 'ESCALATED'];
+
+export async function closeTaskByHuman(db: Queryable, taskId: string, state: 'DONE' | 'CANCELLED'): Promise<Task | null> {
+  const { rows } = await db.query(
+    `UPDATE tasks SET state = $2, blocked_reason = NULL, assignee_agent_id = NULL, updated_at = now()
+      WHERE id = $1 AND state = ANY($3::text[])
+      RETURNING *`,
+    [taskId, state, HUMAN_CLOSABLE],
+  );
+  return rows[0] ? toTask(rows[0]) : null;
+}
+
+// 이 태스크를 선행으로 둔 끝나지 않은 태스크 — 취소 이벤트에 남긴다(취소된 선행은 막지 않으므로 그 태스크들이 풀린다).
+export async function listOpenDependents(db: Queryable, taskId: string): Promise<string[]> {
+  const { rows } = await db.query(
+    `SELECT d.task_id FROM task_deps d JOIN tasks t ON t.id = d.task_id
+      WHERE d.depends_on = $1 AND t.state NOT IN ('DONE', 'CANCELLED') ORDER BY d.task_id`,
+    [taskId],
+  );
+  return rows.map((r) => r.task_id as string);
 }
 
 // 대표가 재개: READY로 돌리고 담당을 비운다(같은 역할의 에이전트가 다시 가져간다). retry_count는 건드리지 않는다.

@@ -175,7 +175,7 @@ export async function findApprovedContractForSpec(
 export async function listUnconfirmedContractsForOpenTasks(db: Queryable, projectId: string): Promise<string[]> {
   const { rows } = await db.query(
     `SELECT DISTINCT s.feature_key FROM specs s
-       JOIN tasks t ON t.spec_id = s.id AND t.state <> 'DONE'
+       JOIN tasks t ON t.spec_id = s.id AND t.state NOT IN ('DONE', 'CANCELLED')
        LEFT JOIN contracts c ON c.spec_id = s.id AND c.status = 'approved'
       WHERE s.project_id = $1 AND s.needs_api AND c.id IS NULL
       ORDER BY s.feature_key`,

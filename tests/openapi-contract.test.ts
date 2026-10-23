@@ -2,6 +2,7 @@ import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
+import { drainRoutingRecords } from '../src/domain/question/routing-eval.js';
 import { setQuestionRouter } from '../src/domain/question/router-registry.js';
 import { pool } from '../src/config/db.js';
 import { clearPolicyCache } from '../src/domain/policy/policy-cache.js';
@@ -300,6 +301,10 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     await call('GET', `/projects/${projectId}/questions`, rep);
     await call('GET', '/me/questions', rep);
     await call('POST', `/questions/${questionId}/answer`, rep, { answers: { [question]: '{ members: [...] }' } });
+    // 라우팅 평가(026) — 정답 담당자 붙이기와 보고서
+    await call('POST', `/questions/${questionId}/gold`, rep, { target: 'BACKEND', note: '응답 형식은 서버가 정한다' });
+    await drainRoutingRecords();
+    await call('GET', `/projects/${projectId}/routing-report`, rep);
     await call('GET', `/tasks/${taskId}/questions/${questionId}`, agent);
     await call('POST', `/tasks/${taskId}/questions/${questionId}/detach`, agent); // 이미 답이 있어 아무것도 바꾸지 않는다
     await call('GET', '/agents/me/questions', agent);
@@ -329,6 +334,10 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     await call('POST', `/tasks/${stuckId}/claim`, agent);
     await call('POST', `/tasks/${stuckId}/runs/end`, agent, { outcome: 'completed', committed: false, durationMs: 1000, exitCode: 0, lastMessage: '권한이 없다', deniedCommands: ['git fetch'] });
     await call('POST', `/tasks/${stuckId}/resume`, rep, { note: '허용함' });
+    // 사람이 닫기(027) — 직접 완료(같은 V3, 가짜 검사기가 신고와 같은 diff를 준다)와 취소
+    await call('POST', `/tasks/${stuckId}/manual-completion`, rep, { commitSha: 'a1b2c3d', changedPaths: ['src/api/join.ts'], note: '직접 고쳤다' });
+    const extra = await call('POST', `/projects/${projectId}/tasks`, rep, { title: 'T-10 필요 없어진 태스크', teamRole: 'BACKEND', kind: 'INTEGRATION', repoId });
+    await call('POST', `/tasks/${extra.data.id as string}/cancel`, rep, { reason: '범위에서 빠졌다' });
     await call('GET', `/tasks/${taskId}/artifacts`, agent);
     await call('GET', `/tasks/${taskId}/artifacts`, rep);
     await call('POST', `/artifacts/${artifactId}/verifications`, agent, { stage: 'V4', result: 'PASS', durationMs: 1200 });

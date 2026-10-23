@@ -12,7 +12,8 @@ import { onQuestionsChanged } from '../src/domain/dispatch/questions-changed.js'
 import { createOrganization } from '../src/domain/org/service.js';
 import { clearPolicyCache } from '../src/domain/policy/policy-cache.js';
 import { assignMember, createProject, startProject } from '../src/domain/project/service.js';
-import { setQuestionRouter } from '../src/domain/question/router-registry.js';
+import { setQuestionRouter, setShadowRouters } from '../src/domain/question/router-registry.js';
+import { drainRoutingRecords } from '../src/domain/question/routing-eval.js';
 import { llmQuestionRouter } from '../src/domain/question/llm-router.js';
 import { drainPmDrafts } from '../src/domain/question/pm-draft.js';
 import { setPmModel, type PmModelRequest } from '../src/domain/pm/model.js';
@@ -226,11 +227,11 @@ describe('질문 라우터 교체', () => {
     expect(rows[0]!.payload).toMatchObject({ targetRole: 'SELF' });
   });
 
-  it('라우터가 실패하면 규칙 라우터로 대체하고 그 사실을 남긴다', async () => {
+  it('라우터가 실패하면 대표(PM)에게 보내고 그 사실을 남긴다', async () => {
     const w = await world();
     setQuestionRouter({ name: 'broken', route: async () => { throw new Error('model unavailable'); } });
     const asked = await w.feClient.askQuestions(w.taskId, [Q1]);
-    expect(asked).toMatchObject({ status: 'pending', targetRole: 'BACKEND', routedBy: 'role_rule:opposite', routing: { fallback: 'broken: model unavailable' } });
+    expect(asked).toMatchObject({ status: 'pending', targetRole: 'PM', routedBy: 'fallback:representative', routing: { fallback: 'broken: model unavailable' } });
   });
 });
 
@@ -490,12 +491,12 @@ describe('PM 소관 질문 (025)', () => {
     expect(answered.json.data).toMatchObject({ status: 'answered' });
   });
 
-  it('대표 노트북의 PM 에이전트가 꺼져 있으면(중계 모드) 기다리지 않고 규칙으로 대체하고 기록한다', async () => {
+  it('대표 노트북의 PM 에이전트가 꺼져 있으면(중계 모드) 기다리지 않고 대표에게 보내고 기록한다', async () => {
     const w = await world();
     setQuestionRouter(llmQuestionRouter);
     setPmModel({ kind: 'relay', generate: async () => { throw new Error('should not be called'); } });
     const asked = await w.feClient.askQuestions(w.taskId, [Q1]);
-    expect(asked).toMatchObject({ targetRole: 'BACKEND', routedBy: 'role_rule:opposite' });
+    expect(asked).toMatchObject({ targetRole: 'PM', routedBy: 'fallback:representative' });
     expect(asked.routing.fallback).toContain('offline');
   });
 
@@ -504,5 +505,60 @@ describe('PM 소관 질문 (025)', () => {
     setQuestionRouter({ name: 'fake', route: async () => ({ target: 'PM', confidence: 1, reason: '정책', routedBy: 'fake' }) });
     const asked = await w.feClient.askQuestions(w.taskId, [QP]);
     await expect(pool.query(`UPDATE agent_questions SET status = 'agent_answered', answer_source = 'agent', answers = '{}' WHERE id = $1`, [asked.id])).rejects.toThrow(/agent_questions_/);
+  });
+});
+
+// 라우팅 평가(026, 발표 지표) — 같은 실제 질문에 라우터들을 함께 돌려 판정·지연·비용을 남기고, 사람이 붙인 정답과 비교한다.
+describe('라우팅 평가 기록과 보고서', () => {
+  afterEach(() => {
+    setQuestionRouter(null);
+    setShadowRouters(null);
+  });
+
+  it('실제 판정(primary)과 그림자 라우터 판정이 남고, 정답을 붙이면 라우터별 일치율·지연·비용이 나온다', async () => {
+    const w = await world();
+    setQuestionRouter({ name: 'llm:test', route: async () => ({ target: 'BACKEND', confidence: 0.9, reason: 'API', routedBy: 'llm:test', costUsd: 0.002 }) });
+    setShadowRouters([
+      { name: 'decision:test', route: async () => ({ target: 'PM', confidence: 0.7, reason: '정책', routedBy: 'decision:test', costUsd: 0.0001 }) },
+      { name: 'broken', route: async () => { throw new Error('down'); } },
+    ]);
+    const asked = await w.feClient.askQuestions(w.taskId, [Q1]);
+    await drainRoutingRecords();
+    const runs = await pool.query(`SELECT router, mode, target, error FROM question_routing_runs ORDER BY router`);
+    expect(runs.rows).toEqual([
+      { router: 'broken', mode: 'shadow', target: null, error: 'down' },
+      { router: 'decision:test', mode: 'shadow', target: 'PM', error: null },
+      { router: 'llm:test', mode: 'primary', target: 'BACKEND', error: null },
+    ]);
+
+    // 정답은 대표만 붙인다.
+    expect((await http('POST', `/questions/${asked.id}/gold`, await w.be.token(), { target: 'BACKEND' })).status).toBe(403);
+    expect((await http('POST', `/questions/${asked.id}/gold`, await w.rep.token(), { target: 'BACKEND', note: '응답 형식' })).status).toBe(200);
+
+    const report = (await http('GET', `/projects/${w.projectId}/routing-report`, await w.rep.token())).json.data as unknown as {
+      questions: number; labeled: number;
+      routers: { router: string; mode: string; decisions: number; errors: number; alignmentRate: number | null; avgCostUsd: number | null }[];
+      rows: { decisions: Record<string, string | null>; goldTarget: string }[];
+    };
+    expect(report).toMatchObject({ questions: 1, labeled: 1 });
+    const by = Object.fromEntries(report.routers.map((r) => [r.router, r]));
+    expect(by['llm:test']).toMatchObject({ mode: 'primary', decisions: 1, alignmentRate: 1, avgCostUsd: 0.002 });
+    expect(by['decision:test']).toMatchObject({ mode: 'shadow', alignmentRate: 0 });
+    expect(by['broken']).toMatchObject({ decisions: 0, errors: 1, alignmentRate: null });
+    // 조건 A(기존 다인 개발 — 질문한 사람에게)는 SELF로 본다.
+    expect(by['baseline:asker']).toMatchObject({ mode: 'baseline', alignmentRate: 0 });
+    expect(report.rows[0]).toMatchObject({ goldTarget: 'BACKEND', decisions: { 'llm:test': 'BACKEND', 'decision:test': 'PM', broken: null, 'baseline:asker': 'SELF' } });
+  });
+
+  it('먼저 시도한 라우터가 실패해 대표에게 보내지면 그 실패도 그 라우터의 기록으로 남는다', async () => {
+    const w = await world();
+    setQuestionRouter({ name: 'llm:flaky', route: async () => { throw new Error('offline'); } });
+    await w.feClient.askQuestions(w.taskId, [Q1]);
+    await drainRoutingRecords();
+    const runs = await pool.query(`SELECT router, mode, target, error FROM question_routing_runs ORDER BY id`);
+    expect(runs.rows).toEqual([
+      { router: 'llm:flaky', mode: 'primary', target: null, error: 'llm:flaky: offline' },
+      { router: 'fallback:representative', mode: 'primary', target: 'PM', error: null },
+    ]);
   });
 });

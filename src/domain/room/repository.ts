@@ -22,7 +22,7 @@ export async function insertNewDispatches(db: Queryable, projectId: string): Pro
           AND t.assignee_agent_id IS NULL
           AND NOT EXISTS (
             SELECT 1 FROM task_deps d JOIN tasks dt ON dt.id = d.depends_on
-             WHERE d.task_id = t.id AND dt.state <> 'DONE')
+             WHERE d.task_id = t.id AND dt.state NOT IN ('DONE', 'CANCELLED'))
      ), inserted AS (
        INSERT INTO task_dispatches (task_id, attempt, resumes)
        SELECT id, retry_count, resumes FROM ready
@@ -113,6 +113,9 @@ export const TASK_FEED_EVENTS = [
   'AGENT_RUN_ENDED',
   'TASK_BLOCKED',
   'TASK_RESUMED',
+  // 사람이 닫기(027)
+  'TASK_CANCELLED',
+  'TASK_COMPLETED_MANUALLY',
   // 질문 중계(018). 묻는 쪽 태스크의 룸에 더해, 답할 역할(targetRole)의 룸에도 나온다(아래 쿼리).
   'QUESTION_ASKED',
   'QUESTION_DRAFTED',

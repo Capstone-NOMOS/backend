@@ -530,10 +530,18 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
   PM 에이전트(중계 모드면 대표 노트북의 pm-worker, `purpose: question_draft`)가 확정한 기능 명세·계약을 읽고 답 초안을 쓰고(`question/pm-draft.ts`, `system:pm`),
   **대표가 확정한다** — PM 초안은 답이 되지 않는다(`agent_questions_pm_human_chk`). 답할 수 있는 사람은 대표뿐(PM 역할 멤버가 없다). 초안을 못 만들면 대표가 직접 답한다.
   `TEAM_ROLES`에 PM을 넣지 말 것 — 태스크·경로 소유권의 역할이 아니라 질문 대상만이다(`QuestionTarget = TeamRole | 'PM'`).
-- **라우터는 `QUESTION_ROUTER`로 고른다**(`router-registry.ts`): `llm`(운영 기본 — PM 모델, `question/llm-router.ts`)·`rule`(반대 역할, 테스트 기본).
-  LLM 라우터는 평가 장치와 같은 프롬프트·해석(`router.ts`, v2)을 쓴다. 중계 모드에서 pm-worker가 30초 넘게 조용하면 기다리지 않고 바로 규칙으로 대체하고
+- **라우터는 `QUESTION_ROUTER`로 고른다**(`router-registry.ts`): `llm`(운영 기본 — PM 모델, `question/llm-router.ts`)·`decision`(Decision AI).
+  **라우터가 실패하면 대표(PM)에게 보낸다**(`fallback:representative`) — 반대 역할 규칙은 서비스에서 뺐다(대표 결정 2026-10-24, 비교·대체 모두).
+  그 규칙(`oppositeRoleRouter`)은 테스트의 결정적 기본 라우터(`tests/setup-invariants.ts`의 `setTestBaseRouter`)와 오프라인 평가 기준선으로만 남는다.
+  LLM 라우터는 평가 장치와 같은 프롬프트·해석(`router.ts`, v2)을 쓴다. 중계 모드에서 pm-worker가 30초 넘게 조용하면 기다리지 않고 바로 대표에게 보내고
   `routing.fallback`에 남긴다(질문이 라우팅 때문에 막히지 않게). 판정 비용은 `routing.costUsd`·`QUESTION_ASKED.payload.costUsd`.
   Decision AI(Jev 등)는 `QuestionRouter`를 하나 더 구현해 선택지에 넣는다 — 나머지 서버는 인터페이스만 본다.
+- **라우팅 평가 기록(026, 발표 지표 — 서비스 동작에는 쓰지 않는다)**: 질문마다 실제로 보낸 판정(`primary`)과 `QUESTION_SHADOW_ROUTERS`(llm·decision)를
+  같은 입력으로 함께 돌린 판정(`shadow`)을 `question_routing_runs`에 남긴다(`question/routing-eval.ts`, 커밋 뒤 비동기 — 실패해도 질문 흐름을 막지 않는다).
+  먼저 시도한 라우터가 실패해 대표에게 보내지면 그 실패도 그 라우터의 기록이다(실패율). 대표가 정답 담당자를 붙이고(`POST /questions/:id/gold`, `QUESTION_GOLD_LABELED`)
+  `GET /projects/:id/routing-report`가 라우터별 일치율·분류 지연·요청당 비용을 낸다. `baseline:asker` = 조건 A(질문한 사람에게 — SELF).
+  Decision AI는 `DECISION_ROUTER_URL`(HTTP, `question/http-router.ts`) — 질문·명세가 외부로 나가므로 켜기 전에 팀이 동의한다.
+  오프라인 데이터셋 비교(100문항)는 `scripts/eval-question-router.ts`가 같은 프롬프트·해석으로 한다.
 - **`GET /me/questions`**: 내가 답할 질문(대표는 전부, 팀원은 자기 역할이 대상인 것) — 알림 배지용. 답할 자격 정의는 `answerQuestion`과 같아야 한다.
 
 ### 룸 (`domain/room`, 017) — 보기 전용
@@ -617,6 +625,11 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
   붙잡고 있으면 409 `ACTIVE_TASKS_HELD`(details에 태스크) — 빼 버리면 그 태스크는 아무도 끝내지 못한다. 끝난 프로젝트(completed·aborted)의 멤버는 기록이라 409 `PROJECT_NOT_OPEN`.
   빠진 역할의 태스크는 새 사람을 배정할 때까지 READY로 기다린다. 역할 교체는 해제 후 재배정이다 — UPDATE 경로를 두면 한 역할에 둘이 잠깐 겹친다.
   멤버를 빼는 경로는 **`removeMemberInTx` 한 벌**이다(직접 해제·에이전트 연결 해제·조직 탈퇴가 같은 규칙을 탄다, `MEMBER_UNASSIGNED.payload.cause`로 가른다).
+- **사람이 닫기(027, `task/human-control.ts`)** — 재실행으로 풀리지 않는 태스크의 출구. 둘 다 에이전트가 붙잡지 않은 상태(READY·BLOCKED·ESCALATED)에서만(409 `TASK_IN_PROGRESS`), 재시도 횟수는 그대로.
+  - **취소**(`POST /tasks/:id/cancel`, 대표, 사유 필수): `CANCELLED`로 남는다. **G3의 "모든 태스크 완료"와 뒤 태스크의 선행에서 끝난 것으로 센다** — 안 그러면 잘못 나눈 태스크 하나로
+    프로젝트가 영원히 끝나지 않는다. 그 태스크의 대기 질문은 만료로 닫고, 풀린 뒤 태스크를 `TASK_CANCELLED.payload.unblockedDependents`에 남긴다. 상태를 `<> 'DONE'`으로 거르는 곳은 `NOT IN ('DONE','CANCELLED')`로 쓸 것.
+  - **직접 완료**(`POST /tasks/:id/manual-completion`, 그 역할 담당 또는 대표): 개발자가 직접 커밋한 sha와 태스크 브랜치 경로를 내면 에이전트 제출과 **같은 V3**(`inspectManualCommit`)를 돌린다.
+    FAIL이면 아무것도 쓰지 않고 422 `MANUAL_COMPLETION_INVALID`, 통과하면 산출물(gate HUMAN)·V3 결과·DONE·`TASK_COMPLETED_MANUALLY`(지표에서 사람이 처리한 것으로 따로 센다).
 - **해제·삭제(021)는 행을 지우지 않는다** — events·태스크·노트가 가리키고(P5), 다시 연결할 수 있어야 한다.
   - 에이전트 연결 해제(`DELETE /agents/:agentId`, 주인·대표): `agents.disconnected_at` + refresh token 폐기 + 진행 중 프로젝트에서 빠짐. 남은 access token은 `agent-auth`가
     401 `AGENT_DISCONNECTED`로 거부하고, 태스크 스트림은 `dispatch/agent-revoked` 신호로 바로 끊는다. 같은 사용자·이름으로 다시 connect하면 `upsertAgent`가 되살린다.

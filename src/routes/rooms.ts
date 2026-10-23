@@ -1,3 +1,4 @@
+import { cancelTask, completeTaskManually } from '../domain/task/human-control.js';
 import { Router, type Request } from 'express';
 import { z } from 'zod';
 import { ACTIVITY_KINDS, ACTIVITY_TARGET_MAX, type ActivityInput } from '../domain/room/repository.js';
@@ -89,6 +90,40 @@ roomsRouter.post(
     const { taskId } = req.params as z.infer<typeof taskIdParamsSchema>;
     const { note } = req.body as z.infer<typeof resumeBodySchema>;
     res.status(200).json({ data: await resumeTask(userOf(req), taskId, note ?? null) });
+  },
+);
+
+// ── 사람이 닫기(027) — 재실행으로 풀리지 않는 태스크 ──
+
+// POST /api/tasks/:taskId/cancel — 대표가 태스크를 취소한다(사유 필수). G3·선행에서 끝난 것으로 센다.
+const cancelBodySchema = z.object({ reason: z.string().trim().min(1).max(1000) }).strict();
+roomsRouter.post(
+  '/tasks/:taskId/cancel',
+  validate({ params: taskIdParamsSchema, body: cancelBodySchema }),
+  authenticate,
+  async (req, res) => {
+    const { taskId } = req.params as z.infer<typeof taskIdParamsSchema>;
+    const { reason } = req.body as z.infer<typeof cancelBodySchema>;
+    res.status(200).json({ data: await cancelTask(userOf(req), taskId, reason) });
+  },
+);
+
+// POST /api/tasks/:taskId/manual-completion — 개발자가 직접 커밋한 결과로 완료한다(그 역할 담당 또는 대표). 에이전트 제출과 같은 V3를 통과해야 한다.
+const manualBodySchema = z
+  .object({
+    commitSha: z.string().trim().regex(/^[0-9a-fA-F]{7,64}$/),
+    changedPaths: z.array(z.string().trim().min(1).max(500)).min(1).max(1000),
+    note: z.string().trim().max(1000).nullable().optional(),
+  })
+  .strict();
+roomsRouter.post(
+  '/tasks/:taskId/manual-completion',
+  validate({ params: taskIdParamsSchema, body: manualBodySchema }),
+  authenticate,
+  async (req, res) => {
+    const { taskId } = req.params as z.infer<typeof taskIdParamsSchema>;
+    const body = req.body as z.infer<typeof manualBodySchema>;
+    res.status(200).json({ data: await completeTaskManually(userOf(req), taskId, { commitSha: body.commitSha, changedPaths: body.changedPaths, note: body.note ?? null }) });
   },
 );
 

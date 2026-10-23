@@ -3,6 +3,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { drainTasksChanged } from '../src/domain/dispatch/tasks-changed.js';
+import { drainPmDrafts } from '../src/domain/question/pm-draft.js';
+import { drainRoutingRecords } from '../src/domain/question/routing-eval.js';
 
 const { Pool } = pg;
 
@@ -32,8 +34,11 @@ export async function runMigrations(): Promise<void> {
 export async function truncateAll(): Promise<void> {
   // 커밋 뒤 비동기로 도는 tasksChanged 리스너(배정 기록 등)가 TRUNCATE와 겹치면 교착하거나 지운 행을 참조한다 — 끝나길 기다린다.
   await drainTasksChanged();
+  // 질문 뒤에 비동기로 도는 평가 기록·PM 초안도 끝나길 기다린다(지운 질문을 참조하지 않게).
+  await drainRoutingRecords();
+  await drainPmDrafts();
   await testPool.query(
-    `TRUNCATE TABLE agent_questions, agent_activity, task_dispatches, approvals, notes, verifications, artifacts, task_deps, tasks, plans, spec_tests, specs, project_policies, oauth_sessions, project_members, project_repos, projects,
+    `TRUNCATE TABLE question_routing_runs, agent_questions, agent_activity, task_dispatches, approvals, notes, verifications, artifacts, task_deps, tasks, plans, spec_tests, specs, project_policies, oauth_sessions, project_members, project_repos, projects,
        agent_connect_codes, agent_device_requests, agent_tokens, agents, events, invites, repo_paths, repos, users, organizations
      RESTART IDENTITY CASCADE`,
   );
@@ -48,6 +53,7 @@ export async function resetSchema(): Promise<void> {
 
 export async function dropSchema(): Promise<void> {
   await testPool.query(`
+    DROP TABLE IF EXISTS question_routing_runs;
     DROP TABLE IF EXISTS agent_questions;
     DROP TABLE IF EXISTS agent_activity;
     DROP TABLE IF EXISTS task_dispatches;

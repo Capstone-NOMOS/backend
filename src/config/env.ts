@@ -73,7 +73,11 @@ const envSchema = z
     // BLOCKED로 내려놓는다 — 이 기간 안에 답이 오면 READY로 돌아가고, 지나면 질문은 만료되고 태스크는 ESCALATED.
     QUESTION_TIMEOUT_MS: z.coerce.number().int().min(10_000).max(30 * 86_400_000).default(3 * 86_400_000),
     // 질문 라우터(025): llm = PM 모델이 FE·BE·PM 중 고른다(실패하면 rule로 대체·기록), rule = 반대 역할 규칙.
-    QUESTION_ROUTER: z.enum(['llm', 'rule']).default('llm'),
+    QUESTION_ROUTER: z.enum(['llm', 'decision']).default('llm'),
+    // 평가용(026): 실제로 보내지는 않고 같은 질문에 함께 돌려 기록할 라우터들(쉼표 구분: llm,decision). 비우면 끈다.
+    QUESTION_SHADOW_ROUTERS: z.string().default(''),
+    // Decision AI(Jev 등) 라우터의 HTTP 주소. RoutingInput을 POST하고 { target, confidence?, reason?, costUsd? }를 받는다.
+    DECISION_ROUTER_URL: z.string().url().optional(),
   })
   .superRefine((v, ctx) => {
     if (v.APP_BASE_URL !== undefined) {

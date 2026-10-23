@@ -34,6 +34,7 @@ export type EventType =
   | 'APPROVAL_REQUESTED'
   | 'APPROVAL_RESULT'
   | 'QUESTION_ASKED'
+  | 'QUESTION_GOLD_LABELED'
   | 'QUESTION_ANSWERED'
   | 'QUESTION_EXPIRED'
   | 'QUESTION_DRAFTED'
@@ -45,6 +46,8 @@ export type EventType =
   | 'AGENT_RUN_ENDED'
   | 'TASK_BLOCKED'
   | 'TASK_RESUMED'
+  | 'TASK_CANCELLED'
+  | 'TASK_COMPLETED_MANUALLY'
   | 'PROJECT_SETTINGS_UPDATED'
   | 'RELEASE_REQUESTED'
   | 'RELEASE_DECIDED'
@@ -213,6 +216,13 @@ export type ApprovalRequestedPayload = {
 
 // 실행 중인 에이전트가 다른 역할 소관의 결정을 물었다(AskUserQuestion → 브릿지 → 서버). 질문 문장은 행에 있다.
 // targetRole 'SELF'는 라우터가 "묻는 쪽 자기 소관"으로 판정해 돌려보낸 것. confidence·latencyMs·fallback은 라우터 비교 지표다.
+// 평가용 정답 담당자를 붙였다(026). 라우터 비교 지표의 기준이다.
+export type QuestionGoldLabeledPayload = {
+  questionId: string;
+  goldTarget: string;
+  previousGoldTarget: string | null;
+};
+
 export type QuestionAskedPayload = {
   questionId: string;
   taskId: string;
@@ -442,6 +452,28 @@ export type ReleaseDecidedPayload = {
 };
 
 // 대표가 원인을 해결하고 재개했다 → READY(담당 비움). note는 선택.
+// 대표가 태스크를 취소했다(027). 취소된 선행은 막지 않으므로 풀린 뒤 태스크와 닫힌 대기 질문을 함께 남긴다.
+export type TaskCancelledPayload = {
+  taskId: string;
+  title: string;
+  previousState: string;
+  reason: string;
+  expiredQuestionIds: string[];
+  unblockedDependents: string[];
+};
+
+// 사람이 직접 커밋해 완료했다(027). 에이전트 제출과 같은 V3를 통과했다(v3: PASS, 못 읽었으면 SKIPPED).
+export type TaskCompletedManuallyPayload = {
+  taskId: string;
+  title: string;
+  artifactId: string;
+  commitSha: string;
+  changedPaths: string[];
+  previousState: string;
+  v3: string;
+  note: string | null;
+};
+
 export type TaskResumedPayload = {
   taskId: string;
   note: string | null;
@@ -584,6 +616,7 @@ export type EventPayloadMap = {
   APPROVAL_REQUESTED: ApprovalRequestedPayload;
   APPROVAL_RESULT: ApprovalResultPayload;
   QUESTION_ASKED: QuestionAskedPayload;
+  QUESTION_GOLD_LABELED: QuestionGoldLabeledPayload;
   QUESTION_ANSWERED: QuestionAnsweredPayload;
   QUESTION_EXPIRED: QuestionExpiredPayload;
   QUESTION_DRAFTED: QuestionDraftedPayload;
@@ -606,6 +639,8 @@ export type EventPayloadMap = {
   AGENT_RUN_ENDED: AgentRunEndedPayload;
   TASK_BLOCKED: TaskBlockedPayload;
   TASK_RESUMED: TaskResumedPayload;
+  TASK_CANCELLED: TaskCancelledPayload;
+  TASK_COMPLETED_MANUALLY: TaskCompletedManuallyPayload;
   PROJECT_SETTINGS_UPDATED: ProjectSettingsUpdatedPayload;
   RELEASE_REQUESTED: ReleaseRequestedPayload;
   RELEASE_DECIDED: ReleaseDecidedPayload;

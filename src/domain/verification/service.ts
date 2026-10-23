@@ -159,6 +159,31 @@ async function evaluateV3(plan: Plan): Promise<VerificationInput> {
   return done('PASS', { pathCount: actual.length, inspector: getCommitInspector().kind });
 }
 
+// 사람이 직접 완료(027)할 때의 V3 — 에이전트 제출과 같은 판정기(실제 diff·신고 대조·경로 소유권)를 같은 정책 스냅샷으로 돌린다.
+// 산출물은 판정이 통과한 뒤에 만든다(호출부) — 그래서 여기서는 자리 id로 돌리고 결과만 돌려준다.
+export async function inspectManualCommit(input: {
+  task: Task;
+  projectId: string;
+  policyHash: string;
+  commitSha: string;
+  changedPaths: string[];
+}): Promise<Omit<VerificationInput, 'artifactId'>> {
+  const plan = await withTransaction<Plan>(async (tx) => {
+    const repo = await findRepoById(tx, input.task.repoId);
+    if (!repo) throw new AppError('REPO_NOT_FOUND', `repository ${input.task.repoId} not found`);
+    const snapshot = await getPolicySnapshot(tx, input.projectId, input.policyHash);
+    return {
+      artifact: { id: 'manual', commitSha: input.commitSha, changedPaths: input.changedPaths } as Artifact,
+      task: input.task,
+      repo: { id: repo.id, orgId: repo.orgId, cloneUrl: repo.cloneUrl, githubRepoId: repo.githubRepoId, devBaseUrl: repo.devBaseUrl, defaultBranch: repo.defaultBranch },
+      rules: snapshot.repoPaths.filter((p) => p.repoId === input.task.repoId),
+      teamRole: (input.task.teamRole ?? 'BACKEND') as TeamRole,
+    };
+  });
+  const { artifactId: _artifactId, ...result } = await evaluateV3(plan);
+  return result;
+}
+
 // ── V1B — 실제 응답 ───────────────────────────────────────────────────────
 // 계약(⑦)이 없으므로 지금 결정적으로 볼 수 있는 것은 "배포된 개발 서버가 살아 있는가"뿐이다.
 // 응답 스키마 대조는 contracts가 생긴 뒤 V1A와 같은 자리에서 붙는다.

@@ -167,6 +167,10 @@ function eventText(row: FeedRow): { speaker: RoomMessage['speaker']; text: strin
       return { speaker: 'pm', text: `${targetLabel(p.targetRole)}의 답을 기다리며 태스크를 잠시 내려놓았습니다 — 답이 오면 다시 시작합니다` };
     case 'QUESTION_EXPIRED':
       return { speaker: 'pm', text: `질문이 기한 안에 답을 받지 못했습니다${p.escalated === true ? ' → 대표에게 넘깁니다' : ''}` };
+    case 'TASK_CANCELLED':
+      return { speaker: 'pm', text: `대표가 태스크를 취소했습니다: ${str(p.reason)}` };
+    case 'TASK_COMPLETED_MANUALLY':
+      return { speaker: 'pm', text: `개발자가 직접 완료했습니다 (커밋 ${str(p.commitSha).slice(0, 7)}, 파일 ${Array.isArray(p.changedPaths) ? p.changedPaths.length : 0}개)${p.note ? `: ${str(p.note)}` : ''}` };
     case 'TASK_RESUMED':
       return { speaker: 'pm', text: `대표가 재개했습니다${p.note ? `: ${str(p.note)}` : ''}` };
     case 'APPROVAL_RESULT':
