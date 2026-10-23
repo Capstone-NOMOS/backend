@@ -2,6 +2,7 @@ import { Router, type Request } from 'express';
 import { z } from 'zod';
 import { answerQuestion, askQuestion, detachFromQuestion, getQuestionForAgent, listConsultJobs, listProjectQuestions, submitDraft, listMyQuestions } from '../domain/question/service.js';
 import type { UserContext } from '../domain/project/visibility.js';
+import { labelGold, routingReport } from '../domain/question/routing-eval.js';
 import { agentContextOf, authenticateAgent } from '../middleware/agent-auth.js';
 import { authenticate, orgIdOf } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
@@ -121,5 +122,31 @@ questionsRouter.post(
     const { questionId } = req.params as z.infer<typeof questionParams>;
     const { answers } = req.body as z.infer<typeof answerBody>;
     res.status(200).json({ data: await answerQuestion(actorOf(req), questionId, answers) });
+  },
+);
+
+// ── 라우팅 평가(026) — 발표 지표용. 서비스 동작에는 쓰지 않는다. ─────────────────
+
+// POST /api/questions/:questionId/gold — 정답 담당자 붙이기(대표). 라우터 비교의 기준.
+const goldBody = z.object({ target: z.enum(['FRONTEND', 'BACKEND', 'PM', 'SELF']), note: z.string().trim().max(500).nullable().optional() }).strict();
+questionsRouter.post(
+  '/questions/:questionId/gold',
+  validate({ params: questionParams, body: goldBody }),
+  authenticate,
+  async (req, res) => {
+    const { questionId } = req.params as z.infer<typeof questionParams>;
+    const { target, note } = req.body as z.infer<typeof goldBody>;
+    res.status(200).json({ data: await labelGold(actorOf(req), questionId, target, note ?? null) });
+  },
+);
+
+// GET /api/projects/:projectId/routing-report — 라우터별 일치율·지연·비용(대표).
+questionsRouter.get(
+  '/projects/:projectId/routing-report',
+  validate({ params: z.object({ projectId: z.string().uuid() }) }),
+  authenticate,
+  async (req, res) => {
+    const { projectId } = req.params as { projectId: string };
+    res.status(200).json({ data: await routingReport(actorOf(req), projectId) });
   },
 );

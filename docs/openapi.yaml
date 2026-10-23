@@ -307,6 +307,51 @@ components:
         accessToken: { type: string }
         refreshToken: { type: string }
         agentId: { type: string, format: uuid }
+    RoutingReport:
+      type: object
+      description: '질문 라우팅 평가(026, 발표 지표). 라우터마다 같은 실제 질문에서의 판정을 정답(gold)과 비교한다'
+      required: [projectId, questions, labeled, routers, answer, rows]
+      properties:
+        projectId: { type: string, format: uuid }
+        questions: { type: integer }
+        labeled: { type: integer, description: '정답 담당자가 붙은 질문 수' }
+        routers:
+          type: array
+          items:
+            type: object
+            required: [router, mode, decisions, errors, labeled, aligned, alignmentRate, avgLatencyMs, p95LatencyMs, avgCostUsd, totalCostUsd]
+            properties:
+              router: { type: string, description: "라우터 이름·버전. baseline:asker = 조건 A(질문한 사람에게 — 모두 SELF)" }
+              mode: { type: string, enum: [primary, shadow, baseline], description: 'primary 실제로 보낸 라우터 · shadow 함께 돌려 본 라우터 · baseline 기준선' }
+              decisions: { type: integer }
+              errors: { type: integer, description: '실패·시간 초과(대체됨)' }
+              labeled: { type: integer }
+              aligned: { type: integer }
+              alignmentRate: { type: number, nullable: true, description: '최초 수신자-정답 담당자 일치율(0~1)' }
+              avgLatencyMs: { type: integer, nullable: true, description: '분류 지연 평균' }
+              p95LatencyMs: { type: integer, nullable: true }
+              avgCostUsd: { type: number, nullable: true, description: '요청당 비용(USD)' }
+              totalCostUsd: { type: number, nullable: true }
+        answer:
+          type: object
+          required: [answered, medianMs]
+          properties:
+            answered: { type: integer }
+            medianMs: { type: integer, nullable: true, description: '질문부터 답까지 중앙값' }
+        rows:
+          type: array
+          items:
+            type: object
+            required: [questionId, askedAt, askerRole, status, firstQuestion, goldTarget, answeredAt, decisions]
+            properties:
+              questionId: { type: string, format: uuid }
+              askedAt: { type: string, format: date-time }
+              askerRole: { type: string }
+              status: { type: string }
+              firstQuestion: { type: string }
+              goldTarget: { type: string, nullable: true }
+              answeredAt: { type: string, format: date-time, nullable: true }
+              decisions: { type: object, additionalProperties: { type: string, nullable: true }, description: '라우터 → 판정(FRONTEND·BACKEND·PM·SELF, 실패면 null)' }
     AgentConnectCode:
       type: object
       required: [code, expiresAt, command]
@@ -1335,6 +1380,60 @@ paths:
             application/json:
               example:
                 error: { code: INVALID_CONNECT_REQUEST, message: invalid connect request }
+
+  /questions/{questionId}/gold:
+    post:
+      tags: [질문]
+      summary: 정답 담당자 붙이기 (대표, 평가용)
+      description: |
+        발표 지표(026)를 위한 기록이다 — 서비스 동작은 바뀌지 않는다. 질문을 보고 "원래 누구에게 갔어야 했나"를 정한다(`SELF` = 질문한 쪽 자기 소관).
+        다시 부르면 바뀐다(이전 값은 이벤트 `QUESTION_GOLD_LABELED`). 대표만(403 `NOT_REPRESENTATIVE`).
+      security: [{ userToken: [] }]
+      parameters:
+        - { name: questionId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [target]
+              properties:
+                target: { type: string, enum: [FRONTEND, BACKEND, PM, SELF] }
+                note: { type: string, nullable: true, maxLength: 500, description: '판단 근거' }
+            example: { target: BACKEND, note: '응답 상태 코드는 서버가 정한다' }
+      responses:
+        '200':
+          description: 붙였음
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [questionId, goldTarget]
+                    properties:
+                      questionId: { type: string, format: uuid }
+                      goldTarget: { type: string, enum: [FRONTEND, BACKEND, PM, SELF] }
+
+  /projects/{projectId}/routing-report:
+    get:
+      tags: [질문]
+      summary: 질문 라우팅 평가 보고서 (대표, 발표 지표)
+      description: |
+        실제 질문마다 실제로 보낸 라우터(primary)와 함께 돌려 본 라우터(shadow — 설정 `QUESTION_SHADOW_ROUTERS`: llm·decision·rule)의 판정을 모아
+        라우터별 **최초 수신자-정답 담당자 일치율**(정답이 붙은 질문만)·**분류 지연**·**요청당 비용**을 낸다.
+        `baseline:asker`는 조건 A(기존 다인 개발 — 질문이 질문한 사람에게 간다, 모두 SELF)다. 대표만.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/ProjectId' }]
+      responses:
+        '200':
+          description: 보고서
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/RoutingReport' } } }
 
   /me/agent-connect-codes:
     post:

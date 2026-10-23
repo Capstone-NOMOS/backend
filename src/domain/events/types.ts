@@ -34,6 +34,7 @@ export type EventType =
   | 'APPROVAL_REQUESTED'
   | 'APPROVAL_RESULT'
   | 'QUESTION_ASKED'
+  | 'QUESTION_GOLD_LABELED'
   | 'QUESTION_ANSWERED'
   | 'QUESTION_EXPIRED'
   | 'QUESTION_DRAFTED'
@@ -213,6 +214,13 @@ export type ApprovalRequestedPayload = {
 
 // 실행 중인 에이전트가 다른 역할 소관의 결정을 물었다(AskUserQuestion → 브릿지 → 서버). 질문 문장은 행에 있다.
 // targetRole 'SELF'는 라우터가 "묻는 쪽 자기 소관"으로 판정해 돌려보낸 것. confidence·latencyMs·fallback은 라우터 비교 지표다.
+// 평가용 정답 담당자를 붙였다(026). 라우터 비교 지표의 기준이다.
+export type QuestionGoldLabeledPayload = {
+  questionId: string;
+  goldTarget: string;
+  previousGoldTarget: string | null;
+};
+
 export type QuestionAskedPayload = {
   questionId: string;
   taskId: string;
@@ -584,6 +592,7 @@ export type EventPayloadMap = {
   APPROVAL_REQUESTED: ApprovalRequestedPayload;
   APPROVAL_RESULT: ApprovalResultPayload;
   QUESTION_ASKED: QuestionAskedPayload;
+  QUESTION_GOLD_LABELED: QuestionGoldLabeledPayload;
   QUESTION_ANSWERED: QuestionAnsweredPayload;
   QUESTION_EXPIRED: QuestionExpiredPayload;
   QUESTION_DRAFTED: QuestionDraftedPayload;

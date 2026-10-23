@@ -70,6 +70,7 @@ export const TOPICS_BY_EVENT: Record<EventType, Mapping> = {
   APPROVAL_REQUESTED: { project: ['approvals', 'tasks', 'room'], org: ['approvals'] },
   APPROVAL_RESULT: { project: ['approvals', 'tasks', 'room'], org: ['approvals'] },
   QUESTION_ASKED: { project: ['questions'], org: ['questions'] },
+  QUESTION_GOLD_LABELED: { project: ['questions'] },
   CONTRACT_REQUESTED: { project: ['contracts', 'room'], org: ['contracts'] },
   CONTRACT_DRAFTED: { project: ['contracts', 'room'], org: ['contracts'] },
   CONTRACT_REVISION_REQUESTED: { project: ['contracts', 'room'], org: ['contracts'] },

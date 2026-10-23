@@ -1006,6 +1006,7 @@ Table agent_questions {
   CHECK agent_questions_agent_answer_chk: status<>'agent_answered' OR (answer_source='agent' AND drafted_by_agent IS NOT NULL)
   CHECK agent_questions_draft_chk: (draft IS NULL) = (drafted_at IS NULL) AND (draft IS NULL OR drafted_by_agent IS NOT NULL OR target_role = 'PM')  ★ 025
   CHECK agent_questions_pm_human_chk: target_role <> 'PM' OR status <> 'agent_answered'  ★ 025 PM 질문은 대표가 확정
+  ★ 026 gold_target·gold_labeled_by·gold_labeled_at·gold_note — 평가용 정답 담당자(사람이 나중에 붙인다). CHECK agent_questions_gold_chk
   INDEX idx_agent_questions_pending ON (project_id) WHERE status = 'pending'
   INDEX idx_agent_questions_task ON (task_id)
   '''
@@ -1032,3 +1033,27 @@ Table agent_connect_codes {
 
 Ref: agent_connect_codes.user_id > users.id
 Ref: agent_connect_codes.agent_id > agents.id
+
+Table question_routing_runs {
+  id           bigserial   [pk]
+  question_id  uuid        [not null]
+  router       text        [not null, note: '라우터 이름·버전(routedBy와 같은 값)']
+  mode         text        [not null, note: "primary(실제로 보낸 라우터) | shadow(같은 입력으로 함께 돌려 본 라우터)"]
+  target       text        [note: 'FRONTEND | BACKEND | PM | SELF. 실패면 NULL']
+  confidence   double
+  latency_ms   int         [not null]
+  cost_usd     numeric(12,6)
+  error        text
+  created_at   timestamptz [not null, default: `clock_timestamp()`]
+
+  indexes {
+    question_id [name: 'idx_question_routing_runs_question']
+  }
+
+  Note: '''
+  ★ 026 질문 라우팅 평가(발표 지표). 서비스 동작에는 쓰지 않는다. 정답은 agent_questions.gold_target.
+  question_routing_runs_result_chk CHECK ((target IS NULL) = (error IS NOT NULL))
+  '''
+}
+
+Ref: question_routing_runs.question_id > agent_questions.id

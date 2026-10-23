@@ -13,6 +13,7 @@ import { questionsChanged } from '../dispatch/questions-changed.js';
 import { tasksChanged } from '../dispatch/tasks-changed.js';
 import { blockTaskForQuestion, escalateQuestionTask, findSpecForTask, findTaskById, unblockQuestionTask } from '../task/repository.js';
 import { routeQuestion } from './router-registry.js';
+import { recordRouting } from './routing-eval.js';
 import { PM_TARGET, type QuestionTarget } from './router.js';
 import { schedulePmDraft } from './pm-draft.js';
 import { findApprovedContractForSpec } from '../contract/repository.js';
@@ -111,7 +112,7 @@ export async function askQuestion(ctx: AgentContext, taskId: string, questions: 
     listProjectMembers(pool, ctx.projectId),
   ]);
   const contract = task.specId ? await findApprovedContractForSpec(pool, task.specId) : null;
-  const routed = await routeQuestion({
+  const routingInput = {
     askerRole: membership.teamRole,
     roles: [...new Set<TeamRole>([membership.teamRole, ...members.map((m) => m.teamRole)])],
     task: { title: task.title, kind: task.kind },
@@ -120,7 +121,8 @@ export async function askQuestion(ctx: AgentContext, taskId: string, questions: 
     questions,
     contract: contract ? { featureKey: contract.featureKey, summary: contract.summary } : null,
     context: { orgId: ctx.orgId },
-  });
+  };
+  const routed = await routeQuestion(routingInput);
   const selfOwned = routed.target === 'SELF';
   const targetRole: QuestionTarget = selfOwned ? membership.teamRole : (routed.target as QuestionTarget);
   const routing = {
@@ -169,6 +171,8 @@ export async function askQuestion(ctx: AgentContext, taskId: string, questions: 
   });
   // 커밋 뒤 — 대상 역할 에이전트의 Executor를 깨워 상담 실행을 맡긴다. 질문만으로는 가져갈 태스크가 바뀌지 않는다.
   if (created.status === 'pending') questionsChanged(ctx.projectId, created.targetRole);
+  // 평가 기록(026, 발표 지표) — 실제 판정과 그림자 라우터들의 판정을 남긴다. 질문 흐름을 기다리게 하지 않는다.
+  recordRouting(created.id, routingInput, routed);
   // PM 소관(요구사항·정책)이면 대표 노트북의 PM 에이전트가 기능 명세·계약을 읽고 답 초안을 쓴다 — 대표가 확인해 확정한다.
   if (created.status === 'pending' && created.targetRole === PM_TARGET) schedulePmDraft(created.id, ctx.orgId);
   return created;
