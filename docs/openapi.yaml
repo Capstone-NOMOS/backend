@@ -3611,7 +3611,8 @@ paths:
       description: |
         새 계획 흐름 2단계(023). 기능 명세를 확정하면 API가 필요한 기능마다 계약이 `pending`으로 생기고, BE 노트북의 에이전트가 BE 코드를 읽어 초안(`draft`)을 쓴다.
         BE 담당이 확정(`approved`)하거나 수정 요청한다. 프로젝트를 볼 수 있는 사람 누구나 읽는다. 실시간 신호 토픽은 `contracts`.
-      security: [{ userToken: [] }]
+        **에이전트 토큰**이면 자기 프로젝트의 확정한(`approved`) 계약만 준다 — MCP `read_contracts`가 FE의 API 연동에 쓴다(초안은 바뀔 수 있어 주지 않는다).
+      security: [{ userToken: [] }, { agentToken: [] }]
       parameters: [{ $ref: '#/components/parameters/ProjectId' }]
       responses:
         '200':

@@ -97,6 +97,30 @@ export function pmOnlyProblems(draft: PlanDraft): string[] {
 
 export type PlanDraft = z.infer<typeof planDraftSchema>;
 
+// 확정한 API 계약이 있는 기능은 BE 구현과 FE 연동이 둘 다 있어야 한다 — 통합 테스트에서 BE가 계약대로 API를 만들었는데
+// 그 API를 화면에 붙이는 FE 태스크가 없었다. 프로젝트에 그 역할이 소유한 레포가 있을 때만 요구한다. 이미 붙은 태스크도 센다.
+// LLM에게 맡기지 않고 코드가 센다(P2) — 걸리면 교정 1회에 싣는다.
+export function contractCoverageProblems(
+  draft: PlanDraft,
+  context: { repos: { ownerRoles: string[] }[]; specs: { featureKey: string; contract: unknown; taskRoles: string[] }[] },
+): string[] {
+  const rolesWithRepo = new Set(context.repos.flatMap((r) => r.ownerRoles));
+  const problems: string[] = [];
+  for (const spec of context.specs) {
+    if (!spec.contract) continue;
+    for (const role of ['BACKEND', 'FRONTEND'] as const) {
+      if (!rolesWithRepo.has(role) || spec.taskRoles.includes(role)) continue;
+      if (draft.tasks.some((t) => t.spec === spec.featureKey && t.teamRole === role)) continue;
+      problems.push(
+        role === 'FRONTEND'
+          ? `${spec.featureKey}: 확정한 API 계약이 있는데 FRONTEND 태스크가 없다 — 계약대로 API를 호출하는 "API 연동" 태스크를 FRONTEND 레포에 만든다`
+          : `${spec.featureKey}: 확정한 API 계약이 있는데 BACKEND 태스크가 없다 — 계약대로 API를 구현하는 태스크를 BACKEND 레포에 만든다`,
+      );
+    }
+  }
+  return problems;
+}
+
 // 초안 → 명세·태스크 생성 입력. 적용은 저장된 초안을 **그대로** 넣는다(다시 생성하거나 서버가 고치지 않는다).
 // PM은 시험지(spec_tests)를 쓰지 않는다 — 시험을 돌릴 하네스(서버 기동·시험 데이터·인증)가 정해지기 전에는 추측으로 채운 코드가 되고,
 // 그 코드가 팀원 노트북에서 실행된다. 시험지가 없으면 V2는 SKIPPED로 남는다(통과로 세지 않는다).

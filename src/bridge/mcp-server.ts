@@ -164,6 +164,26 @@ server.registerTool(
 );
 
 server.registerTool(
+  'read_contracts',
+  {
+    title: 'Read confirmed API contracts',
+    description:
+      'Read the confirmed API contracts (OpenAPI fragments) of the project — the backend owner confirmed these, and frontend and backend must follow them exactly. ' +
+      "The contract for your own task's feature is already in your prompt; use this when you need another feature's API (paths, request/response fields, error status codes).",
+    inputSchema: {
+      project_id: z.string().describe('Project id'),
+      feature_key: z.string().optional().describe('Only this feature (e.g. F-02)'),
+    },
+  },
+  async ({ project_id, feature_key }) =>
+    run(async () => {
+      const { contracts } = await client.readContracts(project_id);
+      const picked = feature_key === undefined ? contracts : contracts.filter((c) => c.featureKey === feature_key);
+      return { contracts: picked.map((c) => ({ featureKey: c.featureKey, title: c.specTitle, summary: c.summary, openapiYaml: c.schemaYaml })) };
+    }, 'read_contracts'),
+);
+
+server.registerTool(
   'read_notes',
   {
     title: 'Read handover notes',

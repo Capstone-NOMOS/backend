@@ -62,6 +62,12 @@ export async function listProjectContracts(actor: UserContext, projectId: string
   return listContracts(pool, projectId);
 }
 
+// 에이전트(MCP read_contracts) — 자기 프로젝트의 확정한 계약만. 초안은 바뀔 수 있어 주지 않는다(브리핑의 잠긴 시험지와 같은 규칙).
+export async function listAgentContracts(ctx: AgentContext, projectId: string): Promise<ContractView[]> {
+  if (ctx.projectId !== projectId) throw new AppError('NOT_PROJECT_MEMBER', 'agent is not a member of this project');
+  return (await listContracts(pool, projectId)).filter((c) => c.status === 'approved');
+}
+
 // 확정·수정 요청할 수 있는 사람: 이 프로젝트의 BE 담당(에이전트 주인). BE 담당이 없을 때만 대표가 대신한다(대표 결정).
 async function assertApprover(tx: PoolClient, actor: UserContext, contract: ContractView): Promise<{ byRepresentative: boolean }> {
   await assertProjectVisibleToUser(tx, actor, contract.projectId);

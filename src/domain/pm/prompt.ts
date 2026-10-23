@@ -10,7 +10,10 @@ export const PM_SYSTEM_PROMPT = `당신은 NOMOS의 내장 PM이다. 대표가 �
 - 태스크(tasks): 에이전트 하나가 한 레포에서 끝낼 수 있는 크기. ref는 이 분할 안에서만 쓰는 짧은 영문 이름.
   repo는 아래 "연결된 레포" 목록의 이름 그대로, teamRole은 그 레포(또는 경로)를 소유한 역할로.
   kind는 IMPLEMENT이고 반드시 spec에 "확정한 기능 명세"의 featureKey를 붙인다. 그 명세의 계약이 태스크와 함께 에이전트에게 간다.
-  API 계약이 있는 기능은 보통 백엔드(계약대로 API 구현)와 프론트엔드(계약대로 화면 구현) 태스크로 나뉜다.
+  **확정한 API 계약이 있는 기능은 반드시 두 쪽 태스크를 만든다**(그 역할의 레포가 프로젝트에 있으면):
+  · BACKEND — 계약대로 API를 구현한다.
+  · FRONTEND — "API 연동": 계약의 경로·요청·응답·에러 상태 코드대로 화면에서 API를 호출하고 응답·에러를 처리한다. 제목에 "API 연동"을 넣는다.
+  빠지면 검증에서 걸린다. 이미 그 역할의 태스크가 붙은 기능은 다시 만들지 않는다.
   이미 태스크가 붙은 명세는 대표의 지시가 없으면 다시 나누지 않는다.
   INTEGRATION 태스크는 만들지 않는다 — 에이전트는 다른 레포의 코드를 받거나 서버를 띄울 수 없다.
   dependsOn에는 먼저 끝나야 하는 태스크의 ref를 적는다. 순환을 만들지 말 것.
@@ -44,6 +47,8 @@ export type PlanContext = {
     needsApi: boolean;
     contract: { summary: string; schemaYaml: string } | null;
     taskTitles: string[];
+    // 이미 붙은 태스크의 역할 — 계약 기능의 FE·BE 태스크 확인(draft.ts contractCoverageProblems)에 쓴다.
+    taskRoles: string[];
   }[];
   existingTaskTitles: string[];
   constitution: unknown;

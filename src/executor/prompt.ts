@@ -44,12 +44,15 @@ export function buildTaskPrompt(briefing: PromptBriefing, branch: string, enviro
   if (briefing.contract) {
     sections.push(
       [
-        `# 확정한 API 계약 (${briefing.contract.featureKey}) — 백엔드 담당이 확정했다. 경로·메서드·필드·상태 코드를 이대로 구현하거나 이대로 호출한다`,
+        task.teamRole === 'FRONTEND'
+          ? `# 확정한 API 계약 (${briefing.contract.featureKey}) — 백엔드 담당이 확정했다. 화면에서 이 경로·메서드로 호출하고, 응답 필드·에러 상태 코드를 이대로 처리한다(API 연동)`
+          : `# 확정한 API 계약 (${briefing.contract.featureKey}) — 백엔드 담당이 확정했다. 경로·메서드·필드·상태 코드를 이대로 구현한다`,
         briefing.contract.summary,
         '```yaml',
         briefing.contract.schemaYaml.trimEnd(),
         '```',
         '계약을 바꿔야 할 이유가 생기면 계약과 다르게 구현하지 말고, 그 사실을 GOTCHA 노트로 남긴다.',
+        '다른 기능의 API가 필요하면 read_contracts 도구로 확정한 계약을 찾는다.',
       ].join('\n'),
     );
   }

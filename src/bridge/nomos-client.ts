@@ -166,6 +166,11 @@ export class NomosClient {
     return (await this.request('POST', `/api/questions/${questionId}/draft`, draft)) as QuestionState;
   }
 
+  // 확정한 API 계약(에이전트 — MCP read_contracts). FE가 연동할 API를 기능을 가리지 않고 찾는다.
+  async readContracts(projectId: string): Promise<{ contracts: { featureKey: string; specTitle: string; summary: string | null; schemaYaml: string | null }[] }> {
+    return (await this.request('GET', `/api/projects/${projectId}/contracts`)) as Awaited<ReturnType<NomosClient['readContracts']>>;
+  }
+
   // 계약 작성(Executor, 023): BACKEND 에이전트가 쓸 계약 작업·확정한 계약·읽을 레포, 그리고 초안 제출·실패 보고.
   async listContractJobs(): Promise<{
     contracts: ContractJobPayload[];

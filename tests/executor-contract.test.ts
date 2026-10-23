@@ -74,6 +74,10 @@ describe('태스크 프롬프트의 확정한 계약', () => {
     expect(prompt).toContain('# 확정한 API 계약 (F-20)');
     expect(prompt).toContain('멤버 목록');
     expect(prompt).toContain('```yaml\npaths:\n  /api/members: {}\n```');
+    // FRONTEND 태스크면 연동(호출·에러 처리)으로, BACKEND면 구현으로 안내한다. 다른 기능은 read_contracts.
+    expect(prompt).toContain('API 연동');
+    expect(prompt).toContain('read_contracts');
+    expect(buildTaskPrompt({ ...base, task: { ...base.task, teamRole: 'BACKEND' }, contract: { featureKey: 'F-20', summary: 's', schemaYaml: 'paths: {}' } }, 'task/t1')).toContain('이대로 구현한다');
     expect(buildTaskPrompt({ ...base, contract: null }, 'task/t1')).not.toContain('확정한 API 계약');
     expect(buildTaskPrompt(base, 'task/t1')).not.toContain('확정한 API 계약');
   });
