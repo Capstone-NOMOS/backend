@@ -12,7 +12,7 @@ import { contractsChanged } from '../dispatch/contracts-changed.js';
 import { tasksChanged } from '../dispatch/tasks-changed.js';
 import { appendEvent } from '../events/append.js';
 import type { AuthoringInput } from '../authoring/apply.js';
-import { dagHashOf, draftToAuthoring, PLAN_DRAFT_JSON_SCHEMA, planDraftSchema, planStructure, pmOnlyProblems, type PlanDraft } from './draft.js';
+import { contractCoverageProblems, dagHashOf, draftToAuthoring, PLAN_DRAFT_JSON_SCHEMA, planDraftSchema, planStructure, pmOnlyProblems, type PlanDraft } from './draft.js';
 import {
   FEATURE_DRAFT_JSON_SCHEMA,
   featureDraftSchema,
@@ -81,7 +81,7 @@ type KindSpec = {
   schema: Record<string, unknown>;
   buildUser(context: PlanContext, instruction: string, previous?: Previous): string;
   parse(json: unknown): { ok: true; draft: unknown } | { ok: false; problems: string[] };
-  ownProblems(draft: unknown): string[];
+  ownProblems(draft: unknown, context: PlanContext): string[];
   toAuthoring(draft: unknown, ctx: { projectId: string; actorUserId: string; planId: string }): AuthoringInput;
   shape(draft: unknown): { structure: unknown; hash: string; mode: string | null; specCount: number; taskCount: number };
 };
@@ -117,7 +117,7 @@ const KINDS: Record<PlanKind, KindSpec> = {
       const r = planDraftSchema.safeParse(json);
       return r.success ? { ok: true, draft: r.data } : { ok: false, problems: zodProblems(r.error.issues) };
     },
-    ownProblems: (draft) => pmOnlyProblems(draft as PlanDraft),
+    ownProblems: (draft, context) => [...pmOnlyProblems(draft as PlanDraft), ...contractCoverageProblems(draft as PlanDraft, context)],
     toAuthoring: (draft, ctx) => draftToAuthoring(draft as PlanDraft, ctx),
     shape: (draft) => {
       const d = draft as PlanDraft;
@@ -612,6 +612,7 @@ async function judge(
   outcome: { stopReason: string | null; text: string },
   ctx: { projectId: string; actorUserId: string; planId: string },
   spec: KindSpec,
+  context: PlanContext,
 ): Promise<Judged> {
   if (outcome.stopReason === 'refusal') return { kind: 'failed', reason: 'refused', detail: null };
   // 출력 한도 부족이다 — 같은 한도로 교정하면 또 잘린다.
@@ -626,7 +627,7 @@ async function judge(
   const parsed = spec.parse(json);
   if (!parsed.ok) return { kind: 'fix', problems: parsed.problems, draft: null };
 
-  const own = spec.ownProblems(parsed.draft);
+  const own = spec.ownProblems(parsed.draft, context);
   if (own.length > 0) return { kind: 'fix', problems: own, draft: parsed.draft };
 
   const client = await pool.connect();
@@ -680,7 +681,7 @@ async function runPlan(planId: string): Promise<void> {
     if (outcome.kind === 'gone') return;
     if (outcome.kind === 'failed') return finishFailed(project, planId, outcome.reason, outcome.detail);
 
-    const judged = await judge(outcome, ctx, spec);
+    const judged = await judge(outcome, ctx, spec, context);
     if (judged.kind === 'failed') return finishFailed(project, planId, judged.reason, judged.detail);
     if (judged.kind === 'ok') {
       const shaped = spec.shape(judged.draft);

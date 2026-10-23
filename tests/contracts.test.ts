@@ -327,3 +327,47 @@ describe('태스크 나누기 → 시작 → 브리핑', () => {
     expect((await http('POST', `/projects/${w.projectId}/start`, w.rep.token)).status).toBe(200);
   });
 });
+
+// FE 연동 태스크(통합 테스트): BE가 계약대로 API를 만들었는데 그 API를 화면에 붙이는 FE 태스크가 없었다.
+describe('계약 기능의 FE 연동 태스크', () => {
+  it('확정한 계약이 있는 기능에 FRONTEND 태스크가 없으면 교정 위반이다 — 고쳐 내면 받는다', async () => {
+    const w = await world();
+    const [c] = await contracts(w);
+    await http('POST', `/contracts/${c!.id}/draft`, w.beToken, { attempt: 1, openapiYaml: GOOD_YAML, summary: 's' });
+    await http('POST', `/contracts/${c!.id}/approve`, w.be.token);
+
+    const beOnly = {
+      mode: 'SEQUENTIAL', rationale: 'x', estimate: { workingDays: 1, notes: '' },
+      tasks: [{ ref: 'api', title: '멤버 목록 API', repo: 'acme/api', teamRole: 'BACKEND', kind: 'IMPLEMENT', spec: 'F-20', dependsOn: [] }],
+      integrationChecks: [],
+    };
+    const withFe = { ...beOnly, tasks: [...beOnly.tasks, { ref: 'web', title: '멤버 목록 API 연동', repo: 'acme/web', teamRole: 'FRONTEND', kind: 'IMPLEMENT', spec: 'F-20', dependsOn: [] }] };
+    const users: string[] = [];
+    const replies = [beOnly, withFe];
+    setPmModel({
+      kind: 'fake',
+      async generate(req) {
+        users.push(req.user);
+        return { stopReason: 'end_turn', servedModel: 'fake', text: JSON.stringify(replies.shift()), attempts: [] };
+      },
+    });
+    const req = await http('POST', `/projects/${w.projectId}/pm/plans`, w.rep.token, {});
+    await drainPmJobs();
+    expect(users[1]).toContain('F-20: 확정한 API 계약이 있는데 FRONTEND 태스크가 없다');
+    const plan = await http('GET', `/projects/${w.projectId}/pm/plans/${req.data.id as string}`, w.rep.token);
+    expect(plan.data.status).toBe('ready');
+    // PM 지침에도 연동 태스크를 만들라고 적혀 있다.
+    expect(users[0]).toContain('F-20');
+  });
+
+  it('에이전트는 자기 프로젝트의 확정한 계약만 읽는다(MCP read_contracts) — 초안은 보이지 않는다', async () => {
+    const w = await world();
+    const [c] = await contracts(w);
+    await http('POST', `/contracts/${c!.id}/draft`, w.beToken, { attempt: 1, openapiYaml: GOOD_YAML, summary: 's' });
+    expect((await http('GET', `/projects/${w.projectId}/contracts`, w.feToken)).data.contracts).toEqual([]);
+    await http('POST', `/contracts/${c!.id}/approve`, w.be.token);
+    const read = (await http('GET', `/projects/${w.projectId}/contracts`, w.feToken)).data.contracts as { featureKey: string; status: string; schemaYaml: string }[];
+    expect(read.map((r) => [r.featureKey, r.status])).toEqual([['F-20', 'approved']]);
+    expect(read[0]!.schemaYaml).toBe(GOOD_YAML);
+  });
+});

@@ -418,6 +418,10 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
      화면에 더 필요한 것은 실행 중 AskUserQuestion으로 BE에게 묻는다(질문 중계).
 3. **태스크 나누기**(`POST /pm/plans`, `kind='tasks'`, 지시는 선택): 확정한 명세가 있어야 하고(409 `NO_FEATURE_SPECS`) API 기능의 계약이 전부
    확정돼야 한다(409 `CONTRACTS_NOT_APPROVED { featureKeys }`). PM은 명세 본문·확정한 계약을 받고 **명세를 만들지 않는다**(만들면 `pmOnlyProblems` 위반 → 교정).
+   - **확정한 계약이 있는 기능은 BE 구현 + FE "API 연동" 태스크가 둘 다 있어야 한다**(`contractCoverageProblems`, 코드가 센다 → 교정 1회). 그 역할이 소유한 레포가
+     프로젝트에 있을 때만, 이미 붙은 태스크도 센다 — 통합 테스트에서 BE가 계약대로 만든 API를 화면에 붙이는 FE 태스크가 없었다.
+   - 에이전트는 MCP `read_contracts`로 자기 프로젝트의 **확정한** 계약을 읽는다(`GET /projects/:id/contracts`가 에이전트 토큰이면 approved만 — 초안은 바뀔 수 있어 주지 않는다).
+     자기 태스크의 계약은 브리핑에 있고, 이 도구는 다른 기능의 API가 필요할 때 쓴다.
    - 태스크를 INSERT할 때 그 명세의 확정한 계약을 `tasks.contract_id`로 붙인다(`authoring/repository.ts`의 `insertTask` — 모든 작성 경로가 한 벌).
    - 브리핑 `contract`는 태스크 명세의 확정한 계약이다(FE·BE가 **같은** 계약을 받는다). Executor 프롬프트의 "확정한 API 계약" 절.
    - **시작 조건**: 끝나지 않은 태스크가 붙은 API 기능의 계약이 확정되지 않았으면 시작할 수 없다(사람이 손으로 만든 태스크도) — 계약 없이 시작하면 FE·BE가 서로 다른 API를 짐작한다.
