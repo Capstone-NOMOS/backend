@@ -95,11 +95,11 @@ server.registerTool(
   {
     title: 'Submit an artifact',
     description:
-      'Submit finished work for a task you have claimed. Commit your work on the task branch first, then provide the commit sha and every path you changed. This tool pushes the task branch before submitting; if the push is refused (wrong branch, commit not on the task branch, remote has diverged) nothing is submitted and you get the reason. The server re-checks the paths against the ownership rules, so listing paths you did not change (or omitting ones you did) will be rejected or will fail verification later. If handover notes related to your task were published after you started, the submission is rejected with NOTES_UNACKNOWLEDGED and the notes are returned: read them, change and commit your work if they affect it, then submit again with their ids in acknowledged_note_ids. Notes that were already in your instructions are acknowledged automatically.',
+      'Submit finished work for a task you have claimed. Commit your work on the task branch first, then provide the latest commit sha and every path changed on the task branch (including commits from earlier attempts on this branch). This tool pushes the task branch before submitting; if the push is refused (wrong branch, commit not on the task branch, remote has diverged) nothing is submitted and you get the reason. The server re-checks the paths against the ownership rules, so listing paths you did not change (or omitting ones you did) will be rejected or will fail verification later. If handover notes related to your task were published after you started, the submission is rejected with NOTES_UNACKNOWLEDGED and the notes are returned: read them, change and commit your work if they affect it, then submit again with their ids in acknowledged_note_ids. Notes that were already in your instructions are acknowledged automatically.',
     inputSchema: {
       task_id: z.string().describe('The claimed task id'),
       commit_sha: z.string().describe('Commit sha containing the work'),
-      changed_paths: z.array(z.string()).describe('Repo-relative paths changed by this commit'),
+      changed_paths: z.array(z.string()).describe('Repo-relative paths changed on the task branch since it left the default branch (all commits, not only the last one)'),
       acknowledged_note_ids: z
         .array(z.string())
         .optional()

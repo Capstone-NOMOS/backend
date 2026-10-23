@@ -25,7 +25,7 @@ import {
   type Task,
   type TaskState,
 } from '../task/repository.js';
-import { getCommitInspector, CommitNotFoundError, InspectionSkipped } from './commit-inspector.js';
+import { getCommitInspector, CommitNotFoundError, InspectionSkipped, type InspectInput } from './commit-inspector.js';
 import {
   insertVerification,
   listVerifications,
@@ -70,6 +70,7 @@ type Plan = {
     cloneUrl: string | null;
     githubRepoId: number | null;
     devBaseUrl: string | null;
+    defaultBranch: string;
   };
   rules: RepoPath[];
   teamRole: TeamRole;
@@ -81,6 +82,19 @@ type Plan = {
 
 function normalize(p: string): string {
   return p.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+}
+
+// 검사기에 넘기는 입력. 비교 기준은 태스크 브랜치 전체(기본 브랜치와의 분기점부터 제출한 커밋까지)다 —
+// 태스크는 Executor가 origin/<기본 브랜치>에서 분기하고, 재시도·재개는 같은 브랜치에 커밋을 더한다. 신고도 태스크 단위다.
+function inspectInput(plan: Plan): InspectInput {
+  return {
+    repoId: plan.repo.id,
+    orgId: plan.repo.orgId,
+    cloneUrl: plan.repo.cloneUrl,
+    githubRepoId: plan.repo.githubRepoId,
+    commitSha: plan.artifact.commitSha,
+    baseBranch: plan.repo.defaultBranch,
+  };
 }
 
 async function evaluateV3(plan: Plan): Promise<VerificationInput> {
@@ -96,13 +110,7 @@ async function evaluateV3(plan: Plan): Promise<VerificationInput> {
   let actual: string[];
   try {
     // 읽을 수 있는 전제(clone_url, github_repo_id, 대표 GitHub 연결)는 구현체마다 다르므로 구현체가 판단한다.
-    actual = await getCommitInspector().changedPaths({
-      repoId: plan.repo.id,
-      orgId: plan.repo.orgId,
-      cloneUrl: plan.repo.cloneUrl,
-      githubRepoId: plan.repo.githubRepoId,
-      commitSha: plan.artifact.commitSha,
-    });
+    actual = await getCommitInspector().changedPaths(inspectInput(plan));
   } catch (err) {
     if (err instanceof CommitNotFoundError) {
       // 없는 커밋을 제출한 것이다. 못 읽은 게 아니라 틀린 것이므로 FAIL이다.
@@ -127,7 +135,7 @@ async function evaluateV3(plan: Plan): Promise<VerificationInput> {
 
   if (undeclared.length > 0 || overdeclared.length > 0) {
     return done('FAIL', {
-      reason: 'changed_paths가 커밋의 실제 diff와 다르다',
+      reason: 'changed_paths가 태스크 브랜치의 실제 diff와 다르다',
       commitSha: plan.artifact.commitSha,
       undeclared,
       overdeclared,
@@ -293,7 +301,7 @@ async function detectDependencyAdditions(plan: Plan): Promise<DependencyDetectio
     try {
       if (!inspector.fileVersions) throw new Error('inspector cannot read file contents');
       const { before, after } = await inspector.fileVersions(
-        { repoId: plan.repo.id, orgId: plan.repo.orgId, cloneUrl: plan.repo.cloneUrl, githubRepoId: plan.repo.githubRepoId, commitSha: plan.artifact.commitSha },
+        inspectInput(plan),
         manifest,
       );
       const diff = diffDependencies(before, after);
@@ -374,6 +382,7 @@ export async function runServerVerifications(
         cloneUrl: repo.cloneUrl,
         githubRepoId: repo.githubRepoId,
         devBaseUrl: repo.devBaseUrl,
+        defaultBranch: repo.defaultBranch,
       },
       rules: snapshot.repoPaths.filter((p) => p.repoId === task.repoId),
       // 태스크에 역할 제한이 없으면(통합 태스크) 소유권 판정은 소유자 없는 규칙만 통과시킨다.

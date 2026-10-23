@@ -360,6 +360,18 @@ export async function resumeStoppedTask(db: Queryable, taskId: string): Promise<
   return rows[0] ? toTask(rows[0]) : null;
 }
 
+// 대표가 ESCALATED(재시도 소진)를 다시 맡긴다: READY로, 담당을 비우고 retry_count를 0으로 — 그대로 두면 다음 실패 한 번에 바로 다시 ESCALATED다.
+// 지난 실패들은 events(VERIFICATION_COMPLETED·APPROVAL_RESULT)에 남아 있고, 재개 이벤트에 이전 횟수를 적는다.
+export async function resumeEscalatedTask(db: Queryable, taskId: string): Promise<Task | null> {
+  const { rows } = await db.query(
+    `UPDATE tasks SET state = 'READY', retry_count = 0, blocked_reason = NULL, assignee_agent_id = NULL, updated_at = now()
+      WHERE id = $1 AND state = 'ESCALATED'
+      RETURNING *`,
+    [taskId],
+  );
+  return rows[0] ? toTask(rows[0]) : null;
+}
+
 // 응답이 끊긴 수령: 잡은 지(claimed_at) threshold가 지났고, 그 뒤로 실행 보고·도구 사용이 threshold 동안 없는 태스크.
 export async function listUnresponsiveClaims(db: Queryable, thresholdMs: number): Promise<{ taskId: string; projectId: string; orgId: string; agentId: string; onBehalfOf: string }[]> {
   const { rows } = await db.query(

@@ -10,6 +10,7 @@ import { createOrganization } from '../src/domain/org/service.js';
 import { clearPolicyCache } from '../src/domain/policy/policy-cache.js';
 import { recomputeProjectPolicyHash } from '../src/domain/policy/policy-hash.js';
 import { connectRepos } from '../src/domain/repo/service.js';
+import { resumeTask } from '../src/domain/task/stall.js';
 import {
   gitMirrorInspector,
   setCommitInspector,
@@ -188,6 +189,21 @@ describe('V3 — 경로 검사 (server)', () => {
     const { verification } = await claimAndSubmit(ctx, ['src/api/join.ts', 'src/api/list.ts']);
 
     expect(resultOf(verification.stages, 'V3')).toBe('FAIL');
+  });
+
+  it('검사기에는 태스크 브랜치의 기준(레포 기본 브랜치)이 함께 간다 — 커밋 하나가 아니라 브랜치 전체를 본다', async () => {
+    const ctx = await setup();
+    const seen: unknown[] = [];
+    setCommitInspector({
+      kind: 'spy',
+      async changedPaths(input) {
+        seen.push(input);
+        return ['src/api/join.ts'];
+      },
+    });
+    const { verification } = await claimAndSubmit(ctx, ['src/api/join.ts']);
+    expect(resultOf(verification.stages, 'V3')).toBe('PASS');
+    expect(seen).toEqual([expect.objectContaining({ baseBranch: 'main', commitSha: expect.any(String) })]);
   });
 
   it('신고와 diff가 같아도 실제 경로가 금지 규칙에 걸리면 FAIL이다', async () => {
@@ -488,6 +504,25 @@ describe('FAIL 이후 — 재시도와 에스컬레이션', () => {
     expect(await taskState(ctx.taskId)).toMatchObject({ state: 'READY', retry_count: 2 });
     await claimAndSubmit(ctx, ['src/api/join.ts']);
     expect(await taskState(ctx.taskId)).toMatchObject({ state: 'ESCALATED', retry_count: 3 });
+  });
+
+  // ESCALATED는 "사람에게 넘긴다"인데 처리할 길이 없어 막다른 길이었다(통합 테스트: 검사기 결함으로 3번 실패한 태스크를 되살릴 수 없었다).
+  it('ESCALATED는 대표가 재개하면 READY·재시도 0으로 돌아가고, 이전 횟수가 이벤트에 남는다', async () => {
+    const ctx = await setup();
+    setCommitInspector(fakeInspector(['src/api/join.ts', 'api/.env']));
+    for (let i = 0; i < 3; i += 1) await claimAndSubmit(ctx, ['src/api/join.ts']);
+    expect(await taskState(ctx.taskId)).toMatchObject({ state: 'ESCALATED', retry_count: 3 });
+
+    const rep = (await pool.query(`SELECT created_by FROM organizations WHERE id = $1`, [ctx.orgId])).rows[0]!.created_by as string;
+    const resumed = await resumeTask({ userId: rep, orgId: ctx.orgId, orgRole: 'REPRESENTATIVE' }, ctx.taskId, '검사기 수정 후 재개');
+    expect(resumed).toMatchObject({ state: 'READY', retryCount: 0, assigneeAgentId: null });
+    const ev = await pool.query(`SELECT on_behalf_of, payload FROM events WHERE type = 'TASK_RESUMED'`);
+    expect(ev.rows).toEqual([{ on_behalf_of: rep, payload: { taskId: ctx.taskId, note: '검사기 수정 후 재개', from: 'ESCALATED', previousRetryCount: 3 } }]);
+
+    // 다시 가져가 고치면 정상으로 끝난다.
+    setCommitInspector(fakeInspector(['src/api/join.ts']));
+    const { verification } = await claimAndSubmit(ctx, ['src/api/join.ts']);
+    expect(resultOf(verification.stages, 'V3')).toBe('PASS');
   });
 
   it('결론이 난 뒤 늦게 도착한 보고는 retry_count를 두 번 올리지 않는다', async () => {

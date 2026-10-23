@@ -6,7 +6,7 @@ import { tasksChanged } from '../dispatch/tasks-changed.js';
 import { appendEvent } from '../events/append.js';
 import { findProjectById } from '../project/repository.js';
 import type { TaskBlockedPayload } from '../events/types.js';
-import { blockStoppedTask, findTaskById, listUnresponsiveClaims, resumeStoppedTask, type Task } from './repository.js';
+import { blockStoppedTask, findTaskById, listUnresponsiveClaims, resumeEscalatedTask, resumeStoppedTask, type Task } from './repository.js';
 
 // 에이전트가 제출 없이 멈춘 태스크. CLAIMED로 남기면 아무도 다시 가져가지 못하고(운영 테스트의 영구 정체),
 // READY로 되돌려 재시도를 깎으면 권한·환경 탓(쉘 거부·선행 코드 없음)을 에이전트 실패로 센다(대표 결정).
@@ -40,6 +40,8 @@ export async function blockStoppedTaskInTx(
 }
 
 // 대표의 재개. 원인(허용 명령·설치·명세)을 해결했다는 판단은 사람이 한다.
+// 두 경우를 받는다: 멈춤(BLOCKED·AGENT_STOPPED — 재시도 횟수 그대로)과 재시도 소진(ESCALATED — 횟수를 0으로).
+// ESCALATED는 "사람에게 넘긴다"인데 사람이 처리할 길이 없어 막다른 길이었다(통합 테스트: 검사기 결함으로 3번 실패한 태스크를 되살릴 수 없었다).
 export async function resumeTask(
   actor: { userId: string; orgId: string; orgRole: string },
   taskId: string,
@@ -51,16 +53,17 @@ export async function resumeTask(
     if (!task) throw new AppError('TASK_NOT_FOUND', `task ${taskId} not found`);
     const project = await findProjectById(tx, task.projectId);
     if (project?.orgId !== actor.orgId) throw new AppError('CROSS_ORG_ACCESS', 'cannot access another organization');
-    const next = await resumeStoppedTask(tx, taskId);
+    const escalated = task.state === 'ESCALATED';
+    const next = escalated ? await resumeEscalatedTask(tx, taskId) : await resumeStoppedTask(tx, taskId);
     if (next === null) {
-      throw new AppError('TASK_NOT_STOPPED', `task ${taskId} is not stopped (state ${task.state}, reason ${task.blockedReason ?? '-'})`);
+      throw new AppError('TASK_NOT_STOPPED', `task ${taskId} is not stopped or escalated (state ${task.state}, reason ${task.blockedReason ?? '-'})`);
     }
     await appendEvent(tx, {
       orgId: actor.orgId,
       projectId: task.projectId,
       type: 'TASK_RESUMED',
       onBehalfOf: actor.userId,
-      payload: { taskId, note },
+      payload: { taskId, note, from: escalated ? 'ESCALATED' : 'AGENT_STOPPED', ...(escalated ? { previousRetryCount: task.retryCount } : {}) },
     });
     return next;
   });
