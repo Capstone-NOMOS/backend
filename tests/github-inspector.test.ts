@@ -44,7 +44,8 @@ async function setup(options: { connectGithub?: boolean; githubRepoId?: number |
     repos: [{ fullName: 'acme/study-api', ...(githubRepoId === null ? {} : { githubRepoId }) }],
   });
   if (options.connectGithub !== false) await completeGithubDeviceFlow(userId, 'd', deviceApi());
-  return { orgId, input: { repoId: repo!.id, orgId, cloneUrl: null, githubRepoId, commitSha: SHA } };
+  // baseBranch null — 커밋 하나만 보는 경로. 태스크 브랜치 비교(compare)는 아래 따로 본다.
+  return { orgId, input: { repoId: repo!.id, orgId, cloneUrl: null, githubRepoId, commitSha: SHA, baseBranch: null as string | null } };
 }
 
 type Route = { status: number; body?: unknown; headers?: Record<string, string> };
@@ -205,5 +206,51 @@ describe('githubInspector — 파일 내용(dep:add 판정용)', () => {
     const { input } = await setup();
     const inspector = githubInspector({ db: pool, fetchImpl: async () => new Response('', { status: 502 }), apiBase: API });
     await expect(inspector.fileVersions!(input, 'package.json')).rejects.toThrow('502');
+  });
+});
+
+// 태스크 브랜치 전체(기본 브랜치와의 분기점 ... 커밋)를 본다 — 재시도·재개로 커밋이 여럿이면 마지막 커밋 하나로는 앞 커밋의 파일이 "과다 신고"가 됐다(통합 테스트).
+describe('githubInspector — 태스크 브랜치 비교(baseBranch)', () => {
+  const COMPARE_URL = `${API}/repositories/${REPO_ID}/compare/main...${SHA}`;
+
+  it('기본 브랜치와 비교해 브랜치의 모든 파일을 모으고, 분기점이 package.json의 "직전"이 된다', async () => {
+    const { input } = await setup();
+    const withBase = { ...input, baseBranch: 'main' };
+    const { calls, inspector } = fakeGithub({
+      [COMPARE_URL]: {
+        status: 200,
+        body: {
+          status: 'ahead',
+          merge_base_commit: { sha: 'base0' },
+          files: [{ filename: 'src/a.ts' }, { filename: 'src/b.ts', previous_filename: 'src/old-b.ts' }, { filename: 'package.json' }],
+        },
+      },
+      [`${API}/repositories/${REPO_ID}/contents/package.json?ref=base0`]: { status: 200, body: { dependencies: {} } },
+      [`${API}/repositories/${REPO_ID}/contents/package.json?ref=${SHA}`]: { status: 200, body: { dependencies: { zod: '^3' } } },
+    });
+    expect((await inspector.changedPaths(withBase)).sort()).toEqual(['package.json', 'src/a.ts', 'src/b.ts', 'src/old-b.ts']);
+    expect(calls.map((c) => c.url)).toEqual([COMPARE_URL]); // 커밋 하나 조회는 하지 않는다
+
+    const versions = await inspector.fileVersions!(withBase, 'package.json');
+    expect(JSON.parse(versions.before!)).toEqual({ dependencies: {} });
+    expect(JSON.parse(versions.after!)).toEqual({ dependencies: { zod: '^3' } });
+  });
+
+  it('비교가 안 되거나(404) 커밋이 이미 기본 브랜치에 있으면(behind) 커밋 하나로 본다', async () => {
+    const { input } = await setup();
+    const withBase = { ...input, baseBranch: 'main' };
+    const single = { [COMMIT_URL]: { status: 200, body: { files: [{ filename: 'src/only.ts' }] } } };
+    expect(await fakeGithub({ [COMPARE_URL]: { status: 404 }, ...single }).inspector.changedPaths(withBase)).toEqual(['src/only.ts']);
+    expect(await fakeGithub({ [COMPARE_URL]: { status: 200, body: { status: 'behind', files: [] } }, ...single }).inspector.changedPaths(withBase)).toEqual(['src/only.ts']);
+    // 비교가 안 되고 커밋도 없으면 여전히 없는 커밋(FAIL)이다.
+    await expect(fakeGithub({ [COMPARE_URL]: { status: 404 }, [COMMIT_URL]: { status: 422 } }).inspector.changedPaths(withBase)).rejects.toBeInstanceOf(CommitNotFoundError);
+  });
+
+  it('비교 결과가 파일 한도(300)에 닿으면 SKIPPED다', async () => {
+    const { input } = await setup();
+    const files = Array.from({ length: 300 }, (_, i) => ({ filename: `f${i}.ts` }));
+    await expect(
+      fakeGithub({ [COMPARE_URL]: { status: 200, body: { status: 'ahead', files } } }).inspector.changedPaths({ ...input, baseBranch: 'main' }),
+    ).rejects.toBeInstanceOf(InspectionSkipped);
   });
 });

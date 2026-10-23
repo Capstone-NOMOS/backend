@@ -14,6 +14,7 @@ import { CommitNotFoundError, InspectionSkipped, MAX_MANIFEST_BYTES, type Commit
 const DEFAULT_API = 'https://api.github.com';
 // GitHub는 커밋 하나에 파일 3000개까지만 준다(페이지당 300). 그걸 넘으면 전체를 확인할 수 없다.
 const MAX_PAGES = 10;
+const COMPARE_FILE_LIMIT = 300;
 const TIMEOUT_MS = 10_000;
 
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
@@ -49,19 +50,58 @@ export function githubInspector(options: { db: Queryable; fetchImpl?: FetchLike;
     return null;
   }
 
+  // 이름 변경은 옛 경로도 건드린 것이다(그 경로에서는 삭제). mirror 구현(--no-renames)도
+  // 이름 변경을 삭제+추가로 보고하므로 두 구현의 결론을 맞춘다.
+  function addFiles(paths: Set<string>, files: CommitFile[] | undefined): void {
+    for (const file of files ?? []) {
+      paths.add(file.filename);
+      if (file.previous_filename) paths.add(file.previous_filename);
+    }
+  }
+
+  async function tokenFor(orgId: string): Promise<string> {
+    const sealed = await findRepresentativeGithubToken(options.db, orgId);
+    if (sealed === null) {
+      throw new InspectionSkipped('GitHub 미연결 — 대표가 GitHub 계정을 연결하지 않았다');
+    }
+    return decryptSecret(sealed);
+  }
+
+  // 기본 브랜치와 이 커밋의 비교(분기점 ... 커밋). 비교가 안 되면(기본 브랜치·커밋을 못 찾음) null — 호출부가 커밋 하나로 내려간다.
+  // compare는 파일을 300개까지만 준다. 그만큼 오면 전체를 확인할 수 없다.
+  async function compare(token: string, githubRepoId: number, baseBranch: string, commitSha: string): Promise<{ files: CommitFile[]; mergeBase: string | null } | null> {
+    const base = baseBranch.split('/').map(encodeURIComponent).join('/');
+    const res = await get(`${api}/repositories/${githubRepoId}/compare/${base}...${encodeURIComponent(commitSha)}`, token);
+    if (res.status === 404 || res.status === 422) return null;
+    const skipped = skipFor(res);
+    if (skipped) throw skipped;
+    if (!res.ok) throw new Error(`GitHub 응답 ${res.status}`);
+    const body = (await res.json()) as { status?: string; files?: CommitFile[]; merge_base_commit?: { sha?: string } };
+    // 커밋이 이미 기본 브랜치에 들어가 있으면(behind·identical) 비교가 비어 버린다 — 커밋 하나로 본다.
+    if (body.status === 'behind' || body.status === 'identical') return null;
+    if ((body.files?.length ?? 0) >= COMPARE_FILE_LIMIT) {
+      throw new InspectionSkipped(`태스크 브랜치의 파일이 GitHub 비교 한도(${COMPARE_FILE_LIMIT}개)에 닿아 전체 diff를 확인할 수 없다`);
+    }
+    return { files: body.files ?? [], mergeBase: body.merge_base_commit?.sha ?? null };
+  }
+
   return {
     kind: 'github',
-    async changedPaths({ orgId, githubRepoId, commitSha }) {
+    async changedPaths({ orgId, githubRepoId, commitSha, baseBranch }) {
       if (githubRepoId === null) {
         throw new InspectionSkipped('repos.github_repo_id 미설정 — GitHub에서 커밋을 찾을 수 없다');
       }
-      const sealed = await findRepresentativeGithubToken(options.db, orgId);
-      if (sealed === null) {
-        throw new InspectionSkipped('GitHub 미연결 — 대표가 GitHub 계정을 연결하지 않았다');
-      }
-      const token = await decryptSecret(sealed);
+      const token = await tokenFor(orgId);
 
       const paths = new Set<string>();
+      if (baseBranch !== null) {
+        const compared = await compare(token, githubRepoId, baseBranch, commitSha);
+        if (compared !== null) {
+          addFiles(paths, compared.files);
+          return [...paths];
+        }
+        // 비교가 안 됐다 — 아래 커밋 하나 조회가 "없는 커밋(FAIL)"과 "못 봄(SKIPPED)"을 가른다.
+      }
       let url: string | null = `${api}/repositories/${githubRepoId}/commits/${encodeURIComponent(commitSha)}`;
       let pages = 0;
 
@@ -86,27 +126,26 @@ export function githubInspector(options: { db: Queryable; fetchImpl?: FetchLike;
         if (!res.ok) throw new Error(`GitHub 응답 ${res.status}`);
 
         const body = (await res.json()) as { files?: CommitFile[] };
-        for (const file of body.files ?? []) {
-          paths.add(file.filename);
-          // 이름 변경은 옛 경로도 건드린 것이다(그 경로에서는 삭제). mirror 구현(diff-tree --name-only)도
-          // 이름 변경을 삭제+추가로 보고하므로 두 구현의 결론을 맞춘다.
-          if (file.previous_filename) paths.add(file.previous_filename);
-        }
+        addFiles(paths, body.files);
         url = parseNextLink(res.headers.get('link'));
       }
 
       return [...paths];
     },
 
-    // 부모 sha는 커밋 API에서, 내용은 contents API(raw)에서. 404면 그 시점에 파일이 없었다.
-    async fileVersions({ orgId, githubRepoId, commitSha }, filePath) {
+    // 직전 시점은 분기점(compare의 merge_base_commit), 못 찾으면 부모(커밋 API). 내용은 contents API(raw)에서. 404면 그 시점에 파일이 없었다.
+    async fileVersions({ orgId, githubRepoId, commitSha, baseBranch }, filePath) {
       if (githubRepoId === null) throw new InspectionSkipped('repos.github_repo_id 미설정');
-      const sealed = await findRepresentativeGithubToken(options.db, orgId);
-      if (sealed === null) throw new InspectionSkipped('GitHub 미연결');
-      const token = await decryptSecret(sealed);
-      const commit = await get(`${api}/repositories/${githubRepoId}/commits/${encodeURIComponent(commitSha)}`, token);
-      if (!commit.ok) throw new Error(`GitHub 응답 ${commit.status}`);
-      const parent = ((await commit.json()) as { parents?: { sha: string }[] }).parents?.[0]?.sha ?? null;
+      const token = await tokenFor(orgId);
+      let parent: string | null = null;
+      const compared = baseBranch === null ? null : await compare(token, githubRepoId, baseBranch, commitSha);
+      if (compared?.mergeBase) {
+        parent = compared.mergeBase;
+      } else {
+        const commit = await get(`${api}/repositories/${githubRepoId}/commits/${encodeURIComponent(commitSha)}`, token);
+        if (!commit.ok) throw new Error(`GitHub 응답 ${commit.status}`);
+        parent = ((await commit.json()) as { parents?: { sha: string }[] }).parents?.[0]?.sha ?? null;
+      }
       const encoded = filePath.split('/').map(encodeURIComponent).join('/');
       const read = async (ref: string | null): Promise<string | null> => {
         if (ref === null) return null;

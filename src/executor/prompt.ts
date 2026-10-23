@@ -94,7 +94,7 @@ export function buildTaskPrompt(briefing: PromptBriefing, branch: string, enviro
       briefing.questionRelay === true
         ? '- 다른 역할(BACKEND 등)이 정해야 하는 결정(응답 형식·상태 코드·필드 이름 등)이 명세·인계 노트에 없으면 추측하지 말고 AskUserQuestion으로 물어본다. 명세에 있으면 묻지 않는다. 답은 그 역할의 사람이 한다 — 기다리는 동안 작업이 멈춰 있어도 된다.'
         : '- 다른 역할(BACKEND 등)이 정해야 하는 결정(응답 형식·상태 코드·필드 이름 등)이 명세·인계 노트에 없으면 가장 단순한 쪽으로 가정하고 진행하되, 그 가정을 아래 규칙대로 GOTCHA 노트로 남긴다.',
-      '- 작업이 끝나면 커밋하고, submit_artifact에 **실제 커밋 sha와 실제로 바꾼 모든 경로**를 넣는다.',
+      '- 작업이 끝나면 커밋하고, submit_artifact에 **마지막 커밋 sha와 이 태스크 브랜치에서 바꾼 모든 경로**(이전 시도의 커밋까지 포함)를 넣는다.',
       '  바꾸지 않은 경로를 적거나 sha를 지어내지 않는다 — 서버가 제출 시점에 다시 검증한다.',
       '- 제출이 NOTES_UNACKNOWLEDGED로 반려되면, 작업 중에 새로 올라온 인계 노트가 함께 온다. 읽고, 작업에 영향이 있으면 고쳐서 커밋한 뒤',
       '  submit_artifact를 다시 부르며 그 노트 id를 acknowledged_note_ids에 넣는다. 위 [인계 노트]의 노트는 따로 넣지 않아도 된다.',

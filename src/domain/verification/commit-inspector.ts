@@ -30,12 +30,27 @@ export function mirrorRoot(): string {
   return process.env.GIT_MIRROR_DIR ?? path.join(process.env.USERPROFILE ?? process.env.HOME ?? '.', '.nomos', 'server-mirrors');
 }
 
+// 태스크 브랜치의 분기점 — 기본 브랜치와 이 커밋의 merge-base. 기본 브랜치가 mirror에 없으면 null(커밋 하나만 본다).
+// 브랜치 이름은 refs/heads/ 밑으로만 해석한다 — '-'로 시작하는 이름이 옵션으로 읽히지 않는다.
+async function mergeBase(dir: string, commitSha: string, baseBranch: string | null): Promise<string | null> {
+  if (baseBranch === null) return null;
+  try {
+    const { stdout } = await run('git', ['--git-dir', dir, 'merge-base', `refs/heads/${baseBranch}`, commitSha]);
+    const base = stdout.trim();
+    // 커밋이 이미 기본 브랜치에 들어가 있으면(분기점 = 그 커밋) 비교가 비어 버린다 — 커밋 하나로 본다.
+    return base && base !== commitSha ? base : null;
+  } catch (err) {
+    logger.warn('V3 분기점을 찾지 못해 커밋 하나만 본다', { baseBranch, commitSha, err: String(err) });
+    return null;
+  }
+}
+
 // bare mirror를 레포마다 하나씩 들고 fetch로 갱신한다. 작업 트리를 만들지 않으므로
 // 동시에 여러 커밋을 검사해도 서로 간섭하지 않는다 (checkout이 없다).
 export function gitMirrorInspector(root: string = mirrorRoot()): CommitInspector {
   return {
     kind: 'git-mirror',
-    async changedPaths({ repoId, cloneUrl, commitSha }) {
+    async changedPaths({ repoId, cloneUrl, commitSha, baseBranch }) {
       if (cloneUrl === null) {
         throw new InspectionSkipped('repos.clone_url 미설정 — 커밋 diff를 읽을 수 없다');
       }
@@ -58,23 +73,19 @@ export function gitMirrorInspector(root: string = mirrorRoot()): CommitInspector
         }
       }
 
-      let stdout: string;
       try {
-        // --root: 첫 커밋(부모 없음)도 diff가 나오게 한다. 없으면 빈 결과가 나와
-        // "아무것도 안 바꿨다"로 잘못 읽힌다.
-        ({ stdout } = await run('git', [
-          '--git-dir',
-          dir,
-          'diff-tree',
-          '--no-commit-id',
-          '--name-only',
-          '--root',
-          '-r',
-          commitSha,
-        ]));
+        await run('git', ['--git-dir', dir, 'cat-file', '-e', `${commitSha}^{commit}`]);
       } catch (err) {
         throw new CommitNotFoundError(commitSha, err);
       }
+
+      const base = await mergeBase(dir, commitSha, baseBranch);
+      // 분기점이 있으면 태스크 브랜치 전체, 없으면 커밋 하나. 이름 변경은 삭제+추가로 낸다(--no-renames — github 구현과 결론을 맞춘다).
+      // --root: 첫 커밋(부모 없음)도 diff가 나오게 한다. 없으면 빈 결과가 나와 "아무것도 안 바꿨다"로 잘못 읽힌다.
+      const { stdout } =
+        base !== null
+          ? await run('git', ['--git-dir', dir, 'diff', '--name-only', '--no-renames', base, commitSha])
+          : await run('git', ['--git-dir', dir, 'diff-tree', '--no-commit-id', '--name-only', '--no-renames', '--root', '-r', commitSha]);
 
       return stdout
         .split('\n')
@@ -83,7 +94,7 @@ export function gitMirrorInspector(root: string = mirrorRoot()): CommitInspector
     },
 
     // changedPaths가 먼저 돌아 mirror가 최신이다. 경로는 git의 `<rev>:<path>` 문법에 들어가므로 콜론·줄바꿈이 든 경로는 받지 않는다.
-    async fileVersions({ repoId, commitSha }, filePath) {
+    async fileVersions({ repoId, commitSha, baseBranch }, filePath) {
       if (/[:\r\n\0]/.test(filePath) || filePath.startsWith('-')) throw new Error(`unsupported path: ${filePath}`);
       const dir = path.join(root, `${repoId}.git`);
       const show = async (rev: string): Promise<string | null> => {
@@ -97,7 +108,8 @@ export function gitMirrorInspector(root: string = mirrorRoot()): CommitInspector
           throw err;
         }
       };
-      return { before: await show(`${commitSha}^`), after: await show(commitSha) };
+      const base = await mergeBase(dir, commitSha, baseBranch);
+      return { before: await show(base ?? `${commitSha}^`), after: await show(commitSha) };
     },
   };
 }
