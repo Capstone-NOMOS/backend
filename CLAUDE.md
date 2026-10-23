@@ -238,6 +238,12 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
   - 피싱 대비: 승인 화면에 에이전트 이름·**요청 IP**·시각을 보여 주고, CLI는 승인 뒤 **연결된 계정**(`account`)을 출력한다(남이 내 코드를 승인한 경우를 드러낸다).
     요청 IP를 위해 `app.set('trust proxy', 1)` — Caddy 한 단만 믿는다. 늘리거나 `true`로 바꾸면 클라이언트가 끼운 X-Forwarded-For를 믿게 된다.
   - userCode는 자음 20자 8자리(약 2.5×10¹⁰), 대소문자·하이픈 무시. 서버에 rate limit이 아직 없다 — 대입 공격은 조합 수와 10분 만료로만 막는다.
+- **1회용 연결 코드(024, `domain/agent/connect-code-service.ts`)**: 웹의 "에이전트 연결"이 `POST /me/agent-connect-codes`로 10분·1회용 코드를 받아
+  `npx … connect --code XXXX-XXXX` 명령을 보여 준다. CLI는 코드가 있으면 **저장된 자격 증명을 보지 않고** 그 코드의 주인으로 연결한다(`/agents/connect/code`,
+  `AGENT_CONNECTED.payload.method = connect_code`) — 노트북에 예전 계정 자격 증명이 남아 있으면 새 계정으로 가입해도 예전 계정으로 조용히 붙었다(통합 테스트).
+  연결 키를 명령에 싣지 않는 이유: 기한 없는 비밀값이 셸 기록·화면 공유에 남는다. 코드는 해시로만 저장하고 이벤트에도 싣지 않는다.
+  반대 방향 위험(남이 준 명령을 실행하면 내 노트북이 그 사람의 에이전트)은 CLI가 연결된 계정을 반드시 출력해 드러낸다.
+  저장된 자격 증명을 재사용할 때도 `GET /agents/me/account`(배정 전에도 됨)로 계정을 출력한다.
 - **에이전트 온라인 상태**(`domain/agent/presence.ts`, 메모리): 태스크 스트림이 열려 있거나 최근 60초 안에 인증된 요청이 있으면 online.
   인증 통과(`resolveAgentToken`)·웹소켓 연결·pong이 기록한다. DB에 쓰지 않는다(요청마다 UPDATE가 된다). 서버 1대 전제, 재시작 직후에는 offline.
 - 교체 지점은 여전히 `auth.ts` 하나다. 라우트는 `req.user`와 `orgIdOf(req)`만 쓴다. `req.user.orgId`는 조직 가입 전 `null`이므로 조직이 필요한 핸들러는 `orgIdOf(req)`(없으면 403 `NOT_IN_ORG`)를 쓴다.
@@ -514,6 +520,14 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
   프롬프트는 "가정하고 GOTCHA로 남겨라"가 된다(옛 서버라 필드가 없으면 꺼짐으로 본다). **시작(G1) 전에만** 바꾼다(`PATCH /projects/:id/settings`, `PROJECT_SETTINGS_UPDATED`) —
   끄는 이유: 대조군 실험, 답할 사람이 없을 때, 상담 실행 비용(답할 쪽 구독), 문제 시 되돌리기.
 - **다른 역할 소관 계약은 DECIDED로 남기지 않는다**(스위치와 무관, E6: 지어낸 BE 계약을 DECIDED로 발행했다) — 가정했다면 GOTCHA "가정함 — <역할> 확인 필요".
+- **질문 대상은 FE·BE·PM 셋이다(025, 대표 결정 — 기획 변경)**: PM = 대표가 운용하는 PM 에이전트(요구사항·정책·제품 결정). 라우터가 PM을 고르면
+  PM 에이전트(중계 모드면 대표 노트북의 pm-worker, `purpose: question_draft`)가 확정한 기능 명세·계약을 읽고 답 초안을 쓰고(`question/pm-draft.ts`, `system:pm`),
+  **대표가 확정한다** — PM 초안은 답이 되지 않는다(`agent_questions_pm_human_chk`). 답할 수 있는 사람은 대표뿐(PM 역할 멤버가 없다). 초안을 못 만들면 대표가 직접 답한다.
+  `TEAM_ROLES`에 PM을 넣지 말 것 — 태스크·경로 소유권의 역할이 아니라 질문 대상만이다(`QuestionTarget = TeamRole | 'PM'`).
+- **라우터는 `QUESTION_ROUTER`로 고른다**(`router-registry.ts`): `llm`(운영 기본 — PM 모델, `question/llm-router.ts`)·`rule`(반대 역할, 테스트 기본).
+  LLM 라우터는 평가 장치와 같은 프롬프트·해석(`router.ts`, v2)을 쓴다. 중계 모드에서 pm-worker가 30초 넘게 조용하면 기다리지 않고 바로 규칙으로 대체하고
+  `routing.fallback`에 남긴다(질문이 라우팅 때문에 막히지 않게). 판정 비용은 `routing.costUsd`·`QUESTION_ASKED.payload.costUsd`.
+  Decision AI(Jev 등)는 `QuestionRouter`를 하나 더 구현해 선택지에 넣는다 — 나머지 서버는 인터페이스만 본다.
 - **`GET /me/questions`**: 내가 답할 질문(대표는 전부, 팀원은 자기 역할이 대상인 것) — 알림 배지용. 답할 자격 정의는 `answerQuestion`과 같아야 한다.
 
 ### 룸 (`domain/room`, 017) — 보기 전용

@@ -34,7 +34,7 @@ export async function truncateAll(): Promise<void> {
   await drainTasksChanged();
   await testPool.query(
     `TRUNCATE TABLE agent_questions, agent_activity, task_dispatches, approvals, notes, verifications, artifacts, task_deps, tasks, plans, spec_tests, specs, project_policies, oauth_sessions, project_members, project_repos, projects,
-       agent_device_requests, agent_tokens, agents, events, invites, repo_paths, repos, users, organizations
+       agent_connect_codes, agent_device_requests, agent_tokens, agents, events, invites, repo_paths, repos, users, organizations
      RESTART IDENTITY CASCADE`,
   );
 }
@@ -52,6 +52,7 @@ export async function dropSchema(): Promise<void> {
     DROP TABLE IF EXISTS agent_activity;
     DROP TABLE IF EXISTS task_dispatches;
     DROP TABLE IF EXISTS approvals;
+    DROP TABLE IF EXISTS agent_connect_codes;
     DROP TABLE IF EXISTS agent_device_requests;
     DROP TABLE IF EXISTS events;
     DROP FUNCTION IF EXISTS nomos_notify_event();

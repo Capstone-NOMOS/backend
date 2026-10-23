@@ -7,7 +7,8 @@ import {
   pollDeviceFlow,
   startDeviceFlow,
 } from '../domain/agent/device-service.js';
-import { describeSelf } from '../domain/agent/service.js';
+import { describeAccount, describeSelf } from '../domain/agent/service.js';
+import { connectByCode, issueConnectCode } from '../domain/agent/connect-code-service.js';
 import { agentContextOf, authenticateAgent } from '../middleware/agent-auth.js';
 import { authenticate, requireSameOrg } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
@@ -30,6 +31,18 @@ agentsRouter.post('/agents/connect', validate({ body: connectBodySchema }), asyn
   res.set('Cache-Control', 'no-store').status(201).json({ data: result });
 });
 
+// POST /api/agents/connect/code — 웹이 준 1회용 연결 코드로 연결(024). 노트북에 다른 계정의 자격 증명이 있어도 코드의 주인으로 연결된다.
+const connectCodeBodySchema = agentSpecSchema.extend({ code: z.string().min(1).max(32) });
+agentsRouter.post('/agents/connect/code', validate({ body: connectCodeBodySchema }), async (req, res) => {
+  const { code, ...spec } = req.body as z.infer<typeof connectCodeBodySchema>;
+  res.set('Cache-Control', 'no-store').status(201).json({ data: await connectByCode(code, spec) });
+});
+
+// POST /api/me/agent-connect-codes — 웹의 "에이전트 연결" 안내가 부른다. 로그인한 사람이면 누구나(조직 가입 전도).
+agentsRouter.post('/me/agent-connect-codes', authenticate, async (req, res) => {
+  res.set('Cache-Control', 'no-store').status(201).json({ data: await issueConnectCode(req.user!.id) });
+});
+
 const refreshBodySchema = z.object({ refreshToken: z.string().min(1) });
 
 // POST /api/agents/token/refresh
@@ -42,6 +55,11 @@ agentsRouter.post('/agents/token/refresh', validate({ body: refreshBodySchema })
 // 토큰에 담지 않는 이유는 max_concurrent가 바뀌어도 만료를 기다리지 않게 하기 위해서다.
 agentsRouter.get('/agents/me', authenticateAgent, async (req, res) => {
   res.json({ data: await describeSelf(agentContextOf(req)) });
+});
+
+// GET /api/agents/me/account — 이 에이전트의 주인 계정(024). 배정 전에도 된다 — CLI가 재사용하는 자격 증명이 누구 것인지 출력한다.
+agentsRouter.get('/agents/me/account', authenticateAgent, async (req, res) => {
+  res.json({ data: await describeAccount(req.agent!.id) });
 });
 
 const orgIdParamsSchema = z.object({ orgId: z.string().uuid() });

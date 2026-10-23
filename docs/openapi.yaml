@@ -202,8 +202,13 @@ components:
         taskId: { type: string, format: uuid }
         askedByAgentId: { type: string, format: uuid }
         askerRole: { type: string, enum: [FRONTEND, BACKEND] }
-        targetRole: { type: string, enum: [FRONTEND, BACKEND], description: '답할 역할. 서버가 정한다(routedBy에 근거)' }
-        routedBy: { type: string, description: "대상 역할을 정한 라우터 구현(이름·버전). 기본 'role_rule:opposite'(묻는 쪽의 반대 역할)" }
+        targetRole:
+          type: string
+          enum: [FRONTEND, BACKEND, PM]
+          description: |
+            답할 쪽. 서버의 질문 라우터가 정한다(routedBy에 근거). PM(025) = 요구사항·정책 같은 제품 결정 — 대표가 운용하는 PM 에이전트가 답 초안(draft)을 쓰고
+            **대표가 확정한다**(PM 질문은 초안이 곧 답이 되지 않는다, draftedByAgentId가 null일 수 있다). 답할 수 있는 사람은 대표뿐이다.
+        routedBy: { type: string, description: "대상을 정한 라우터 구현(이름·버전). 운영 기본은 LLM('llm:<relay|anthropic>:<모델>:v2'), 실패하면 'role_rule:opposite'(반대 역할)로 대체하고 fallback에 사유" }
         routing:
           type: object
           description: 라우터 판정 상세 — 라우터 구현을 바꿔 가며 비교하는 근거
@@ -213,6 +218,7 @@ components:
             reason: { type: string, nullable: true }
             latencyMs: { type: integer }
             fallback: { type: string, nullable: true, description: '라우터가 실패·시간 초과로 규칙 라우터로 대체됐으면 그 사유' }
+            costUsd: { type: number, nullable: true, description: '판정의 모델 비용(USD). 규칙 라우터·옛 질문은 없음 또는 null' }
         questions:
           type: array
           description: Claude Code AskUserQuestion 형식 그대로
@@ -301,6 +307,36 @@ components:
         accessToken: { type: string }
         refreshToken: { type: string }
         agentId: { type: string, format: uuid }
+    AgentConnectCode:
+      type: object
+      required: [code, expiresAt, command]
+      properties:
+        code: { type: string, description: '1회용 연결 코드(XXXX-XXXX). 10분 안에 한 번만 쓸 수 있다' }
+        expiresAt: { type: string, format: date-time }
+        command: { type: string, description: '팀원에게 보여 줄 명령 그대로 — `npx @capstone-nomos/cli@latest connect --code XXXX-XXXX --server …`' }
+    AgentAccount:
+      type: object
+      required: [agentId, agentName, loginId, nickname, orgName]
+      properties:
+        agentId: { type: string, format: uuid }
+        agentName: { type: string }
+        loginId: { type: string, nullable: true }
+        nickname: { type: string, nullable: true }
+        orgName: { type: string, nullable: true, description: '조직 가입 전이면 null' }
+    AgentConnectedByCode:
+      type: object
+      required: [accessToken, refreshToken, agentId, account]
+      properties:
+        accessToken: { type: string }
+        refreshToken: { type: string }
+        agentId: { type: string, format: uuid }
+        account:
+          type: object
+          required: [loginId, nickname, orgName]
+          properties:
+            loginId: { type: string, nullable: true }
+            nickname: { type: string, nullable: true }
+            orgName: { type: string, nullable: true }
     DeviceStart:
       type: object
       required: [deviceCode, userCode, verificationUri, verificationUriComplete, expiresIn, interval]
@@ -774,8 +810,11 @@ components:
       properties:
         id: { type: string, format: uuid }
         orgId: { type: string, format: uuid }
-        planId: { type: string, format: uuid }
-        purpose: { type: string, enum: [draft, repair], description: 'repair면 첫 초안이 검증에 걸려 위반 목록을 붙여 다시 쓰는 호출' }
+        planId: { type: string, format: uuid, nullable: true, description: '계획 호출이 아니면 null(질문 라우팅·PM 질문 초안)' }
+        purpose:
+          type: string
+          enum: [draft, repair, route, question_draft]
+          description: 'draft·repair = 계획(repair는 위반 목록을 붙여 다시 쓰는 호출) · route = 질문을 FE·BE·PM 중 누구에게 보낼지(025) · question_draft = PM 소관 질문의 답 초안(025)'
         request:
           type: object
           required: [model, effort, maxTokens, system, user, jsonSchema]
@@ -1296,6 +1335,71 @@ paths:
             application/json:
               example:
                 error: { code: INVALID_CONNECT_REQUEST, message: invalid connect request }
+
+  /me/agent-connect-codes:
+    post:
+      tags: [CLI 연결]
+      summary: 1회용 연결 코드 받기 (로그인한 사람)
+      description: |
+        웹의 "에이전트 연결" 안내가 부른다(024). 응답의 `command`를 그대로 보여 주면 된다 — 팀원이 노트북에서 실행하면
+        **노트북에 다른 계정의 자격 증명이 남아 있어도 이 계정의 에이전트로** 연결된다(통합 테스트: 예전 계정으로 조용히 붙었다).
+        코드는 10분·1회용이고 서버에는 해시만 남는다. 누를 때마다 새 코드다. 조직 가입 전에도 받을 수 있다.
+      security: [{ userToken: [] }]
+      responses:
+        '201':
+          description: 발급됨
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/AgentConnectCode' } } }
+              example:
+                data: { code: WDJB-MJHT, expiresAt: '2026-10-23T09:10:00Z', command: 'npx @capstone-nomos/cli@latest connect --code WDJB-MJHT --server https://nomos-team.duckdns.org' }
+
+  /agents/connect/code:
+    post:
+      tags: [CLI 연결]
+      summary: 1회용 연결 코드로 에이전트 연결 (CLI)
+      description: |
+        `connect --code`가 부른다. 코드의 주인 계정으로 에이전트 자격 증명을 낸다(연결 키·브라우저 승인과 같은 발급 경로, `AGENT_CONNECTED.payload.method = connect_code`).
+        틀린·만료·이미 쓴 코드는 모두 400 `INVALID_CONNECT_REQUEST`(어느 경우인지 알려 주지 않는다). 응답의 `account`를 CLI가 출력한다 — 남이 준 명령이면 드러난다.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, agentName, harness]
+              properties:
+                code: { type: string, description: '대소문자·하이픈 무시' }
+                agentName: { type: string, maxLength: 64 }
+                harness: { type: string }
+                skills: { type: array, items: { type: string } }
+                maxConcurrent: { type: integer, minimum: 1, maximum: 16 }
+            example: { code: WDJB-MJHT, agentName: be-laptop, harness: claude-code }
+      responses:
+        '201':
+          description: 연결됨
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/AgentConnectedByCode' } } }
+        '400':
+          description: 코드가 틀림·만료·이미 씀
+          content:
+            application/json:
+              example:
+                error: { code: INVALID_CONNECT_REQUEST, message: invalid connect request }
+
+  /agents/me/account:
+    get:
+      tags: [CLI 연결]
+      summary: 이 에이전트의 주인 계정 (에이전트)
+      description: CLI가 저장된 자격 증명을 재사용할 때 "어느 계정으로 붙었는지" 출력한다(024). 프로젝트 배정 전에도 된다.
+      security: [{ agentToken: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/AgentAccount' } } }
 
   /agents/device/start:
     post:

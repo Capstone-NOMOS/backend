@@ -17,7 +17,8 @@ import { claudeCliRouter, httpRouter, type EvalRouter } from './lib/question-rou
 
 // --- 데이터셋 형식 ---
 const roleSchema = z.enum(TEAM_ROLES);
-const targetSchema = z.union([roleSchema, z.literal('SELF')]);
+// PM(025) = 요구사항·정책 — 대표가 운용하는 PM 에이전트. 데이터셋의 정답 라벨로도 쓴다.
+const targetSchema = z.union([roleSchema, z.literal('PM'), z.literal('SELF')]);
 const contextSchema = z.object({
   askerRole: roleSchema,
   task: z.object({ title: z.string().min(1), kind: z.string().default('IMPLEMENT') }),

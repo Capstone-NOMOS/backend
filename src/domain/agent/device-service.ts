@@ -32,7 +32,7 @@ export const DEVICE_FLOW = { expiresInSec: 600, intervalSec: 5, slowDownStepSec:
 const USER_CODE_ALPHABET = 'BCDFGHJKLMNPQRSTVWXZ';
 const USER_CODE_PATTERN = /^[BCDFGHJKLMNPQRSTVWXZ]{8}$/;
 
-function newUserCode(): string {
+export function newUserCode(): string {
   let code = '';
   for (let i = 0; i < 8; i += 1) code += USER_CODE_ALPHABET[randomInt(USER_CODE_ALPHABET.length)];
   return code;
@@ -44,7 +44,7 @@ export function normalizeUserCode(raw: string): string | null {
   return USER_CODE_PATTERN.test(code) ? code : null;
 }
 
-function displayUserCode(code: string): string {
+export function displayUserCode(code: string): string {
   return `${code.slice(0, 4)}-${code.slice(4)}`;
 }
 
