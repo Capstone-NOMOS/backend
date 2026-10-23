@@ -530,13 +530,15 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
   PM 에이전트(중계 모드면 대표 노트북의 pm-worker, `purpose: question_draft`)가 확정한 기능 명세·계약을 읽고 답 초안을 쓰고(`question/pm-draft.ts`, `system:pm`),
   **대표가 확정한다** — PM 초안은 답이 되지 않는다(`agent_questions_pm_human_chk`). 답할 수 있는 사람은 대표뿐(PM 역할 멤버가 없다). 초안을 못 만들면 대표가 직접 답한다.
   `TEAM_ROLES`에 PM을 넣지 말 것 — 태스크·경로 소유권의 역할이 아니라 질문 대상만이다(`QuestionTarget = TeamRole | 'PM'`).
-- **라우터는 `QUESTION_ROUTER`로 고른다**(`router-registry.ts`): `llm`(운영 기본 — PM 모델, `question/llm-router.ts`)·`rule`(반대 역할, 테스트 기본).
-  LLM 라우터는 평가 장치와 같은 프롬프트·해석(`router.ts`, v2)을 쓴다. 중계 모드에서 pm-worker가 30초 넘게 조용하면 기다리지 않고 바로 규칙으로 대체하고
+- **라우터는 `QUESTION_ROUTER`로 고른다**(`router-registry.ts`): `llm`(운영 기본 — PM 모델, `question/llm-router.ts`)·`decision`(Decision AI).
+  **라우터가 실패하면 대표(PM)에게 보낸다**(`fallback:representative`) — 반대 역할 규칙은 서비스에서 뺐다(대표 결정 2026-10-24, 비교·대체 모두).
+  그 규칙(`oppositeRoleRouter`)은 테스트의 결정적 기본 라우터(`tests/setup-invariants.ts`의 `setTestBaseRouter`)와 오프라인 평가 기준선으로만 남는다.
+  LLM 라우터는 평가 장치와 같은 프롬프트·해석(`router.ts`, v2)을 쓴다. 중계 모드에서 pm-worker가 30초 넘게 조용하면 기다리지 않고 바로 대표에게 보내고
   `routing.fallback`에 남긴다(질문이 라우팅 때문에 막히지 않게). 판정 비용은 `routing.costUsd`·`QUESTION_ASKED.payload.costUsd`.
   Decision AI(Jev 등)는 `QuestionRouter`를 하나 더 구현해 선택지에 넣는다 — 나머지 서버는 인터페이스만 본다.
-- **라우팅 평가 기록(026, 발표 지표 — 서비스 동작에는 쓰지 않는다)**: 질문마다 실제로 보낸 판정(`primary`)과 `QUESTION_SHADOW_ROUTERS`(llm·decision·rule)를
+- **라우팅 평가 기록(026, 발표 지표 — 서비스 동작에는 쓰지 않는다)**: 질문마다 실제로 보낸 판정(`primary`)과 `QUESTION_SHADOW_ROUTERS`(llm·decision)를
   같은 입력으로 함께 돌린 판정(`shadow`)을 `question_routing_runs`에 남긴다(`question/routing-eval.ts`, 커밋 뒤 비동기 — 실패해도 질문 흐름을 막지 않는다).
-  먼저 시도한 라우터가 실패해 규칙으로 대체되면 그 실패도 그 라우터의 기록이다(실패율). 대표가 정답 담당자를 붙이고(`POST /questions/:id/gold`, `QUESTION_GOLD_LABELED`)
+  먼저 시도한 라우터가 실패해 대표에게 보내지면 그 실패도 그 라우터의 기록이다(실패율). 대표가 정답 담당자를 붙이고(`POST /questions/:id/gold`, `QUESTION_GOLD_LABELED`)
   `GET /projects/:id/routing-report`가 라우터별 일치율·분류 지연·요청당 비용을 낸다. `baseline:asker` = 조건 A(질문한 사람에게 — SELF).
   Decision AI는 `DECISION_ROUTER_URL`(HTTP, `question/http-router.ts`) — 질문·명세가 외부로 나가므로 켜기 전에 팀이 동의한다.
   오프라인 데이터셋 비교(100문항)는 `scripts/eval-question-router.ts`가 같은 프롬프트·해석으로 한다.

@@ -1,25 +1,30 @@
 import { env } from '../../config/env.js';
 import { httpQuestionRouter } from './http-router.js';
 import { llmQuestionRouter } from './llm-router.js';
-import { oppositeRoleRouter, type QuestionRouter, type RoutingDecision, type RoutingInput } from './router.js';
+import { PM_TARGET, type QuestionRouter, type RoutingDecision, type RoutingInput } from './router.js';
 
-// 지금 쓰는 라우터 — QUESTION_ROUTER로 고른다(기본 llm: PM 모델이 FE·BE·PM 중 고른다). rule은 반대 역할 규칙(PM으로는 가지 않는다).
-// Decision AI(Jev 등)를 붙일 때는 QuestionRouter 구현을 하나 더 만들고 여기 선택지에 넣는다 — 서버의 나머지는 인터페이스만 본다.
-// 테스트는 setQuestionRouter로 바꿔 끼운다(PM 모델·커밋 검사기와 같은 방식).
+// 지금 쓰는 라우터 — QUESTION_ROUTER로 고른다: llm(기본, PM 모델이 FE·BE·PM 중 고른다) · decision(Decision AI, DECISION_ROUTER_URL).
+// 라우터가 실패하면 대표(PM)에게 보낸다 — 대표는 어느 질문에든 답할 수 있다. 반대 역할 규칙은 쓰지 않는다(대표 결정 2026-10-24).
+// 테스트는 setQuestionRouter로 바꿔 끼우고, 기본은 setup에서 정한 결정적 라우터다(CI는 모델을 부르지 않는다).
 
 // 이름 → 라우터. decision은 DECISION_ROUTER_URL이 있을 때만 있다.
 export function routerByName(name: string): QuestionRouter | null {
-  if (name === 'rule') return oppositeRoleRouter;
   if (name === 'llm') return llmQuestionRouter;
   if (name === 'decision') return env.DECISION_ROUTER_URL ? httpQuestionRouter(env.DECISION_ROUTER_URL) : null;
   return null;
 }
 
 let override: QuestionRouter | null = null;
+let testBase: QuestionRouter | null = null;
 let shadowOverride: QuestionRouter[] | null = null;
 
 function configured(): QuestionRouter {
-  return override ?? routerByName(env.QUESTION_ROUTER) ?? oppositeRoleRouter;
+  return override ?? testBase ?? routerByName(env.QUESTION_ROUTER) ?? llmQuestionRouter;
+}
+
+// 테스트 전체의 기본 라우터(tests/setup-invariants.ts). setQuestionRouter(null)이 여기로 돌아온다. 운영 코드에서는 부르지 않는다.
+export function setTestBaseRouter(next: QuestionRouter | null): void {
+  testBase = next;
 }
 
 // 평가용 그림자 라우터(026) — 실제로 보내지 않고 같은 입력으로 돌려 기록만 한다. 실제로 보낸 라우터와 같은 이름은 뺀다.
@@ -45,11 +50,12 @@ export function setQuestionRouter(next: QuestionRouter | null): QuestionRouter {
 }
 
 export const ROUTER_TIMEOUT_MS = 30_000;
+export const FALLBACK_ROUTED_BY = 'fallback:representative';
 
 // attempted: 먼저 시도한 라우터 이름 — 대체(fallback)됐으면 routedBy와 다르다. 평가 기록(026)이 그 라우터의 실패로 센다.
 export type RoutedResult = RoutingDecision & { latencyMs: number; fallback: string | null; attempted: string };
 
-// 라우터가 실패하거나 늦으면 규칙 라우터로 대체한다 — 질문이 라우팅 때문에 막히면 에이전트가 멈춘다.
+// 라우터가 실패하거나 늦으면 대표(PM)에게 보낸다 — 질문이 라우팅 때문에 막히면 에이전트가 멈추고, 대표는 어느 질문에든 답할 수 있다.
 // 대체된 사실(fallback)은 기록한다. 조용히 넘기면 그 라우터의 실패율이 지표에서 사라진다.
 export async function routeQuestion(input: RoutingInput): Promise<RoutedResult> {
   const router = configured();
@@ -61,7 +67,7 @@ export async function routeQuestion(input: RoutingInput): Promise<RoutedResult> 
     ]);
     return { ...decision, latencyMs: Date.now() - started, fallback: null, attempted: router.name };
   } catch (err) {
-    const decision = await oppositeRoleRouter.route(input);
+    const decision: RoutingDecision = { target: PM_TARGET, confidence: null, reason: '라우터 실패 — 대표가 판단한다', routedBy: FALLBACK_ROUTED_BY };
     return {
       ...decision,
       latencyMs: Date.now() - started,

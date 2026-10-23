@@ -208,7 +208,7 @@ components:
           description: |
             답할 쪽. 서버의 질문 라우터가 정한다(routedBy에 근거). PM(025) = 요구사항·정책 같은 제품 결정 — 대표가 운용하는 PM 에이전트가 답 초안(draft)을 쓰고
             **대표가 확정한다**(PM 질문은 초안이 곧 답이 되지 않는다, draftedByAgentId가 null일 수 있다). 답할 수 있는 사람은 대표뿐이다.
-        routedBy: { type: string, description: "대상을 정한 라우터 구현(이름·버전). 운영 기본은 LLM('llm:<relay|anthropic>:<모델>:v2'), 실패하면 'role_rule:opposite'(반대 역할)로 대체하고 fallback에 사유" }
+        routedBy: { type: string, description: "대상을 정한 라우터 구현(이름·버전). 운영 기본은 LLM('llm:<relay|anthropic>:<모델>:v2'), 실패하면 대표에게('fallback:representative', targetRole PM) 보내고 fallback에 사유" }
         routing:
           type: object
           description: 라우터 판정 상세 — 라우터 구현을 바꿔 가며 비교하는 근거
@@ -1423,8 +1423,9 @@ paths:
       tags: [질문]
       summary: 질문 라우팅 평가 보고서 (대표, 발표 지표)
       description: |
-        실제 질문마다 실제로 보낸 라우터(primary)와 함께 돌려 본 라우터(shadow — 설정 `QUESTION_SHADOW_ROUTERS`: llm·decision·rule)의 판정을 모아
+        실제 질문마다 실제로 보낸 라우터(primary)와 함께 돌려 본 라우터(shadow — 설정 `QUESTION_SHADOW_ROUTERS`: llm·decision)의 판정을 모아
         라우터별 **최초 수신자-정답 담당자 일치율**(정답이 붙은 질문만)·**분류 지연**·**요청당 비용**을 낸다.
+        라우터가 실패해 대표에게 보낸 경우는 `fallback:representative`로 따로 나온다(실패한 라우터에는 errors로 센다).
         `baseline:asker`는 조건 A(기존 다인 개발 — 질문이 질문한 사람에게 간다, 모두 SELF)다. 대표만.
       security: [{ userToken: [] }]
       parameters: [{ $ref: '#/components/parameters/ProjectId' }]

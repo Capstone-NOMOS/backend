@@ -227,11 +227,11 @@ describe('질문 라우터 교체', () => {
     expect(rows[0]!.payload).toMatchObject({ targetRole: 'SELF' });
   });
 
-  it('라우터가 실패하면 규칙 라우터로 대체하고 그 사실을 남긴다', async () => {
+  it('라우터가 실패하면 대표(PM)에게 보내고 그 사실을 남긴다', async () => {
     const w = await world();
     setQuestionRouter({ name: 'broken', route: async () => { throw new Error('model unavailable'); } });
     const asked = await w.feClient.askQuestions(w.taskId, [Q1]);
-    expect(asked).toMatchObject({ status: 'pending', targetRole: 'BACKEND', routedBy: 'role_rule:opposite', routing: { fallback: 'broken: model unavailable' } });
+    expect(asked).toMatchObject({ status: 'pending', targetRole: 'PM', routedBy: 'fallback:representative', routing: { fallback: 'broken: model unavailable' } });
   });
 });
 
@@ -491,12 +491,12 @@ describe('PM 소관 질문 (025)', () => {
     expect(answered.json.data).toMatchObject({ status: 'answered' });
   });
 
-  it('대표 노트북의 PM 에이전트가 꺼져 있으면(중계 모드) 기다리지 않고 규칙으로 대체하고 기록한다', async () => {
+  it('대표 노트북의 PM 에이전트가 꺼져 있으면(중계 모드) 기다리지 않고 대표에게 보내고 기록한다', async () => {
     const w = await world();
     setQuestionRouter(llmQuestionRouter);
     setPmModel({ kind: 'relay', generate: async () => { throw new Error('should not be called'); } });
     const asked = await w.feClient.askQuestions(w.taskId, [Q1]);
-    expect(asked).toMatchObject({ targetRole: 'BACKEND', routedBy: 'role_rule:opposite' });
+    expect(asked).toMatchObject({ targetRole: 'PM', routedBy: 'fallback:representative' });
     expect(asked.routing.fallback).toContain('offline');
   });
 
@@ -550,7 +550,7 @@ describe('라우팅 평가 기록과 보고서', () => {
     expect(report.rows[0]).toMatchObject({ goldTarget: 'BACKEND', decisions: { 'llm:test': 'BACKEND', 'decision:test': 'PM', broken: null, 'baseline:asker': 'SELF' } });
   });
 
-  it('먼저 시도한 라우터가 실패해 규칙으로 대체되면 그 실패도 그 라우터의 기록으로 남는다', async () => {
+  it('먼저 시도한 라우터가 실패해 대표에게 보내지면 그 실패도 그 라우터의 기록으로 남는다', async () => {
     const w = await world();
     setQuestionRouter({ name: 'llm:flaky', route: async () => { throw new Error('offline'); } });
     await w.feClient.askQuestions(w.taskId, [Q1]);
@@ -558,7 +558,7 @@ describe('라우팅 평가 기록과 보고서', () => {
     const runs = await pool.query(`SELECT router, mode, target, error FROM question_routing_runs ORDER BY id`);
     expect(runs.rows).toEqual([
       { router: 'llm:flaky', mode: 'primary', target: null, error: 'llm:flaky: offline' },
-      { router: 'role_rule:opposite', mode: 'primary', target: 'BACKEND', error: null },
+      { router: 'fallback:representative', mode: 'primary', target: 'PM', error: null },
     ]);
   });
 });
