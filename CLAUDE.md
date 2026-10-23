@@ -409,6 +409,8 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
 2. **API 계약**(`domain/contract`, 023): 확정과 같은 트랜잭션에서 `needsApi` 명세마다 `contracts`가 `pending`으로 생기고 에이전트 스트림에 `{ type: 'contracts' }`.
    BE 노트북의 Executor가 BE 레포를 **읽기만** 해서(상담과 같은 읽기 전용 실행 — `runReadOnlyClaude`, Read·Grep·Glob, 사용자 MCP 없음, 프롬프트는 stdin)
    OpenAPI 조각 + 요약 + 정하지 못한 것을 낸다 → BE 담당이 웹에서 확정(`approved`, 잠김)하거나 수정 요청(3회까지 — `CONTRACT_MAX_REVISIONS`).
+   - **첫 회차가 둘 이상이면 한 번의 실행으로 함께 쓴다**(`runContractBatch`, CLI 0.1.12) — 기능마다 Claude를 새로 띄우면 매번 레포를 다시 읽어 기능 수만큼 오래 걸렸다.
+     레포 최신화도 묶음당 한 번. 제출·형식 검사·교정·실패 보고는 기능마다 따로이고, 묶음에서 빠진 기능과 수정 요청(2회차~)은 하나씩 쓴다.
    - **형식 판정은 코드다(P2)**: `checkContractYaml`(경로 `/` 시작, 경로마다 메서드, 메서드마다 응답 상태 코드). 422 `CONTRACT_INVALID`면 Executor가 위반을 붙여
      **한 번만** 고쳐 쓰고, 그래도 안 되면 `failed` 보고(PM 교정과 같은 횟수). 같은 회차를 자동으로 다시 돌리지 않는다 — 다시 시킬지는 BE 담당이 정한다.
    - 상태 전이는 전부 "그 상태·그 회차일 때만"(`attempt`) 조건부다. 늦게 온 초안은 409 `CONTRACT_STALE`.

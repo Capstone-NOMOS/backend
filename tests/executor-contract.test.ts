@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { buildContractPrompt, CONTRACT_JSON_SCHEMA, parseContractDraft, type ContractJob } from '../src/executor/contract.js';
+import {
+  buildContractBatchPrompt,
+  buildContractPrompt,
+  CONTRACT_BATCH_JSON_SCHEMA,
+  CONTRACT_JSON_SCHEMA,
+  parseContractBatch,
+  parseContractDraft,
+  type ContractJob,
+} from '../src/executor/contract.js';
 import { readOnlyClaudeArgs } from '../src/executor/consult.js';
 import { buildTaskPrompt } from '../src/executor/prompt.js';
 
@@ -68,5 +76,37 @@ describe('태스크 프롬프트의 확정한 계약', () => {
     expect(prompt).toContain('```yaml\npaths:\n  /api/members: {}\n```');
     expect(buildTaskPrompt({ ...base, contract: null }, 'task/t1')).not.toContain('확정한 API 계약');
     expect(buildTaskPrompt(base, 'task/t1')).not.toContain('확정한 API 계약');
+  });
+});
+
+// 첫 회차 묶음 작성 — 기능마다 Claude를 새로 띄우면 매번 레포를 다시 읽어 기능 수만큼 오래 걸렸다(통합 테스트).
+describe('계약 묶음 작성 (첫 회차)', () => {
+  const first = (key: string, title: string): ContractJob => ({ ...job, id: `c-${key}`, featureKey: key, specTitle: title, attempt: 1, feedback: null, previous: null, specContent: `${title} 명세` });
+  const jobs = [first('F-01', '회원 목록'), first('F-02', '스터디 참여')];
+
+  it('한 프롬프트에 기능 전부와 확정한 계약이 들어가고, 출력은 기능별 배열이다', () => {
+    const prompt = buildContractBatchPrompt({ repoName: 'acme/api', jobs, approved: [{ featureKey: 'F-00', title: '로그인', schemaYaml: 'paths:\n  /auth/login: {}' }] });
+    for (const part of ['acme/api', '기능 2개', '# 기능 F-01 — 회원 목록', '# 기능 F-02 — 스터디 참여', '/auth/login', 'F-01, F-02', '읽기만 한다']) {
+      expect(prompt).toContain(part);
+    }
+    expect(CONTRACT_BATCH_JSON_SCHEMA).toMatchObject({ required: ['contracts'] });
+  });
+
+  it('기능별 초안을 키로 모으고, 빠지거나 깨지거나 모르는 키는 버린다(그 기능만 하나씩 다시 쓴다)', () => {
+    const drafts = parseContractBatch(
+      {
+        contracts: [
+          { featureKey: 'F-01', openapiYaml: 'paths: {}', summary: '목록', openQuestions: [] },
+          { featureKey: 'F-02', openapiYaml: '', summary: '깨짐', openQuestions: [] },
+          { featureKey: 'F-99', openapiYaml: 'paths: {}', summary: '모르는 키', openQuestions: [] },
+          { featureKey: 'F-01', openapiYaml: 'paths: {x: 1}', summary: '중복', openQuestions: [] },
+        ],
+      },
+      jobs,
+    );
+    expect([...drafts.keys()]).toEqual(['F-01']);
+    expect(drafts.get('F-01')!.summary).toBe('목록');
+    expect(parseContractBatch(JSON.stringify({ contracts: [] }), jobs).size).toBe(0);
+    expect(parseContractBatch({ nothing: true }, jobs).size).toBe(0);
   });
 });
