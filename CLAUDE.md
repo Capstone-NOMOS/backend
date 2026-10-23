@@ -625,6 +625,11 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
   붙잡고 있으면 409 `ACTIVE_TASKS_HELD`(details에 태스크) — 빼 버리면 그 태스크는 아무도 끝내지 못한다. 끝난 프로젝트(completed·aborted)의 멤버는 기록이라 409 `PROJECT_NOT_OPEN`.
   빠진 역할의 태스크는 새 사람을 배정할 때까지 READY로 기다린다. 역할 교체는 해제 후 재배정이다 — UPDATE 경로를 두면 한 역할에 둘이 잠깐 겹친다.
   멤버를 빼는 경로는 **`removeMemberInTx` 한 벌**이다(직접 해제·에이전트 연결 해제·조직 탈퇴가 같은 규칙을 탄다, `MEMBER_UNASSIGNED.payload.cause`로 가른다).
+- **사람이 닫기(027, `task/human-control.ts`)** — 재실행으로 풀리지 않는 태스크의 출구. 둘 다 에이전트가 붙잡지 않은 상태(READY·BLOCKED·ESCALATED)에서만(409 `TASK_IN_PROGRESS`), 재시도 횟수는 그대로.
+  - **취소**(`POST /tasks/:id/cancel`, 대표, 사유 필수): `CANCELLED`로 남는다. **G3의 "모든 태스크 완료"와 뒤 태스크의 선행에서 끝난 것으로 센다** — 안 그러면 잘못 나눈 태스크 하나로
+    프로젝트가 영원히 끝나지 않는다. 그 태스크의 대기 질문은 만료로 닫고, 풀린 뒤 태스크를 `TASK_CANCELLED.payload.unblockedDependents`에 남긴다. 상태를 `<> 'DONE'`으로 거르는 곳은 `NOT IN ('DONE','CANCELLED')`로 쓸 것.
+  - **직접 완료**(`POST /tasks/:id/manual-completion`, 그 역할 담당 또는 대표): 개발자가 직접 커밋한 sha와 태스크 브랜치 경로를 내면 에이전트 제출과 **같은 V3**(`inspectManualCommit`)를 돌린다.
+    FAIL이면 아무것도 쓰지 않고 422 `MANUAL_COMPLETION_INVALID`, 통과하면 산출물(gate HUMAN)·V3 결과·DONE·`TASK_COMPLETED_MANUALLY`(지표에서 사람이 처리한 것으로 따로 센다).
 - **해제·삭제(021)는 행을 지우지 않는다** — events·태스크·노트가 가리키고(P5), 다시 연결할 수 있어야 한다.
   - 에이전트 연결 해제(`DELETE /agents/:agentId`, 주인·대표): `agents.disconnected_at` + refresh token 폐기 + 진행 중 프로젝트에서 빠짐. 남은 access token은 `agent-auth`가
     401 `AGENT_DISCONNECTED`로 거부하고, 태스크 스트림은 `dispatch/agent-revoked` 신호로 바로 끊는다. 같은 사용자·이름으로 다시 connect하면 `upsertAgent`가 되살린다.

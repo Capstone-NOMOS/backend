@@ -46,6 +46,8 @@ export type EventType =
   | 'AGENT_RUN_ENDED'
   | 'TASK_BLOCKED'
   | 'TASK_RESUMED'
+  | 'TASK_CANCELLED'
+  | 'TASK_COMPLETED_MANUALLY'
   | 'PROJECT_SETTINGS_UPDATED'
   | 'RELEASE_REQUESTED'
   | 'RELEASE_DECIDED'
@@ -450,6 +452,28 @@ export type ReleaseDecidedPayload = {
 };
 
 // 대표가 원인을 해결하고 재개했다 → READY(담당 비움). note는 선택.
+// 대표가 태스크를 취소했다(027). 취소된 선행은 막지 않으므로 풀린 뒤 태스크와 닫힌 대기 질문을 함께 남긴다.
+export type TaskCancelledPayload = {
+  taskId: string;
+  title: string;
+  previousState: string;
+  reason: string;
+  expiredQuestionIds: string[];
+  unblockedDependents: string[];
+};
+
+// 사람이 직접 커밋해 완료했다(027). 에이전트 제출과 같은 V3를 통과했다(v3: PASS, 못 읽었으면 SKIPPED).
+export type TaskCompletedManuallyPayload = {
+  taskId: string;
+  title: string;
+  artifactId: string;
+  commitSha: string;
+  changedPaths: string[];
+  previousState: string;
+  v3: string;
+  note: string | null;
+};
+
 export type TaskResumedPayload = {
   taskId: string;
   note: string | null;
@@ -615,6 +639,8 @@ export type EventPayloadMap = {
   AGENT_RUN_ENDED: AgentRunEndedPayload;
   TASK_BLOCKED: TaskBlockedPayload;
   TASK_RESUMED: TaskResumedPayload;
+  TASK_CANCELLED: TaskCancelledPayload;
+  TASK_COMPLETED_MANUALLY: TaskCompletedManuallyPayload;
   PROJECT_SETTINGS_UPDATED: ProjectSettingsUpdatedPayload;
   RELEASE_REQUESTED: ReleaseRequestedPayload;
   RELEASE_DECIDED: ReleaseDecidedPayload;

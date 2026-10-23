@@ -168,8 +168,8 @@ export async function isProjectReadyForRelease(db: Queryable, projectId: string)
   await db.query(`SELECT 1 FROM projects WHERE id = $1 FOR NO KEY UPDATE`, [projectId]);
   const { rows } = await db.query(
     `SELECT p.status = 'active'
-            AND EXISTS (SELECT 1 FROM tasks t WHERE t.project_id = p.id)
-            AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.project_id = p.id AND t.state <> 'DONE')
+            AND EXISTS (SELECT 1 FROM tasks t WHERE t.project_id = p.id AND t.state = 'DONE')
+            AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.project_id = p.id AND t.state NOT IN ('DONE', 'CANCELLED'))
             AND NOT EXISTS (SELECT 1 FROM approvals a WHERE a.project_id = p.id AND a.gate = 'G3'
                              AND (a.decision IS NULL OR a.decision = 'APPROVE')) AS ready
        FROM projects p WHERE p.id = $1`,
@@ -198,7 +198,7 @@ export async function listReleaseTasks(
     `SELECT t.id, t.title, t.team_role, r.full_name, t.branch_name,
             (SELECT ar.commit_sha FROM artifacts ar WHERE ar.task_id = t.id ORDER BY ar.attempt DESC LIMIT 1) AS commit_sha
        FROM tasks t JOIN repos r ON r.id = t.repo_id
-      WHERE t.project_id = $1
+      WHERE t.project_id = $1 AND t.state <> 'CANCELLED'
       ORDER BY t.created_at, t.id`,
     [projectId],
   );

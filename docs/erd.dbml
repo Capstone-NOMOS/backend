@@ -1057,3 +1057,6 @@ Table question_routing_runs {
 }
 
 Ref: question_routing_runs.question_id > agent_questions.id
+
+// ★ 027 tasks.state에 CANCELLED 추가(대표가 취소 — 기록으로 남고, G3·선행 조건에서 DONE과 같이 끝난 것으로 센다).
+//   CHECK tasks_state_chk: state IN ('READY','CLAIMED','IN_PROGRESS','VERIFYING','AWAITING_APPROVAL','BLOCKED','ESCALATED','DONE','CANCELLED')

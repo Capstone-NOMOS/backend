@@ -688,7 +688,7 @@ components:
         specId: { type: string, format: uuid, nullable: true }
         kind: { type: string, enum: [IMPLEMENT, INTEGRATION, REWORK] }
         title: { type: string }
-        state: { type: string, enum: [READY, CLAIMED, IN_PROGRESS, VERIFYING, AWAITING_APPROVAL, BLOCKED, ESCALATED, DONE] }
+        state: { type: string, enum: [READY, CLAIMED, IN_PROGRESS, VERIFYING, AWAITING_APPROVAL, BLOCKED, ESCALATED, DONE, CANCELLED] }
         teamRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true }
         assigneeAgentId: { type: string, format: uuid, nullable: true }
         branchName: { type: string, nullable: true }
@@ -730,7 +730,7 @@ components:
           type: string
           enum: [DONE, AWAITING_APPROVAL, RETRY, ESCALATED, PENDING, SETTLED]
           description: 'PENDING은 아직 보고 안 된 단계가 있음, SETTLED는 이미 결론이 난 뒤에 온 보고'
-        taskState: { type: string, enum: [READY, CLAIMED, IN_PROGRESS, VERIFYING, AWAITING_APPROVAL, BLOCKED, ESCALATED, DONE] }
+        taskState: { type: string, enum: [READY, CLAIMED, IN_PROGRESS, VERIFYING, AWAITING_APPROVAL, BLOCKED, ESCALATED, DONE, CANCELLED] }
         retryCount: { type: integer }
         approvalId: { type: string, format: uuid, description: 'AWAITING_APPROVAL로 갔으면 그 승인 카드 id(대표가 승인·반려). 없으면 생략' }
     SubmittedArtifact:
@@ -4424,7 +4424,7 @@ paths:
       security: [{ agentToken: [] }, { userToken: [] }]
       parameters:
         - $ref: '#/components/parameters/ProjectId'
-        - { name: state, in: query, schema: { type: string, enum: [READY, CLAIMED, IN_PROGRESS, VERIFYING, AWAITING_APPROVAL, BLOCKED, ESCALATED, DONE] } }
+        - { name: state, in: query, schema: { type: string, enum: [READY, CLAIMED, IN_PROGRESS, VERIFYING, AWAITING_APPROVAL, BLOCKED, ESCALATED, DONE, CANCELLED] } }
         - { name: teamRole, in: query, schema: { type: string, enum: [FRONTEND, BACKEND] }, description: 에이전트 토큰이면 무시된다 }
         - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
       responses:
@@ -4582,6 +4582,64 @@ paths:
             application/json:
               example:
                 error: { code: RUN_NOT_OPEN, message: no open run for task ... }
+
+  /tasks/{taskId}/cancel:
+    post:
+      tags: [룸]
+      summary: 태스크 취소 (대표 전용)
+      description: |
+        재실행으로 풀리지 않는 태스크(잘못 나눔·필요 없어짐)를 닫는다(027). 지우지 않고 `CANCELLED`로 남는다.
+        통합 확인(G3)의 "모든 태스크 완료"와 뒤 태스크의 선행 조건에서 **끝난 것으로 센다** — 이 태스크를 선행으로 둔 태스크는 풀린다.
+        그 태스크의 대기 질문은 만료로 닫힌다. 대신할 일은 새 태스크로 만든다.
+        에이전트가 붙잡지 않은 상태(READY·BLOCKED·ESCALATED)에서만 — 작업 중·승인 대기면 409 `TASK_IN_PROGRESS`, 이미 끝났으면 409 `TASK_ALREADY_CLOSED`.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/TaskId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, maxLength: 1000, description: '왜 취소하나(룸에 보인다)' }
+            example: { reason: '로그인 화면 태스크와 겹친다 — 그쪽에서 처리' }
+      responses:
+        '200':
+          description: 취소됨(CANCELLED)
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/Task' } } }
+
+  /tasks/{taskId}/manual-completion:
+    post:
+      tags: [룸]
+      summary: 사람이 직접 완료 (그 역할 담당 또는 대표)
+      description: |
+        에이전트가 끝내 못 한 일을 개발자가 직접 커밋해 넘긴다(027). 커밋을 태스크 브랜치에 push한 뒤 sha와 **태스크 브랜치에서 바꾼 모든 경로**를 낸다.
+        에이전트 제출과 **같은 V3**(실제 diff와 신고 대조, 경로 소유권)를 서버가 돌린다 — 실패면 아무것도 바뀌지 않고 422 `MANUAL_COMPLETION_INVALID`(details에 undeclared·overdeclared·거부 사유).
+        통과하면 산출물(gateMode HUMAN)과 V3 결과가 남고 태스크는 DONE, 이벤트 `TASK_COMPLETED_MANUALLY`(지표에서 사람이 처리한 것으로 따로 센다).
+        에이전트가 붙잡지 않은 상태(READY·BLOCKED·ESCALATED)에서만. 그 역할 담당(에이전트 주인)이나 대표가 아니면 403 `NOT_TASK_OWNER`.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/TaskId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [commitSha, changedPaths]
+              properties:
+                commitSha: { type: string, description: '태스크 브랜치에 push한 커밋(7~64자 hex)' }
+                changedPaths: { type: array, items: { type: string }, minItems: 1, description: '기본 브랜치에서 갈라진 뒤 태스크 브랜치가 바꾼 경로 전부' }
+                note: { type: string, nullable: true, maxLength: 1000 }
+            example: { commitSha: 'a1b2c3d', changedPaths: ['src/routes/studies.ts'], note: '정원 계산 로직을 직접 고쳤다' }
+      responses:
+        '200':
+          description: 완료됨(DONE)
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/Task' } } }
 
   /tasks/{taskId}/resume:
     post:
