@@ -26,6 +26,7 @@ export const TOPICS_BY_EVENT: Record<EventType, Mapping> = {
   AGENT_DEVICE_DECIDED: {},
 
   AGENT_CONNECTED: { org: ['agents'] },
+  AGENT_CONNECT_CODE_ISSUED: {},
   MEMBER_JOINED: { org: ['members', 'agents'] },
   INVITE_CREATED: { org: ['members'] },
   INVITE_ACCEPTED: { org: ['members'] },

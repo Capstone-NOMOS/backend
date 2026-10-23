@@ -13,6 +13,7 @@ export type EventType =
   | 'USER_SIGNED_UP'
   | 'CONNECT_KEY_ROTATED'
   | 'AGENT_CONNECTED'
+  | 'AGENT_CONNECT_CODE_ISSUED'
   | 'ORG_CREATED'
   | 'REPO_CONNECTED'
   | 'REPO_PATH_UPDATED'
@@ -79,7 +80,13 @@ export type AgentConnectedPayload = {
   harness: string;
   reconnected: boolean;
   // 어떤 경로로 연결했나. 예전 행에는 없다(연결 키뿐이던 시절).
-  method?: 'connect_key' | 'device';
+  method?: 'connect_key' | 'device' | 'connect_code';
+};
+
+// 1회용 연결 코드 발급(024). 코드 값은 싣지 않는다 — events는 지워지지 않는다.
+export type AgentConnectCodeIssuedPayload = {
+  codeId: string;
+  expiresAt: string;
 };
 
 export type OrgCreatedPayload = {
@@ -552,6 +559,7 @@ export type EventPayloadMap = {
   USER_SIGNED_UP: UserSignedUpPayload;
   CONNECT_KEY_ROTATED: ConnectKeyRotatedPayload;
   AGENT_CONNECTED: AgentConnectedPayload;
+  AGENT_CONNECT_CODE_ISSUED: AgentConnectCodeIssuedPayload;
   ORG_CREATED: OrgCreatedPayload;
   REPO_CONNECTED: RepoConnectedPayload;
   REPO_PATH_UPDATED: RepoPathUpdatedPayload;

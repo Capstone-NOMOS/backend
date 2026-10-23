@@ -1009,3 +1009,25 @@ Table agent_questions {
   INDEX idx_agent_questions_task ON (task_id)
   '''
 }
+
+Table agent_connect_codes {
+  id          uuid        [pk, default: `gen_random_uuid()`]
+  user_id     uuid        [not null, note: '코드를 받은 사람 = 연결될 에이전트의 주인']
+  code_hash   text        [not null, unique, note: 'sha256(정규화한 코드). 평문은 저장하지 않는다']
+  expires_at  timestamptz [not null, note: '10분']
+  used_at     timestamptz [note: '1회용 — 쓰면 채운다']
+  agent_id    uuid        [note: '이 코드로 연결된 에이전트']
+  created_at  timestamptz [not null, default: `now()`]
+
+  indexes {
+    (user_id, created_at) [name: 'idx_agent_connect_codes_user']
+  }
+
+  Note: '''
+  ★ 024 1회용 연결 코드. 웹의 연결 명령(`connect --code`)에 실려, 노트북에 예전 계정 자격 증명이 있어도 그 계정으로 연결한다.
+  agent_connect_codes_used_chk CHECK ((used_at IS NULL) = (agent_id IS NULL))
+  '''
+}
+
+Ref: agent_connect_codes.user_id > users.id
+Ref: agent_connect_codes.agent_id > agents.id

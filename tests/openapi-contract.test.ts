@@ -216,6 +216,11 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     await call('DELETE', `/agents/${approved.data.agentId as string}`, rep);
     const denied = await call('POST', '/agents/device/start', null, { agentName: 'other-laptop', harness: 'claude-code' });
     await call('POST', `/agents/device/requests/${denied.data.userCode as string}/deny`, rep);
+    // 1회용 연결 코드(024) — 웹이 명령을 받아 보여 주고, CLI가 코드로 연결한다. 연결된 노트북은 계정을 확인한 뒤 해제한다.
+    const codeIssued = await call('POST', '/me/agent-connect-codes', rep);
+    const byCode = await call('POST', '/agents/connect/code', null, { code: codeIssued.data.code, agentName: 'code-laptop', harness: 'claude-code' });
+    await call('GET', '/agents/me/account', byCode.data.accessToken as string);
+    await call('DELETE', `/agents/${byCode.data.agentId as string}`, rep);
 
     // GitHub 연동(가짜 API) — 대표의 GitHub 연결
     await call('POST', '/auth/github/device/start', rep);

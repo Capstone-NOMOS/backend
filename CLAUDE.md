@@ -238,6 +238,12 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
   - 피싱 대비: 승인 화면에 에이전트 이름·**요청 IP**·시각을 보여 주고, CLI는 승인 뒤 **연결된 계정**(`account`)을 출력한다(남이 내 코드를 승인한 경우를 드러낸다).
     요청 IP를 위해 `app.set('trust proxy', 1)` — Caddy 한 단만 믿는다. 늘리거나 `true`로 바꾸면 클라이언트가 끼운 X-Forwarded-For를 믿게 된다.
   - userCode는 자음 20자 8자리(약 2.5×10¹⁰), 대소문자·하이픈 무시. 서버에 rate limit이 아직 없다 — 대입 공격은 조합 수와 10분 만료로만 막는다.
+- **1회용 연결 코드(024, `domain/agent/connect-code-service.ts`)**: 웹의 "에이전트 연결"이 `POST /me/agent-connect-codes`로 10분·1회용 코드를 받아
+  `npx … connect --code XXXX-XXXX` 명령을 보여 준다. CLI는 코드가 있으면 **저장된 자격 증명을 보지 않고** 그 코드의 주인으로 연결한다(`/agents/connect/code`,
+  `AGENT_CONNECTED.payload.method = connect_code`) — 노트북에 예전 계정 자격 증명이 남아 있으면 새 계정으로 가입해도 예전 계정으로 조용히 붙었다(통합 테스트).
+  연결 키를 명령에 싣지 않는 이유: 기한 없는 비밀값이 셸 기록·화면 공유에 남는다. 코드는 해시로만 저장하고 이벤트에도 싣지 않는다.
+  반대 방향 위험(남이 준 명령을 실행하면 내 노트북이 그 사람의 에이전트)은 CLI가 연결된 계정을 반드시 출력해 드러낸다.
+  저장된 자격 증명을 재사용할 때도 `GET /agents/me/account`(배정 전에도 됨)로 계정을 출력한다.
 - **에이전트 온라인 상태**(`domain/agent/presence.ts`, 메모리): 태스크 스트림이 열려 있거나 최근 60초 안에 인증된 요청이 있으면 online.
   인증 통과(`resolveAgentToken`)·웹소켓 연결·pong이 기록한다. DB에 쓰지 않는다(요청마다 UPDATE가 된다). 서버 1대 전제, 재시작 직후에는 offline.
 - 교체 지점은 여전히 `auth.ts` 하나다. 라우트는 `req.user`와 `orgIdOf(req)`만 쓴다. `req.user.orgId`는 조직 가입 전 `null`이므로 조직이 필요한 핸들러는 `orgIdOf(req)`(없으면 403 `NOT_IN_ORG`)를 쓴다.
