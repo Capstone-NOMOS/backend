@@ -316,7 +316,10 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
   비교 대상을 담을 `contracts` 테이블이 없어서일 뿐이고, 기록되는 사유도 그렇게 적는다.
   **사유를 "LLM 판정 필요"로 바꾸지 말 것** — 그러면 P2를 근거로 영원히 안 붙는다
   (`tests/verifications.test.ts`가 그 문구를 막는다).
-- **V3는 커밋의 실제 diff를 읽는다.** 제출 시점 3·4단계는 *신고한* 경로만 보므로, 신고에서 뺀 파일은
+- **V3는 태스크 브랜치의 실제 diff를 읽는다** — 커밋 하나가 아니라 기본 브랜치(`repos.default_branch`)와의 분기점부터 제출 커밋까지다
+  (`InspectInput.baseBranch`, mirror는 `merge-base`, github는 Compare API). 반려·검증 실패·질문 뒤 같은 브랜치에 커밋이 쌓이면 마지막 커밋만 봐서
+  앞 커밋의 파일이 "과다 신고" FAIL이었다(통합 테스트). 기본 브랜치를 못 찾거나 커밋이 이미 기본 브랜치에 있으면 커밋 하나로 본다.
+  제출 시점 3·4단계는 *신고한* 경로만 보므로, 신고에서 뺀 파일은
   아무 검사도 받지 않는다. diff의 출처는 제출자가 아니어야 한다 — `CommitInspector` 뒤에 있고
   지금 구현체는 서버가 bare mirror를 들고 fetch하는 `gitMirrorInspector`, 운영은 GitHub Commits API다.
   읽을 곳은 `repos.clone_url`이며 NULL이면 PASS가 아니라 **SKIPPED**다. 신고 누락도 과다 신고도 FAIL이다.
@@ -327,7 +330,8 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
   V2는 PASS로 와도 서버가 `spec_tests.locked_at < artifacts.created_at`을 다시 보고 뒤집는다.
 - 한 산출물의 한 단계는 한 번만(`uq_verifications_stage`). 재제출은 `attempt`가 올라간 **새 artifact**다.
 - FAIL이면 `retry_count`가 오르고 태스크는 `READY`로 돌아가며 **담당을 비운다**(안 비우면 아무도 못 잡는다).
-  3회째는 `ESCALATED`. 전부 통과해도 `gate_mode`가 `AUTO`가 아니면 `AWAITING_APPROVAL`이다 —
+  3회째는 `ESCALATED`. 대표가 원인을 확인하고 `POST /tasks/:id/resume`으로 다시 맡기면 READY·재시도 0(이전 횟수는 `TASK_RESUMED.payload.previousRetryCount`) —
+  예전에는 ESCALATED에서 나올 길이 없었다. 전부 통과해도 `gate_mode`가 `AUTO`가 아니면 `AWAITING_APPROVAL`이다 —
   검증이 6단계 정책 게이트를 대신 열어주지 않는다. 결론이 난 뒤 늦게 온 보고는 상태를 건드리지 않는다.
 - `AWAITING_APPROVAL`로 보낼 때 **같은 트랜잭션에서 승인 카드를 만든다**(아래 "승인 대기열"). 응답·`VERIFICATION_COMPLETED`에 `approvalId`.
 - 재시도 원인은 이벤트에서 가른다: 검증 실패는 `VERIFICATION_COMPLETED.payload.retryCause = 'VERIFICATION_FAILED'`,

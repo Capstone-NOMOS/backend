@@ -4381,11 +4381,12 @@ paths:
   /tasks/{taskId}/resume:
     post:
       tags: [룸]
-      summary: 멈춘 태스크 재개 (대표 전용)
+      summary: 멈춘·재시도 소진 태스크 재개 (대표 전용)
       description: |
-        에이전트가 제출 없이 멈춘 태스크(BLOCKED·`AGENT_STOPPED`)를 원인을 해결한 뒤 다시 돌린다. READY로 돌아가고 담당이 비어
-        같은 역할의 에이전트가 다시 가져간다(룸에 "다시 실행해 주세요 (재개)"). **재시도 횟수는 그대로다** — 권한·환경 탓은 에이전트 실패가 아니다.
-        멈춘 상태가 아니면 409 `TASK_NOT_STOPPED`.
+        두 경우를 다시 돌린다. READY로 돌아가고 담당이 비어 같은 역할의 에이전트가 다시 가져간다(룸에 "다시 실행해 주세요 (재개)").
+        - 에이전트가 제출 없이 멈춘 태스크(BLOCKED·`AGENT_STOPPED`): **재시도 횟수는 그대로다** — 권한·환경 탓은 에이전트 실패가 아니다.
+        - 재시도를 다 쓴 태스크(`ESCALATED`): 원인을 확인한 대표가 다시 맡긴다. **재시도 횟수를 0으로 돌린다**(이전 횟수는 이벤트 `TASK_RESUMED.payload.previousRetryCount`).
+        둘 다 아니면 409 `TASK_NOT_STOPPED`.
       security: [{ userToken: [] }]
       parameters: [{ $ref: '#/components/parameters/TaskId' }]
       requestBody:

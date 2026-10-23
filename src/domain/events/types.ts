@@ -434,6 +434,10 @@ export type ReleaseDecidedPayload = {
 export type TaskResumedPayload = {
   taskId: string;
   note: string | null;
+  // 무엇에서 재개했나. 옛 이벤트에는 없다(그때는 AGENT_STOPPED뿐이었다).
+  from?: 'AGENT_STOPPED' | 'ESCALATED';
+  // ESCALATED에서 재개하면 retry_count를 0으로 돌린다 — 그 전 횟수.
+  previousRetryCount?: number;
 };
 
 export type AgentRunEndedPayload = {
