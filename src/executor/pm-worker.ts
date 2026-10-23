@@ -12,8 +12,9 @@ import { removeQuietly } from './cleanup.js';
 
 export type PmJob = {
   id: string;
-  planId: string;
-  purpose: 'draft' | 'repair';
+  // 질문 라우팅·PM 답 초안(서버 025)은 계획이 아니라 null이다.
+  planId: string | null;
+  purpose: 'draft' | 'repair' | 'route' | 'question_draft';
   request: {
     model: string;
     effort: string;
@@ -23,6 +24,8 @@ export type PmJob = {
     jsonSchema: Record<string, unknown>;
   };
 };
+
+const PURPOSE_LABEL: Record<string, string> = { draft: '초안', repair: '교정', route: '질문 라우팅', question_draft: 'PM 질문 답 초안' };
 
 export type PmJobResult = {
   stopReason: string | null;
@@ -145,7 +148,7 @@ export async function handleNextPmJob(
 ): Promise<boolean> {
   const job = (await client.nextPmJob()) as PmJob | null;
   if (!job) return false;
-  log(`PM 작업 ${job.id} (계획 ${job.planId}, ${job.purpose}) — claude 실행 중`);
+  log(`PM 작업 ${job.id} (${job.planId ? `계획 ${job.planId}, ` : ''}${PURPOSE_LABEL[job.purpose] ?? job.purpose}) — claude 실행 중`);
   const started = Date.now();
   let result: PmJobResult | { error: string };
   try {

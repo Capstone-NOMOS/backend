@@ -15,6 +15,8 @@ export default defineConfig({
       FRONTEND_BASE_URL: 'http://localhost:3001',
       // 테스트는 setCommitInspector로 구현체를 바꿔 끼운다. 기본값이 없으므로 여기서 고른다.
       COMMIT_INSPECTOR: 'mirror',
+      // 질문 라우터는 규칙으로 — LLM 라우터는 테스트가 setQuestionRouter로 가짜 모델과 함께 끼운다(CI는 모델을 부르지 않는다).
+      QUESTION_ROUTER: 'rule',
       JWT_SECRET: 'test-only-secret-not-for-production-0123456789',
       SECRET_ENCRYPTION_KEY: 'dGVzdC1vbmx5LWVuY3J5cHRpb24ta2V5LTMyYnl0ZXM=',
       GITHUB_CLIENT_ID: 'test-client-id',

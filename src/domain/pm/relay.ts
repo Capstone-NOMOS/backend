@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { AppError } from '../../errors.js';
-import type { PmModel, PmModelRequest, PmModelResponse } from './model.js';
+import type { PmModel, PmModelRequest, PmModelResponse, RelayPurpose } from './model.js';
 import type { AttemptUsage } from './pricing.js';
 
 // 중계(relay) 모드 — 결제 전까지 쓰는 **임시** 방식. 서버가 모델을 직접 부르지 않고, 대표 노트북의
@@ -18,8 +18,8 @@ export class RelayWorkerFailed extends Error {}
 export type RelayJob = {
   id: string;
   orgId: string;
-  planId: string;
-  purpose: 'draft' | 'repair';
+  planId: string | null;
+  purpose: RelayPurpose;
   request: Omit<PmModelRequest, 'signal' | 'context'>;
   takenBy: string | null;
   createdAt: Date;
@@ -39,7 +39,7 @@ export function relayWorkerLastSeen(orgId: string): Date | null {
 export const relayModel: PmModel = {
   kind: 'relay',
   generate(req) {
-    if (!req.context) return Promise.reject(new Error('relay model needs the plan context'));
+    if (!req.context) return Promise.reject(new Error('relay model needs the organization context'));
     const context = req.context;
     return new Promise<PmModelResponse>((resolve, reject) => {
       const { signal, context: _context, ...request } = req;

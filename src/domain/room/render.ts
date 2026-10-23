@@ -29,6 +29,11 @@ const ACTIVITY_TEXT: Record<string, (target: string) => string> = {
   other: (t) => t,
 };
 
+// 질문 대상 PM(025)은 대표가 운용하는 PM 에이전트 — 사람이 읽기 쉽게 적는다.
+function targetLabel(v: unknown): string {
+  return v === 'PM' ? 'PM(대표)' : String(v ?? '');
+}
+
 function nullableNum(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }
@@ -150,15 +155,16 @@ function eventText(row: FeedRow): { speaker: RoomMessage['speaker']; text: strin
       return { speaker: 'pm', text: `멈췄습니다 — ${why[str(p.cause)] ?? '제출하지 않았습니다'}${said}${denied} → 대표 확인 후 재개가 필요합니다` };
     }
     case 'QUESTION_ASKED':
-      return { speaker: 'agent', text: `${str(p.askerRole)} 에이전트가 ${str(p.targetRole)}에게 질문했습니다 (${num(p.questionCount)}개)` };
+      return { speaker: 'agent', text: `${str(p.askerRole)} 에이전트가 ${targetLabel(p.targetRole)}에게 질문했습니다 (${num(p.questionCount)}개)` };
     case 'QUESTION_DRAFTED':
+      if (p.drafter === 'pm') return { speaker: 'pm', text: `PM이 답 초안을 만들었습니다 — 대표 확인을 기다립니다 (정해진 것 ${num(p.decidedCount)}/${num(p.questionCount)})` };
       return p.autoAnswered === true
         ? { speaker: 'agent', text: '답할 역할의 에이전트가 코드에서 찾아 답했습니다' }
         : { speaker: 'agent', text: `답 초안을 만들었습니다 — 정해진 것 ${num(p.decidedCount)}/${num(p.questionCount)}, 나머지는 담당자 확인이 필요합니다` };
     case 'QUESTION_ANSWERED':
       return { speaker: 'pm', text: `질문에 답이 왔습니다(${p.answeredByRole === 'REPRESENTATIVE' ? '대표' : '담당자'})${p.resumedTask === true ? ' → 다시 시작합니다' : ''}` };
     case 'TASK_BLOCKED_ON_QUESTION':
-      return { speaker: 'pm', text: `${str(p.targetRole)}의 답을 기다리며 태스크를 잠시 내려놓았습니다 — 답이 오면 다시 시작합니다` };
+      return { speaker: 'pm', text: `${targetLabel(p.targetRole)}의 답을 기다리며 태스크를 잠시 내려놓았습니다 — 답이 오면 다시 시작합니다` };
     case 'QUESTION_EXPIRED':
       return { speaker: 'pm', text: `질문이 기한 안에 답을 받지 못했습니다${p.escalated === true ? ' → 대표에게 넘깁니다' : ''}` };
     case 'TASK_RESUMED':

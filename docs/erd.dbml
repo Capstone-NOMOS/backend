@@ -998,13 +998,14 @@ Table agent_questions {
   ① 대상 역할 에이전트의 상담 실행이 초안 — 전부 decided면 곧 답(agent_answered, 사람 미확인) ② 아니면 대상 역할 담당·대표가 답(answered).
   묻는 쪽은 몇 분만 기다리고 태스크를 BLOCKED(QUESTION)로 내려놓는다 — 답이 다 오면 READY.
   CHECK agent_questions_status_chk: status IN ('pending','agent_answered','answered','expired','self_owned')
-  CHECK agent_questions_roles_chk: asker_role·target_role IN ('FRONTEND','BACKEND')
+  CHECK agent_questions_roles_chk: asker_role IN ('FRONTEND','BACKEND'), target_role IN ('FRONTEND','BACKEND','PM')  ★ 025 PM = 대표
   CHECK agent_questions_questions_chk: jsonb_typeof(questions)='array' AND 길이 1~4
   CHECK agent_questions_source_chk: answer_source IN ('agent','human','agent_confirmed','human_override')
   CHECK agent_questions_answer_chk: (status IN ('agent_answered','answered')) = (answers·answer_source·answered_at 모두 NOT NULL)
   CHECK agent_questions_answered_by_chk: (status='answered') = (answered_by IS NOT NULL)
   CHECK agent_questions_agent_answer_chk: status<>'agent_answered' OR (answer_source='agent' AND drafted_by_agent IS NOT NULL)
-  CHECK agent_questions_draft_chk: (draft IS NULL) = (drafted_by_agent IS NULL AND drafted_at IS NULL)
+  CHECK agent_questions_draft_chk: (draft IS NULL) = (drafted_at IS NULL) AND (draft IS NULL OR drafted_by_agent IS NOT NULL OR target_role = 'PM')  ★ 025
+  CHECK agent_questions_pm_human_chk: target_role <> 'PM' OR status <> 'agent_answered'  ★ 025 PM 질문은 대표가 확정
   INDEX idx_agent_questions_pending ON (project_id) WHERE status = 'pending'
   INDEX idx_agent_questions_task ON (task_id)
   '''

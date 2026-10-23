@@ -520,6 +520,14 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
   프롬프트는 "가정하고 GOTCHA로 남겨라"가 된다(옛 서버라 필드가 없으면 꺼짐으로 본다). **시작(G1) 전에만** 바꾼다(`PATCH /projects/:id/settings`, `PROJECT_SETTINGS_UPDATED`) —
   끄는 이유: 대조군 실험, 답할 사람이 없을 때, 상담 실행 비용(답할 쪽 구독), 문제 시 되돌리기.
 - **다른 역할 소관 계약은 DECIDED로 남기지 않는다**(스위치와 무관, E6: 지어낸 BE 계약을 DECIDED로 발행했다) — 가정했다면 GOTCHA "가정함 — <역할> 확인 필요".
+- **질문 대상은 FE·BE·PM 셋이다(025, 대표 결정 — 기획 변경)**: PM = 대표가 운용하는 PM 에이전트(요구사항·정책·제품 결정). 라우터가 PM을 고르면
+  PM 에이전트(중계 모드면 대표 노트북의 pm-worker, `purpose: question_draft`)가 확정한 기능 명세·계약을 읽고 답 초안을 쓰고(`question/pm-draft.ts`, `system:pm`),
+  **대표가 확정한다** — PM 초안은 답이 되지 않는다(`agent_questions_pm_human_chk`). 답할 수 있는 사람은 대표뿐(PM 역할 멤버가 없다). 초안을 못 만들면 대표가 직접 답한다.
+  `TEAM_ROLES`에 PM을 넣지 말 것 — 태스크·경로 소유권의 역할이 아니라 질문 대상만이다(`QuestionTarget = TeamRole | 'PM'`).
+- **라우터는 `QUESTION_ROUTER`로 고른다**(`router-registry.ts`): `llm`(운영 기본 — PM 모델, `question/llm-router.ts`)·`rule`(반대 역할, 테스트 기본).
+  LLM 라우터는 평가 장치와 같은 프롬프트·해석(`router.ts`, v2)을 쓴다. 중계 모드에서 pm-worker가 30초 넘게 조용하면 기다리지 않고 바로 규칙으로 대체하고
+  `routing.fallback`에 남긴다(질문이 라우팅 때문에 막히지 않게). 판정 비용은 `routing.costUsd`·`QUESTION_ASKED.payload.costUsd`.
+  Decision AI(Jev 등)는 `QuestionRouter`를 하나 더 구현해 선택지에 넣는다 — 나머지 서버는 인터페이스만 본다.
 - **`GET /me/questions`**: 내가 답할 질문(대표는 전부, 팀원은 자기 역할이 대상인 것) — 알림 배지용. 답할 자격 정의는 `answerQuestion`과 같아야 한다.
 
 ### 룸 (`domain/room`, 017) — 보기 전용

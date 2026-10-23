@@ -13,6 +13,9 @@ import { questionsChanged } from '../dispatch/questions-changed.js';
 import { tasksChanged } from '../dispatch/tasks-changed.js';
 import { blockTaskForQuestion, escalateQuestionTask, findSpecForTask, findTaskById, unblockQuestionTask } from '../task/repository.js';
 import { routeQuestion } from './router-registry.js';
+import { PM_TARGET, type QuestionTarget } from './router.js';
+import { schedulePmDraft } from './pm-draft.js';
+import { findApprovedContractForSpec } from '../contract/repository.js';
 import type { AgentContext } from '../task/service.js';
 import {
   countPendingForTask,
@@ -107,6 +110,7 @@ export async function askQuestion(ctx: AgentContext, taskId: string, questions: 
     findRepoById(pool, task.repoId),
     listProjectMembers(pool, ctx.projectId),
   ]);
+  const contract = task.specId ? await findApprovedContractForSpec(pool, task.specId) : null;
   const routed = await routeQuestion({
     askerRole: membership.teamRole,
     roles: [...new Set<TeamRole>([membership.teamRole, ...members.map((m) => m.teamRole)])],
@@ -114,10 +118,18 @@ export async function askQuestion(ctx: AgentContext, taskId: string, questions: 
     spec: spec ? { featureKey: spec.featureKey, title: spec.title, content: spec.content } : null,
     repo: repo ? { fullName: repo.fullName } : null,
     questions,
+    contract: contract ? { featureKey: contract.featureKey, summary: contract.summary } : null,
+    context: { orgId: ctx.orgId },
   });
   const selfOwned = routed.target === 'SELF';
-  const targetRole: TeamRole = selfOwned ? membership.teamRole : (routed.target as TeamRole);
-  const routing = { confidence: routed.confidence, reason: routed.reason, latencyMs: routed.latencyMs, fallback: routed.fallback };
+  const targetRole: QuestionTarget = selfOwned ? membership.teamRole : (routed.target as QuestionTarget);
+  const routing = {
+    confidence: routed.confidence,
+    reason: routed.reason,
+    latencyMs: routed.latencyMs,
+    fallback: routed.fallback,
+    costUsd: routed.costUsd ?? null,
+  };
 
   const created = await withTransaction(async (tx) => {
     await assertAsker(tx);
@@ -149,6 +161,7 @@ export async function askQuestion(ctx: AgentContext, taskId: string, questions: 
         confidence: routed.confidence,
         latencyMs: routed.latencyMs,
         fallback: routed.fallback,
+        costUsd: routed.costUsd ?? null,
         questionCount: questions.length,
       },
     });
@@ -156,6 +169,8 @@ export async function askQuestion(ctx: AgentContext, taskId: string, questions: 
   });
   // 커밋 뒤 — 대상 역할 에이전트의 Executor를 깨워 상담 실행을 맡긴다. 질문만으로는 가져갈 태스크가 바뀌지 않는다.
   if (created.status === 'pending') questionsChanged(ctx.projectId, created.targetRole);
+  // PM 소관(요구사항·정책)이면 대표 노트북의 PM 에이전트가 기능 명세·계약을 읽고 답 초안을 쓴다 — 대표가 확인해 확정한다.
+  if (created.status === 'pending' && created.targetRole === PM_TARGET) schedulePmDraft(created.id, ctx.orgId);
   return created;
 }
 
