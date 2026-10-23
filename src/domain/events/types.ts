@@ -13,6 +13,7 @@ export type EventType =
   | 'USER_SIGNED_UP'
   | 'CONNECT_KEY_ROTATED'
   | 'AGENT_CONNECTED'
+  | 'AGENT_CONNECT_CODE_ISSUED'
   | 'ORG_CREATED'
   | 'REPO_CONNECTED'
   | 'REPO_PATH_UPDATED'
@@ -79,7 +80,13 @@ export type AgentConnectedPayload = {
   harness: string;
   reconnected: boolean;
   // 어떤 경로로 연결했나. 예전 행에는 없다(연결 키뿐이던 시절).
-  method?: 'connect_key' | 'device';
+  method?: 'connect_key' | 'device' | 'connect_code';
+};
+
+// 1회용 연결 코드 발급(024). 코드 값은 싣지 않는다 — events는 지워지지 않는다.
+export type AgentConnectCodeIssuedPayload = {
+  codeId: string;
+  expiresAt: string;
 };
 
 export type OrgCreatedPayload = {
@@ -215,6 +222,8 @@ export type QuestionAskedPayload = {
   confidence: number | null;
   latencyMs: number;
   fallback: string | null;
+  // 판정의 모델 비용(USD, 025 LLM 라우터) — "요청당 비용" 지표. 규칙 라우터·옛 이벤트는 null·없음.
+  costUsd?: number | null;
   questionCount: number;
 };
 
@@ -240,6 +249,8 @@ export type QuestionDraftedPayload = {
   questionCount: number;
   autoAnswered: boolean;
   resumedTask: boolean;
+  // 누가 초안을 썼나(025). 없으면 대상 역할 에이전트의 상담 실행 — pm이면 대표가 운용하는 PM 에이전트(초안은 답이 되지 않는다).
+  drafter?: 'pm';
 };
 
 // 묻는 쪽이 정한 시간만 기다리고 태스크를 내려놓았다(BLOCKED·QUESTION). 답이 오면 READY로 돌아간다.
@@ -552,6 +563,7 @@ export type EventPayloadMap = {
   USER_SIGNED_UP: UserSignedUpPayload;
   CONNECT_KEY_ROTATED: ConnectKeyRotatedPayload;
   AGENT_CONNECTED: AgentConnectedPayload;
+  AGENT_CONNECT_CODE_ISSUED: AgentConnectCodeIssuedPayload;
   ORG_CREATED: OrgCreatedPayload;
   REPO_CONNECTED: RepoConnectedPayload;
   REPO_PATH_UPDATED: RepoPathUpdatedPayload;

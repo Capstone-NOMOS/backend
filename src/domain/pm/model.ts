@@ -15,9 +15,12 @@ export type PmModelRequest = {
   user: string;
   jsonSchema: Record<string, unknown>;
   signal: AbortSignal;
-  // 어느 계획의 호출인가. 중계 모드는 이걸로 작업을 그 조직의 pm-worker에게만 넘긴다.
-  context?: { orgId: string; planId: string; purpose: 'draft' | 'repair' };
+  // 어느 조직·무슨 호출인가. 중계 모드는 이걸로 작업을 그 조직의 pm-worker에게만 넘긴다.
+  // route = 질문 라우팅, question_draft = PM 소관 질문의 답 초안(025) — 계획이 아니라 planId가 없다.
+  context?: { orgId: string; planId: string | null; purpose: RelayPurpose };
 };
+
+export type RelayPurpose = 'draft' | 'repair' | 'route' | 'question_draft';
 
 export type PmModelResponse = {
   // 해석하기 전에 반드시 먼저 본다. refusal·max_tokens면 JSON이 스키마와 맞지 않을 수 있다.

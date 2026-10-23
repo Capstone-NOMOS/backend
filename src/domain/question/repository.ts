@@ -1,6 +1,7 @@
 import type { QueryResultRow } from 'pg';
 import type { Queryable } from '../../config/db.js';
 import type { TeamRole } from '../roles.js';
+import type { QuestionTarget } from './router.js';
 
 // 에이전트 질문(018). SQL만 둔다.
 
@@ -11,7 +12,8 @@ export type AskedQuestion = { question: string; header?: string; options: Questi
 export type QuestionStatus = 'pending' | 'agent_answered' | 'answered' | 'expired' | 'self_owned';
 export type AnswerSource = 'agent' | 'human' | 'agent_confirmed' | 'human_override';
 
-export type RoutingDetail = { confidence: number | null; reason: string | null; latencyMs: number; fallback: string | null };
+// costUsd: 판정의 모델 비용(025, LLM 라우터). 옛 행·규칙 라우터에는 없다.
+export type RoutingDetail = { confidence: number | null; reason: string | null; latencyMs: number; fallback: string | null; costUsd?: number | null };
 
 // 상담 실행의 초안. decided[질문] = 코드·명세가 이미 정한 답인가(아니면 제안일 뿐이다).
 export type QuestionDraft = { answers: Record<string, string>; decided: Record<string, boolean>; basis: Record<string, string[]> };
@@ -22,7 +24,7 @@ export type AgentQuestion = {
   taskId: string;
   askedByAgentId: string;
   askerRole: TeamRole;
-  targetRole: TeamRole;
+  targetRole: QuestionTarget;
   routedBy: string;
   routing: RoutingDetail;
   questions: AskedQuestion[];
@@ -71,7 +73,7 @@ export async function insertQuestion(
     taskId: string;
     askedByAgentId: string;
     askerRole: TeamRole;
-    targetRole: TeamRole;
+    targetRole: QuestionTarget;
     routedBy: string;
     routing: RoutingDetail;
     status: 'pending' | 'self_owned';
@@ -121,7 +123,8 @@ export async function markAnsweredByHuman(
 }
 
 // 상담 실행의 초안을 저장한다(처음 한 번만). asAnswer면 초안이 곧 답이다(전부 decided) — agent_answered.
-export async function saveDraft(db: Queryable, id: string, draft: QuestionDraft, agentId: string, asAnswer: boolean): Promise<boolean> {
+// agentId가 null이면 PM 초안이다(025, 대표 노트북 또는 서버 키로 돈다 — DB가 PM 질문에서만 허용한다). PM 초안은 답이 되지 않는다.
+export async function saveDraft(db: Queryable, id: string, draft: QuestionDraft, agentId: string | null, asAnswer: boolean): Promise<boolean> {
   const { rowCount } = await db.query(
     `UPDATE agent_questions
         SET draft = $2, drafted_by_agent = $3, drafted_at = now(),

@@ -189,3 +189,29 @@ describe('레포 자동 클론', () => {
     expect(() => ensureRepo({ fullName: '../etc', cloneUrl: origin }, { ...quiet, root: path.join(tmp, 'repos'), readMap: () => ({}) })).toThrow();
   });
 });
+
+// 1회용 연결 코드(서버 024)와 재사용 시 계정 표시 — 같은 노트북에서 계정을 바꾸면 예전 계정으로 조용히 붙었다(통합 테스트).
+describe('connect — 연결 코드와 계정 표시', () => {
+  it('코드가 있으면 저장된 자격 증명을 보지 않고 코드로 연결한다(재발급·로그인 없이)', async () => {
+    let usedCode = false;
+    const { deps, calls } = fakeDeps({ codeLogin: async () => void (usedCode = true) });
+    expect(await connect(deps)).toEqual(SELF);
+    expect(usedCode).toBe(true);
+    expect(calls).toEqual(['describe']);
+  });
+
+  it('저장된 자격 증명을 재사용하면 어느 계정인지 출력하고 --code를 안내한다', async () => {
+    const { deps, lines } = fakeDeps({
+      account: async () => ({ agentName: 'mbp', loginId: 'minsu', nickname: '민수', orgName: 'Acme' }),
+    });
+    await connect(deps);
+    expect(lines).toContain('연결됨: 민수 (minsu) · 조직 Acme — 에이전트 mbp (저장된 자격 증명)');
+    expect(lines.some((l) => l.includes('--code'))).toBe(true);
+  });
+
+  it('옛 서버라 계정을 못 읽어도 연결은 계속된다', async () => {
+    const { deps, lines } = fakeDeps({ account: async () => null });
+    expect(await connect(deps)).toEqual(SELF);
+    expect(lines.some((l) => l.startsWith('연결됨'))).toBe(false);
+  });
+});

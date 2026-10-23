@@ -2,7 +2,7 @@
 // Executor — 팀원 노트북에서 도는 프로그램. npm 패키지 @capstone-nomos/cli로 배포된다(bin: nomos).
 // 서버 주소는 ~/.nomos/credentials의 baseUrl에서 온다.
 //
-//   nomos connect [--server 주소] [--name 이름]
+//   nomos connect [--code 코드] [--server 주소] [--name 이름]  (--code: 웹의 "에이전트 연결"이 준 1회용 코드 — 그 계정으로 연결)
 //                              웹 안내의 한 줄. 로그인(필요하면) → 배정 대기(자동 재발급) → start. --server 기본은 운영 주소.
 //   nomos doctor [--json]      git·claude·자격 증명·MCP 서버 파일 점검
 //   nomos login [baseUrl] [--name 이름] [--connect-key]
@@ -31,7 +31,7 @@ import {
 } from '../bridge/credentials.js';
 import { NomosApiError, NomosClient } from '../bridge/nomos-client.js';
 import { ActivityReporter, ActivityTracker, RunObserver } from './activity.js';
-import { connect, DEFAULT_SERVER, serverCalls } from './connect.js';
+import { accountLine, connect, DEFAULT_SERVER, serverCalls } from './connect.js';
 import { deviceLogin } from './device-login.js';
 import { cliVersion, mcpServerPath } from './paths.js';
 import { checkTools } from './preflight.js';
@@ -406,15 +406,16 @@ async function postJson(url: string, body: unknown): Promise<Record<string, unkn
   return json.data;
 }
 
-type ParsedArgs = { positional: string | undefined; server: string | undefined; name: string | undefined; connectKey: boolean; json: boolean };
+type ParsedArgs = { positional: string | undefined; server: string | undefined; name: string | undefined; code: string | undefined; connectKey: boolean; json: boolean };
 
 function parseArgs(argv: string[]): ParsedArgs {
-  const out: ParsedArgs = { positional: undefined, server: undefined, name: undefined, connectKey: false, json: false };
+  const out: ParsedArgs = { positional: undefined, server: undefined, name: undefined, code: undefined, connectKey: false, json: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
     if (arg === '--name') out.name = argv[(i += 1)];
     else if (arg === '--server') out.server = argv[(i += 1)];
     else if (arg === '--connect-key') out.connectKey = true;
+    else if (arg === '--code') out.code = argv[(i += 1)];
     else if (arg === '--json') out.json = true;
     else out.positional ??= arg;
   }
@@ -458,6 +459,22 @@ async function loginTo(baseUrl: string, agentName: string, viaConnectKey: boolea
   }
 }
 
+// 웹의 "에이전트 연결"이 준 1회용 코드로 연결한다(서버 024). 저장된 자격 증명은 보지 않고 덮어쓴다 —
+// 노트북에 예전 계정이 남아 있어도 이 명령의 계정으로 붙는다. 코드는 10분·1회용이라 셸 기록에 남아도 다시 쓸 수 없다.
+async function loginWithCode(baseUrl: string, agentName: string, code: string): Promise<void> {
+  const data = await postJson(`${baseUrl}/api/agents/connect/code`, { code, agentName, harness: 'claude-code', skills: [], maxConcurrent: 2 });
+  writeCredentials({
+    baseUrl,
+    accessToken: String(data.accessToken),
+    refreshToken: String(data.refreshToken),
+    agentId: String(data.agentId),
+  });
+  const account = data.account as { loginId: string | null; nickname: string | null; orgName: string | null };
+  // 연결된 계정을 반드시 보여 준다 — 남이 준 명령이면 내 노트북이 그 사람의 에이전트가 된다.
+  log(`연결됨: ${accountLine(account, agentName)}`);
+  log(`${credentialsPath()}에 저장했다. 내 계정이 아니면 바로 Ctrl+C로 멈추고 웹에서 이 에이전트를 연결 해제하라.`);
+}
+
 async function login(argv: string[]): Promise<void> {
   const args = parseArgs(argv);
   const baseUrl = normalizeBaseUrl(args.positional ?? args.server);
@@ -482,12 +499,17 @@ async function connectCommand(argv: string[]): Promise<void> {
   }
 
   // 배정이 풀리면(해제·프로젝트 중단) 창을 닫지 않고 다시 배정을 기다린다. 연결 해제면 멈춘다.
+  // 1회용 코드는 처음 한 번만 쓴다 — 그 뒤로는 그 코드로 받은 자격 증명이 저장돼 있다.
+  let code = args.code?.trim() || undefined;
   for (;;) {
+    const once = code;
+    code = undefined;
     await connect({
       server,
       agentName,
       readCredentials,
       login: () => loginTo(server, agentName, args.connectKey),
+      ...(once ? { codeLogin: () => loginWithCode(server, agentName, once) } : {}),
       ...serverCalls({ read: readCredentials, updateAccessToken }),
       sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
       log,
@@ -579,7 +601,7 @@ async function main(): Promise<void> {
   process.stderr.write(
     [
       '사용법: nomos <명령>',
-      '  connect [--server 주소] [--name 이름]        로그인 → 배정 대기 → 작업 시작 (처음이라면 이것만)',
+      '  connect [--code 코드] [--server 주소] [--name 이름]  로그인 → 배정 대기 → 작업 시작 (--code: 웹이 준 1회용 코드, 그 계정으로 연결)',
       '  doctor                                       설치 상태 점검',
       '  login [주소] [--name 이름] [--connect-key]   로그인만',
       '  refresh | once | start | clean | --version',

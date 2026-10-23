@@ -72,6 +72,8 @@ const envSchema = z
     // 에이전트 질문(AskUserQuestion)의 유효 기간. 묻는 쪽 실행은 몇 분만 기다리고(브릿지 NOMOS_QUESTION_INLINE_WAIT_MS) 태스크를
     // BLOCKED로 내려놓는다 — 이 기간 안에 답이 오면 READY로 돌아가고, 지나면 질문은 만료되고 태스크는 ESCALATED.
     QUESTION_TIMEOUT_MS: z.coerce.number().int().min(10_000).max(30 * 86_400_000).default(3 * 86_400_000),
+    // 질문 라우터(025): llm = PM 모델이 FE·BE·PM 중 고른다(실패하면 rule로 대체·기록), rule = 반대 역할 규칙.
+    QUESTION_ROUTER: z.enum(['llm', 'rule']).default('llm'),
   })
   .superRefine((v, ctx) => {
     if (v.APP_BASE_URL !== undefined) {

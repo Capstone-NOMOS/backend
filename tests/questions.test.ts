@@ -13,6 +13,9 @@ import { createOrganization } from '../src/domain/org/service.js';
 import { clearPolicyCache } from '../src/domain/policy/policy-cache.js';
 import { assignMember, createProject, startProject } from '../src/domain/project/service.js';
 import { setQuestionRouter } from '../src/domain/question/router-registry.js';
+import { llmQuestionRouter } from '../src/domain/question/llm-router.js';
+import { drainPmDrafts } from '../src/domain/question/pm-draft.js';
+import { setPmModel, type PmModelRequest } from '../src/domain/pm/model.js';
 import { connectRepos } from '../src/domain/repo/service.js';
 import { resetSchema, testPool, truncateAll } from './test-db.js';
 
@@ -431,5 +434,75 @@ describe('만료 주기 정리', () => {
     const { rows } = await pool.query(`SELECT q.status, t.state FROM agent_questions q JOIN tasks t ON t.id = q.task_id WHERE q.id = $1`, [asked.id]);
     expect(rows[0]).toEqual({ status: 'expired', state: 'ESCALATED' });
     expect(await sweepExpiredQuestions()).toBe(0);
+  });
+});
+
+// 기획 변경(025): 라우터가 FE·BE·PM 중 고르고, PM이면 대표가 운용하는 PM 에이전트가 초안을 쓰고 대표가 확정한다.
+describe('PM 소관 질문 (025)', () => {
+  const QP = { question: '정원이 찬 스터디에 신청하면 대기 신청으로 받을까요?', header: '정책', multiSelect: false, options: [{ label: '거절' }, { label: '대기 신청' }] };
+  afterEach(() => {
+    setQuestionRouter(null);
+    setPmModel(null);
+  });
+
+  function fakePm(reply: (req: PmModelRequest) => string) {
+    const calls: PmModelRequest[] = [];
+    setPmModel({
+      kind: 'fake',
+      async generate(req) {
+        calls.push(req);
+        return { stopReason: 'end_turn', servedModel: 'fake', text: reply(req), attempts: [{ model: 'claude-sonnet-5-5', inputTokens: 1000, outputTokens: 100, cacheWriteTokens: 0, cacheReadTokens: 0 }] };
+      },
+    });
+    return calls;
+  }
+
+  it('LLM 라우터가 PM을 고르면 대상은 PM, PM 모델이 초안을 쓰고(답이 되지 않음) 대표만 확정한다', async () => {
+    const w = await world();
+    setQuestionRouter(llmQuestionRouter);
+    const calls = fakePm((req) =>
+      req.context?.purpose === 'route'
+        ? JSON.stringify({ target: 'PM', confidence: 0.9, reason: '서비스 정책 결정' })
+        : JSON.stringify({ answers: [{ index: 1, answer: '대기 신청은 이번 범위가 아닙니다 — 거절', decided: false, basis: [] }] }),
+    );
+    const asked = await w.feClient.askQuestions(w.taskId, [QP]);
+    expect(asked).toMatchObject({ status: 'pending', targetRole: 'PM', routing: { confidence: 0.9, fallback: null } });
+    expect(asked.routedBy).toMatch(/^llm:fake:/);
+    // 라우팅 프롬프트에 PM 후보와 설명이 들어간다.
+    expect(calls[0]!.user).toContain('PM = 요구사항·서비스 정책');
+    expect(calls[0]!.context).toMatchObject({ orgId: w.orgId, planId: null, purpose: 'route' });
+
+    await drainPmDrafts();
+    expect(calls.map((c) => c.context?.purpose)).toEqual(['route', 'question_draft']);
+    const { rows } = await pool.query(`SELECT status, draft, drafted_by_agent FROM agent_questions WHERE id = $1`, [asked.id]);
+    expect(rows[0]).toMatchObject({ status: 'pending', drafted_by_agent: null });
+    expect(rows[0].draft.answers[QP.question]).toContain('거절');
+    const drafted = await pool.query(`SELECT on_behalf_of, token_cost::float8 AS cost, payload FROM events WHERE type = 'QUESTION_DRAFTED'`);
+    expect(drafted.rows[0]).toMatchObject({ on_behalf_of: 'system:pm', payload: { drafter: 'pm', autoAnswered: false } });
+    expect(drafted.rows[0].cost).toBeGreaterThan(0);
+
+    // BE·FE 담당은 답할 수 없고, 대표가 확정한다. BE 에이전트의 상담 목록에도 없다.
+    const beJobs = await http('GET', '/agents/me/questions', await agentToken(w.beClient));
+    expect((beJobs.json.data as unknown as { questions: unknown[] }).questions).toEqual([]);
+    expect((await http('POST', `/questions/${asked.id}/answer`, await w.be.token(), { answers: { [QP.question]: '거절' } })).status).toBe(403);
+    const answered = await http('POST', `/questions/${asked.id}/answer`, await w.rep.token(), { answers: { [QP.question]: '거절' } });
+    expect(answered.status).toBe(200);
+    expect(answered.json.data).toMatchObject({ status: 'answered' });
+  });
+
+  it('대표 노트북의 PM 에이전트가 꺼져 있으면(중계 모드) 기다리지 않고 규칙으로 대체하고 기록한다', async () => {
+    const w = await world();
+    setQuestionRouter(llmQuestionRouter);
+    setPmModel({ kind: 'relay', generate: async () => { throw new Error('should not be called'); } });
+    const asked = await w.feClient.askQuestions(w.taskId, [Q1]);
+    expect(asked).toMatchObject({ targetRole: 'BACKEND', routedBy: 'role_rule:opposite' });
+    expect(asked.routing.fallback).toContain('offline');
+  });
+
+  it('라우터의 PM 판정이 DB 제약에 맞는다 — PM 질문은 에이전트 답(agent_answered)이 될 수 없다', async () => {
+    const w = await world();
+    setQuestionRouter({ name: 'fake', route: async () => ({ target: 'PM', confidence: 1, reason: '정책', routedBy: 'fake' }) });
+    const asked = await w.feClient.askQuestions(w.taskId, [QP]);
+    await expect(pool.query(`UPDATE agent_questions SET status = 'agent_answered', answer_source = 'agent', answers = '{}' WHERE id = $1`, [asked.id])).rejects.toThrow(/agent_questions_/);
   });
 });

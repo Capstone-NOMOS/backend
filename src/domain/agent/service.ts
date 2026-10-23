@@ -7,7 +7,7 @@ import type { PoolClient } from 'pg';
 import { generateSecret, hashSecret, signJwt } from '../../utils/tokens.js';
 import { findAgentMembership, findProjectAuthRow } from '../policy/repository.js';
 import { appendEvent } from '../events/append.js';
-import { findUserByConnectKeyHash } from '../org/repository.js';
+import { findOrganizationById, findUserByConnectKeyHash, findUserById } from '../org/repository.js';
 import { agentRevoked } from '../dispatch/agent-revoked.js';
 import { tasksChanged } from '../dispatch/tasks-changed.js';
 import type { GithubRevokeResult } from '../events/types.js';
@@ -65,7 +65,7 @@ export async function issueAgentCredentials(
   tx: PoolClient,
   user: { id: string; orgId: string | null },
   spec: AgentSpec,
-  method: 'connect_key' | 'device',
+  method: 'connect_key' | 'device' | 'connect_code',
 ): Promise<ConnectAgentResult> {
   const { agent, created } = await upsertAgent(tx, {
     userId: user.id,
@@ -143,6 +143,19 @@ export async function describeSelf(ctx: {
     projectId: ctx.projectId,
     teamRole: row.team_role,
   };
+}
+
+// 이 에이전트가 누구 것인가(024) — CLI가 저장된 자격 증명을 재사용할 때 "어느 계정으로 붙었는지" 출력한다.
+// 배정 전에도 된다(/agents/me는 배정 전 403). 조직은 매번 DB에서 읽는다(토큰의 org_id가 아니라).
+export type AgentAccount = { agentId: string; agentName: string; loginId: string | null; nickname: string | null; orgName: string | null };
+
+export async function describeAccount(agentId: string): Promise<AgentAccount> {
+  const agent = await findAgentById(pool, agentId);
+  if (!agent) throw new AppError('UNAUTHENTICATED', 'invalid or expired token');
+  const user = await findUserById(pool, agent.userId);
+  if (!user) throw new AppError('UNAUTHENTICATED', 'invalid or expired token');
+  const org = user.orgId ? await findOrganizationById(pool, user.orgId) : null;
+  return { agentId, agentName: agent.name, loginId: user.loginId, nickname: user.nickname, orgName: org?.name ?? null };
 }
 
 // 역할 배정 화면이 보는 모양. agents.status는 넣지 않는다 — 연결 이후 갱신하는 경로가 아직 없어
