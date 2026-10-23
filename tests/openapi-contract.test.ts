@@ -404,6 +404,7 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
       await call('POST', `/contracts/${contractId}/revise`, be, {});
       await call('POST', `/contracts/${contractId}/draft`, agent, { attempt: 3, openapiYaml: yaml, summary: '출석을 남긴다(시각 포함)' });
       await call('POST', `/contracts/${contractId}/approve`, be);
+      await call('GET', `/projects/${projectId}/contracts`, agent); // 에이전트는 확정한 계약만(MCP read_contracts)
       // 태스크 나누기(새 흐름 3단계) — 확정한 명세·계약 위에서
       const requested = await call('POST', `/projects/${projectId}/pm/plans`, rep, { instruction: '출석 기능' });
       await drainPmJobs();

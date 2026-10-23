@@ -4,13 +4,14 @@ import {
   approveContract,
   failContractDraft,
   listContractJobs,
+  listAgentContracts,
   listProjectContracts,
   reviseContract,
   submitContractDraft,
 } from '../domain/contract/service.js';
 import { CONTRACT_YAML_MAX } from '../domain/contract/validate.js';
 import type { UserContext } from '../domain/project/visibility.js';
-import { agentContextOf, authenticateAgent } from '../middleware/agent-auth.js';
+import { agentContextOf, authenticateAgent, authenticateAny } from '../middleware/agent-auth.js';
 import { authenticate, orgIdOf } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 
@@ -25,10 +26,12 @@ function actorOf(req: Request): UserContext {
 const projectParams = z.object({ projectId: z.string().uuid() });
 const contractParams = z.object({ contractId: z.string().uuid() });
 
-// GET /api/projects/:projectId/contracts — 프로젝트의 API 계약(프로젝트를 볼 수 있는 사람 누구나).
-contractsRouter.get('/projects/:projectId/contracts', validate({ params: projectParams }), authenticate, async (req, res) => {
+// GET /api/projects/:projectId/contracts — 프로젝트의 API 계약. 사람은 볼 수 있는 프로젝트의 전부,
+// 에이전트는 자기 프로젝트의 **확정한** 계약만(MCP read_contracts — FE가 다른 기능의 API까지 찾아 연동한다). 초안은 바뀔 수 있어 주지 않는다.
+contractsRouter.get('/projects/:projectId/contracts', authenticateAny, validate({ params: projectParams }), async (req, res) => {
   const { projectId } = req.params as z.infer<typeof projectParams>;
-  res.status(200).json({ data: { contracts: await listProjectContracts(actorOf(req), projectId) } });
+  const contracts = req.agent ? await listAgentContracts(agentContextOf(req), projectId) : await listProjectContracts(actorOf(req), projectId);
+  res.status(200).json({ data: { contracts } });
 });
 
 // POST /api/contracts/:contractId/approve — 확정(BE 담당, 없으면 대표). 초안일 때만.

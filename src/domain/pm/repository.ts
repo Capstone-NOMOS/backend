@@ -259,7 +259,8 @@ export async function loadPlanContext(db: Queryable, project: ProjectForPm): Pro
   // 확정한 기능 명세와 그 API 계약(023) — 태스크 분할은 이것만 보고 태스크를 붙인다.
   const specs = await db.query(
     `SELECT s.feature_key, s.title, s.content, s.needs_api, c.summary AS contract_summary, c.schema_yaml AS contract_yaml,
-            coalesce((SELECT array_agg(t.title ORDER BY t.created_at) FROM tasks t WHERE t.spec_id = s.id), '{}') AS task_titles
+            coalesce((SELECT array_agg(t.title ORDER BY t.created_at) FROM tasks t WHERE t.spec_id = s.id), '{}') AS task_titles,
+            coalesce((SELECT array_agg(DISTINCT t.team_role) FROM tasks t WHERE t.spec_id = s.id AND t.team_role IS NOT NULL), '{}') AS task_roles
        FROM specs s LEFT JOIN contracts c ON c.spec_id = s.id AND c.status = 'approved'
       WHERE s.project_id = $1 AND s.superseded_by IS NULL ORDER BY s.feature_key`,
     [project.id],
@@ -279,6 +280,7 @@ export async function loadPlanContext(db: Queryable, project: ProjectForPm): Pro
       needsApi: s.needs_api as boolean,
       contract: s.contract_yaml ? { summary: (s.contract_summary as string | null) ?? '', schemaYaml: s.contract_yaml as string } : null,
       taskTitles: s.task_titles as string[],
+      taskRoles: s.task_roles as string[],
     })),
     existingTaskTitles: tasks.rows.map((t) => t.title as string),
     constitution: constitution.rows[0]?.constitution ?? {},
