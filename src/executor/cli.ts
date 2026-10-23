@@ -29,7 +29,7 @@ import {
   updateAccessToken,
   writeCredentials,
 } from '../bridge/credentials.js';
-import { NomosApiError, NomosClient } from '../bridge/nomos-client.js';
+import { NomosApiError, NomosClient, type ContractJobPayload } from '../bridge/nomos-client.js';
 import { ActivityReporter, ActivityTracker, RunObserver } from './activity.js';
 import { accountLine, connect, DEFAULT_SERVER, serverCalls } from './connect.js';
 import { deviceLogin } from './device-login.js';
@@ -43,7 +43,7 @@ import { pollingTaskSource, type TaskSource, type TaskSummary } from './task-sou
 import { runLint, runSpecTests, type SpecTest, type StageReport } from './verify.js';
 import { ensureRepo } from './repo-checkout.js';
 import { runConsult } from './consult.js';
-import { runContractDraft } from './contract.js';
+import { runContractBatch, runContractDraft, type ContractDraft } from './contract.js';
 import { cleanWorkspaces, headSha, prepareWorkspace } from './workspace.js';
 
 // 푸시가 오지 않아도 이 간격으로 한 번씩 다시 본다(끊겼을 때는 이 간격으로 폴링한다).
@@ -117,50 +117,78 @@ async function consultPending(client: NomosClient, role: string): Promise<void> 
 }
 
 // 계약 작성(023) — BACKEND 노트북만. 기능 명세에 API가 필요하면 BE 레포를 읽기만 해서 계약 초안을 올린다(본인 구독).
-// 한 번에 하나씩. 형식 위반(422)이면 위반 목록을 붙여 한 번만 다시 쓰고, 그래도 안 되거나 실행이 실패하면 실패로 보고한다 —
-// 다시 시킬지는 BE 개발자가 정한다(수정 요청). 같은 회차를 자동으로 다시 돌리지 않는다.
+// 한 번에 한 묶음씩. 첫 회차가 둘 이상이면 한 번의 실행으로 함께 쓰고(레포를 한 번만 읽는다 — contract.ts), 레포 최신화도 묶음당 한 번이다.
+// 수정 요청(2회차~)·묶음에서 빠진 기능은 하나씩 쓴다. 형식 위반(422)이면 위반 목록을 붙여 그 기능만 한 번 고쳐 쓰고,
+// 그래도 안 되거나 실행이 실패하면 실패로 보고한다 — 다시 시킬지는 BE 개발자가 정한다(수정 요청). 같은 회차를 자동으로 다시 돌리지 않는다.
 let drafting = false;
 const contractGaveUp = new Set<string>();
 
 async function contractPending(client: NomosClient): Promise<void> {
   if (drafting) return;
   const { contracts, approved, repos } = await client.listContractJobs();
-  const job = contracts.find((c) => !contractGaveUp.has(`${c.id}:${c.attempt}`));
-  if (!job) return;
+  const jobs = contracts.filter((c) => !contractGaveUp.has(`${c.id}:${c.attempt}`));
+  if (jobs.length === 0) return;
   drafting = true;
   void (async () => {
-    const key = `${job.id}:${job.attempt}`;
     try {
       const active = [...activeWorkspaces.values()].find((w) => repos.some((r) => r.fullName === w.repo));
       const repo = active ? repos.find((r) => r.fullName === active.repo)! : repos[0];
-      if (!repo) throw new Error('BACKEND가 소유한 레포가 프로젝트에 없다');
-      const dir = active ? active.dir : ensureRepo({ fullName: repo.fullName, cloneUrl: repo.cloneUrl }, { log }).path;
-      log(`계약 작성: ${job.featureKey} ${job.specTitle} (${job.attempt}회차) — ${repo.fullName}`);
-      let draft = await runContractDraft({ dir, repoName: repo.fullName, job, approved });
-      try {
-        await client.submitContractDraft(job.id, { attempt: job.attempt, ...draft });
-      } catch (err) {
-        if (!(err instanceof NomosApiError && err.code === 'CONTRACT_INVALID')) throw err;
-        const problems = Array.isArray(err.details) ? err.details.map(String) : [err.message];
-        log(`  형식 위반 ${problems.length}개 — 한 번 고쳐 쓴다`);
-        draft = await runContractDraft({ dir, repoName: repo.fullName, job, approved, problems });
-        await client.submitContractDraft(job.id, { attempt: job.attempt, ...draft });
-      }
-      log('  초안 올림 — BE 담당이 웹에서 확정하거나 수정을 요청한다');
-    } catch (err) {
-      contractGaveUp.add(key);
-      // 그 사이 수정 요청이 와서 회차가 바뀌었다 — 새 회차는 다음 확인에서 다시 쓴다.
-      if (err instanceof NomosApiError && err.code === 'CONTRACT_STALE') {
-        log('  그 사이 계약이 바뀌었다 — 이 회차는 버린다');
+      if (!repo) {
+        for (const job of jobs) await reportContractFailure(client, job, new Error('BACKEND가 소유한 레포가 프로젝트에 없다'));
         return;
       }
-      const reason = err instanceof Error ? err.message : String(err);
-      log(`  계약 작성 실패 — BE 담당이 다시 요청할 수 있다: ${reason}`);
-      await client.failContractDraft(job.id, { attempt: job.attempt, reason: reason.slice(0, 1000) }).catch(() => {});
+      // 레포 최신화는 묶음당 한 번(C).
+      const dir = active ? active.dir : ensureRepo({ fullName: repo.fullName, cloneUrl: repo.cloneUrl }, { log }).path;
+
+      // 첫 회차가 둘 이상이면 한 번에 쓴다(A).
+      const firsts = jobs.filter((j) => j.attempt === 1);
+      let batched = new Map<string, ContractDraft>();
+      if (firsts.length >= 2) {
+        log(`계약 묶음 작성: ${firsts.map((j) => j.featureKey).join(', ')} (${firsts.length}개, 1회차) — ${repo.fullName}`);
+        try {
+          batched = await runContractBatch({ dir, repoName: repo.fullName, jobs: firsts, approved });
+          const missing = firsts.filter((j) => !batched.has(j.featureKey)).map((j) => j.featureKey);
+          if (missing.length > 0) log(`  묶음에서 빠진 기능 ${missing.join(', ')} — 하나씩 다시 쓴다`);
+        } catch (err) {
+          log(`  묶음 작성 실패 — 하나씩 쓴다: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      for (const job of jobs) {
+        try {
+          const ready = batched.get(job.featureKey);
+          if (!ready) log(`계약 작성: ${job.featureKey} ${job.specTitle} (${job.attempt}회차) — ${repo.fullName}`);
+          let draft = ready ?? (await runContractDraft({ dir, repoName: repo.fullName, job, approved }));
+          try {
+            await client.submitContractDraft(job.id, { attempt: job.attempt, ...draft });
+          } catch (err) {
+            if (!(err instanceof NomosApiError && err.code === 'CONTRACT_INVALID')) throw err;
+            const problems = Array.isArray(err.details) ? err.details.map(String) : [err.message];
+            log(`  ${job.featureKey} 형식 위반 ${problems.length}개 — 한 번 고쳐 쓴다`);
+            draft = await runContractDraft({ dir, repoName: repo.fullName, job, approved, problems });
+            await client.submitContractDraft(job.id, { attempt: job.attempt, ...draft });
+          }
+          log(`  ${job.featureKey} 초안 올림 — BE 담당이 웹에서 확정하거나 수정을 요청한다`);
+        } catch (err) {
+          await reportContractFailure(client, job, err);
+        }
+      }
     } finally {
       drafting = false;
     }
   })();
+}
+
+async function reportContractFailure(client: NomosClient, job: ContractJobPayload, err: unknown): Promise<void> {
+  contractGaveUp.add(`${job.id}:${job.attempt}`);
+  // 그 사이 수정 요청이 와서 회차가 바뀌었다 — 새 회차는 다음 확인에서 다시 쓴다.
+  if (err instanceof NomosApiError && err.code === 'CONTRACT_STALE') {
+    log(`  ${job.featureKey} — 그 사이 계약이 바뀌었다, 이 회차는 버린다`);
+    return;
+  }
+  const reason = err instanceof Error ? err.message : String(err);
+  log(`  ${job.featureKey} 계약 작성 실패 — BE 담당이 다시 요청할 수 있다: ${reason}`);
+  await client.failContractDraft(job.id, { attempt: job.attempt, reason: reason.slice(0, 1000) }).catch(() => {});
 }
 
 async function handleTask(client: NomosClient, projectId: string, task: TaskSummary): Promise<void> {
