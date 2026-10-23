@@ -296,8 +296,8 @@ export async function summarizeProjectTasks(
   projectId: string,
 ): Promise<{ total: number; openRoles: TeamRole[] }> {
   const { rows } = await db.query(
-    `SELECT count(*)::int AS total,
-            coalesce(array_agg(DISTINCT team_role) FILTER (WHERE team_role IS NOT NULL AND state <> 'DONE'), '{}') AS roles
+    `SELECT count(*) FILTER (WHERE state <> 'CANCELLED')::int AS total,
+            coalesce(array_agg(DISTINCT team_role) FILTER (WHERE team_role IS NOT NULL AND state NOT IN ('DONE', 'CANCELLED')), '{}') AS roles
        FROM tasks WHERE project_id = $1`,
     [projectId],
   );
@@ -452,7 +452,7 @@ export async function markProjectAborted(db: Queryable, projectId: string): Prom
 }
 
 export async function countOpenTasks(db: Queryable, projectId: string): Promise<number> {
-  const { rows } = await db.query(`SELECT count(*)::int AS n FROM tasks WHERE project_id = $1 AND state <> 'DONE'`, [projectId]);
+  const { rows } = await db.query(`SELECT count(*)::int AS n FROM tasks WHERE project_id = $1 AND state NOT IN ('DONE', 'CANCELLED')`, [projectId]);
   return Number(rows[0]?.n ?? 0);
 }
 

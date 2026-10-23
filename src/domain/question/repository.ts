@@ -95,6 +95,15 @@ export async function findQuestion(db: Queryable, id: string, options: { forUpda
   return rows[0] ? toQuestion(rows[0]) : null;
 }
 
+// 태스크가 취소되면(027) 그 태스크의 대기 질문을 만료로 닫는다 — 답할 사람의 대기열에 남지 않게.
+export async function expirePendingForTask(db: Queryable, taskId: string): Promise<string[]> {
+  const { rows } = await db.query(
+    `UPDATE agent_questions SET status = 'expired' WHERE task_id = $1 AND status = 'pending' RETURNING id`,
+    [taskId],
+  );
+  return rows.map((r) => r.id as string);
+}
+
 // 만료는 읽을 때 판정한다(타이머 없이). 대기 중이고 시각이 지났을 때만 바뀐다 — 동시에 답이 와도 한쪽만 이긴다.
 export async function expireIfDue(db: Queryable, id: string): Promise<boolean> {
   const { rowCount } = await db.query(

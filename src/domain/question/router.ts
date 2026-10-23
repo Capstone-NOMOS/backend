@@ -47,7 +47,8 @@ function opposite(role: TeamRole): TeamRole {
   return role === 'FRONTEND' ? 'BACKEND' : 'FRONTEND';
 }
 
-// 기본: 질문 내용을 보지 않고 묻는 쪽의 반대 역할. 역할이 둘뿐이라 성립한다. 다른 구현이 실패할 때의 대체이기도 하다.
+// 반대 역할 규칙 — 질문 내용을 보지 않는다. **서비스에서는 고를 수 없다**(대표 결정 2026-10-24: 비교·대체 모두에서 뺐다).
+// 테스트의 결정적 기본 라우터(tests/setup-invariants.ts)와 오프라인 평가의 기준선으로만 남긴다.
 export const oppositeRoleRouter: QuestionRouter = {
   name: 'role_rule:opposite',
   async route(input) {

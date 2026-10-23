@@ -1,3 +1,5 @@
+import { oppositeRoleRouter } from '../src/domain/question/router.js';
+import { setTestBaseRouter } from '../src/domain/question/router-registry.js';
 import express from 'express';
 import { afterAll, afterEach, expect } from 'vitest';
 import { assertInvariants, closeInvariantPool } from './helpers/assert-invariants.js';
@@ -39,3 +41,7 @@ afterEach(() => {
   const found = contractViolations.splice(0);
   expect(found, 'docs/openapi.yaml과 다른 응답').toEqual([]);
 });
+
+// 질문 라우터: 테스트는 모델을 부르지 않는다 — 기본은 결정적인 반대 역할 규칙(서비스에서는 고를 수 없는 테스트 전용).
+// LLM 라우터·대체(대표에게)는 그 테스트가 setQuestionRouter로 끼운다.
+setTestBaseRouter(oppositeRoleRouter);

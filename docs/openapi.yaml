@@ -208,7 +208,7 @@ components:
           description: |
             답할 쪽. 서버의 질문 라우터가 정한다(routedBy에 근거). PM(025) = 요구사항·정책 같은 제품 결정 — 대표가 운용하는 PM 에이전트가 답 초안(draft)을 쓰고
             **대표가 확정한다**(PM 질문은 초안이 곧 답이 되지 않는다, draftedByAgentId가 null일 수 있다). 답할 수 있는 사람은 대표뿐이다.
-        routedBy: { type: string, description: "대상을 정한 라우터 구현(이름·버전). 운영 기본은 LLM('llm:<relay|anthropic>:<모델>:v2'), 실패하면 'role_rule:opposite'(반대 역할)로 대체하고 fallback에 사유" }
+        routedBy: { type: string, description: "대상을 정한 라우터 구현(이름·버전). 운영 기본은 LLM('llm:<relay|anthropic>:<모델>:v2'), 실패하면 대표에게('fallback:representative', targetRole PM) 보내고 fallback에 사유" }
         routing:
           type: object
           description: 라우터 판정 상세 — 라우터 구현을 바꿔 가며 비교하는 근거
@@ -307,6 +307,51 @@ components:
         accessToken: { type: string }
         refreshToken: { type: string }
         agentId: { type: string, format: uuid }
+    RoutingReport:
+      type: object
+      description: '질문 라우팅 평가(026, 발표 지표). 라우터마다 같은 실제 질문에서의 판정을 정답(gold)과 비교한다'
+      required: [projectId, questions, labeled, routers, answer, rows]
+      properties:
+        projectId: { type: string, format: uuid }
+        questions: { type: integer }
+        labeled: { type: integer, description: '정답 담당자가 붙은 질문 수' }
+        routers:
+          type: array
+          items:
+            type: object
+            required: [router, mode, decisions, errors, labeled, aligned, alignmentRate, avgLatencyMs, p95LatencyMs, avgCostUsd, totalCostUsd]
+            properties:
+              router: { type: string, description: "라우터 이름·버전. baseline:asker = 조건 A(질문한 사람에게 — 모두 SELF)" }
+              mode: { type: string, enum: [primary, shadow, baseline], description: 'primary 실제로 보낸 라우터 · shadow 함께 돌려 본 라우터 · baseline 기준선' }
+              decisions: { type: integer }
+              errors: { type: integer, description: '실패·시간 초과(대체됨)' }
+              labeled: { type: integer }
+              aligned: { type: integer }
+              alignmentRate: { type: number, nullable: true, description: '최초 수신자-정답 담당자 일치율(0~1)' }
+              avgLatencyMs: { type: integer, nullable: true, description: '분류 지연 평균' }
+              p95LatencyMs: { type: integer, nullable: true }
+              avgCostUsd: { type: number, nullable: true, description: '요청당 비용(USD)' }
+              totalCostUsd: { type: number, nullable: true }
+        answer:
+          type: object
+          required: [answered, medianMs]
+          properties:
+            answered: { type: integer }
+            medianMs: { type: integer, nullable: true, description: '질문부터 답까지 중앙값' }
+        rows:
+          type: array
+          items:
+            type: object
+            required: [questionId, askedAt, askerRole, status, firstQuestion, goldTarget, answeredAt, decisions]
+            properties:
+              questionId: { type: string, format: uuid }
+              askedAt: { type: string, format: date-time }
+              askerRole: { type: string }
+              status: { type: string }
+              firstQuestion: { type: string }
+              goldTarget: { type: string, nullable: true }
+              answeredAt: { type: string, format: date-time, nullable: true }
+              decisions: { type: object, additionalProperties: { type: string, nullable: true }, description: '라우터 → 판정(FRONTEND·BACKEND·PM·SELF, 실패면 null)' }
     AgentConnectCode:
       type: object
       required: [code, expiresAt, command]
@@ -643,7 +688,7 @@ components:
         specId: { type: string, format: uuid, nullable: true }
         kind: { type: string, enum: [IMPLEMENT, INTEGRATION, REWORK] }
         title: { type: string }
-        state: { type: string, enum: [READY, CLAIMED, IN_PROGRESS, VERIFYING, AWAITING_APPROVAL, BLOCKED, ESCALATED, DONE] }
+        state: { type: string, enum: [READY, CLAIMED, IN_PROGRESS, VERIFYING, AWAITING_APPROVAL, BLOCKED, ESCALATED, DONE, CANCELLED] }
         teamRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true }
         assigneeAgentId: { type: string, format: uuid, nullable: true }
         branchName: { type: string, nullable: true }
@@ -685,7 +730,7 @@ components:
           type: string
           enum: [DONE, AWAITING_APPROVAL, RETRY, ESCALATED, PENDING, SETTLED]
           description: 'PENDING은 아직 보고 안 된 단계가 있음, SETTLED는 이미 결론이 난 뒤에 온 보고'
-        taskState: { type: string, enum: [READY, CLAIMED, IN_PROGRESS, VERIFYING, AWAITING_APPROVAL, BLOCKED, ESCALATED, DONE] }
+        taskState: { type: string, enum: [READY, CLAIMED, IN_PROGRESS, VERIFYING, AWAITING_APPROVAL, BLOCKED, ESCALATED, DONE, CANCELLED] }
         retryCount: { type: integer }
         approvalId: { type: string, format: uuid, description: 'AWAITING_APPROVAL로 갔으면 그 승인 카드 id(대표가 승인·반려). 없으면 생략' }
     SubmittedArtifact:
@@ -1335,6 +1380,61 @@ paths:
             application/json:
               example:
                 error: { code: INVALID_CONNECT_REQUEST, message: invalid connect request }
+
+  /questions/{questionId}/gold:
+    post:
+      tags: [질문]
+      summary: 정답 담당자 붙이기 (대표, 평가용)
+      description: |
+        발표 지표(026)를 위한 기록이다 — 서비스 동작은 바뀌지 않는다. 질문을 보고 "원래 누구에게 갔어야 했나"를 정한다(`SELF` = 질문한 쪽 자기 소관).
+        다시 부르면 바뀐다(이전 값은 이벤트 `QUESTION_GOLD_LABELED`). 대표만(403 `NOT_REPRESENTATIVE`).
+      security: [{ userToken: [] }]
+      parameters:
+        - { name: questionId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [target]
+              properties:
+                target: { type: string, enum: [FRONTEND, BACKEND, PM, SELF] }
+                note: { type: string, nullable: true, maxLength: 500, description: '판단 근거' }
+            example: { target: BACKEND, note: '응답 상태 코드는 서버가 정한다' }
+      responses:
+        '200':
+          description: 붙였음
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [questionId, goldTarget]
+                    properties:
+                      questionId: { type: string, format: uuid }
+                      goldTarget: { type: string, enum: [FRONTEND, BACKEND, PM, SELF] }
+
+  /projects/{projectId}/routing-report:
+    get:
+      tags: [질문]
+      summary: 질문 라우팅 평가 보고서 (대표, 발표 지표)
+      description: |
+        실제 질문마다 실제로 보낸 라우터(primary)와 함께 돌려 본 라우터(shadow — 설정 `QUESTION_SHADOW_ROUTERS`: llm·decision)의 판정을 모아
+        라우터별 **최초 수신자-정답 담당자 일치율**(정답이 붙은 질문만)·**분류 지연**·**요청당 비용**을 낸다.
+        라우터가 실패해 대표에게 보낸 경우는 `fallback:representative`로 따로 나온다(실패한 라우터에는 errors로 센다).
+        `baseline:asker`는 조건 A(기존 다인 개발 — 질문이 질문한 사람에게 간다, 모두 SELF)다. 대표만.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/ProjectId' }]
+      responses:
+        '200':
+          description: 보고서
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/RoutingReport' } } }
 
   /me/agent-connect-codes:
     post:
@@ -4324,7 +4424,7 @@ paths:
       security: [{ agentToken: [] }, { userToken: [] }]
       parameters:
         - $ref: '#/components/parameters/ProjectId'
-        - { name: state, in: query, schema: { type: string, enum: [READY, CLAIMED, IN_PROGRESS, VERIFYING, AWAITING_APPROVAL, BLOCKED, ESCALATED, DONE] } }
+        - { name: state, in: query, schema: { type: string, enum: [READY, CLAIMED, IN_PROGRESS, VERIFYING, AWAITING_APPROVAL, BLOCKED, ESCALATED, DONE, CANCELLED] } }
         - { name: teamRole, in: query, schema: { type: string, enum: [FRONTEND, BACKEND] }, description: 에이전트 토큰이면 무시된다 }
         - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
       responses:
@@ -4482,6 +4582,64 @@ paths:
             application/json:
               example:
                 error: { code: RUN_NOT_OPEN, message: no open run for task ... }
+
+  /tasks/{taskId}/cancel:
+    post:
+      tags: [룸]
+      summary: 태스크 취소 (대표 전용)
+      description: |
+        재실행으로 풀리지 않는 태스크(잘못 나눔·필요 없어짐)를 닫는다(027). 지우지 않고 `CANCELLED`로 남는다.
+        통합 확인(G3)의 "모든 태스크 완료"와 뒤 태스크의 선행 조건에서 **끝난 것으로 센다** — 이 태스크를 선행으로 둔 태스크는 풀린다.
+        그 태스크의 대기 질문은 만료로 닫힌다. 대신할 일은 새 태스크로 만든다.
+        에이전트가 붙잡지 않은 상태(READY·BLOCKED·ESCALATED)에서만 — 작업 중·승인 대기면 409 `TASK_IN_PROGRESS`, 이미 끝났으면 409 `TASK_ALREADY_CLOSED`.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/TaskId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, maxLength: 1000, description: '왜 취소하나(룸에 보인다)' }
+            example: { reason: '로그인 화면 태스크와 겹친다 — 그쪽에서 처리' }
+      responses:
+        '200':
+          description: 취소됨(CANCELLED)
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/Task' } } }
+
+  /tasks/{taskId}/manual-completion:
+    post:
+      tags: [룸]
+      summary: 사람이 직접 완료 (그 역할 담당 또는 대표)
+      description: |
+        에이전트가 끝내 못 한 일을 개발자가 직접 커밋해 넘긴다(027). 커밋을 태스크 브랜치에 push한 뒤 sha와 **태스크 브랜치에서 바꾼 모든 경로**를 낸다.
+        에이전트 제출과 **같은 V3**(실제 diff와 신고 대조, 경로 소유권)를 서버가 돌린다 — 실패면 아무것도 바뀌지 않고 422 `MANUAL_COMPLETION_INVALID`(details에 undeclared·overdeclared·거부 사유).
+        통과하면 산출물(gateMode HUMAN)과 V3 결과가 남고 태스크는 DONE, 이벤트 `TASK_COMPLETED_MANUALLY`(지표에서 사람이 처리한 것으로 따로 센다).
+        에이전트가 붙잡지 않은 상태(READY·BLOCKED·ESCALATED)에서만. 그 역할 담당(에이전트 주인)이나 대표가 아니면 403 `NOT_TASK_OWNER`.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/TaskId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [commitSha, changedPaths]
+              properties:
+                commitSha: { type: string, description: '태스크 브랜치에 push한 커밋(7~64자 hex)' }
+                changedPaths: { type: array, items: { type: string }, minItems: 1, description: '기본 브랜치에서 갈라진 뒤 태스크 브랜치가 바꾼 경로 전부' }
+                note: { type: string, nullable: true, maxLength: 1000 }
+            example: { commitSha: 'a1b2c3d', changedPaths: ['src/routes/studies.ts'], note: '정원 계산 로직을 직접 고쳤다' }
+      responses:
+        '200':
+          description: 완료됨(DONE)
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/Task' } } }
 
   /tasks/{taskId}/resume:
     post:
