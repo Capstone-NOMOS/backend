@@ -3367,6 +3367,12 @@ paths:
         - `types`로 거른다(쉼표로 여러 개). `payload` 모양은 `type`마다 다르다.
         - `onBehalfOf`는 사람(user id)이거나 시스템 주체 문자열(`system:pm`, `system:device-flow` 등)이다.
         - `tokenCost`는 그 행의 비용(USD) — 지금은 PM 호출(`PM_CALL`)에만 있다. 태스크별·사람별 비용 집계는 별도 API로 다룬다.
+        - 화면이 문구를 만들 때 자주 쓰는 type과 payload(전체 목록은 서버 `domain/events/types.ts`):
+          - `TASK_CANCELLED` — `taskId, title, previousState, reason, expiredQuestionIds[], unblockedDependents[]`(대표가 취소, 027)
+          - `TASK_COMPLETED_MANUALLY` — `taskId, title, artifactId, commitSha, changedPaths[], previousState, v3('PASS'), note`(사람이 직접 완료, 027)
+          - `TASK_RESUMED` — `taskId, note, from('AGENT_STOPPED'|'ESCALATED'), previousRetryCount?`
+          - `QUESTION_ASKED` — `questionId, taskId, askerRole, targetRole('FRONTEND'|'BACKEND'|'PM'|'SELF'), routedBy, confidence, latencyMs, fallback, costUsd, questionCount`
+          - `QUESTION_GOLD_LABELED` — `questionId, goldTarget('FRONTEND'|'BACKEND'|'PM'|'SELF'), previousGoldTarget`(대표가 정답 담당자를 붙임, 026)
       security: [{ userToken: [] }]
       parameters:
         - $ref: '#/components/parameters/ProjectId'
@@ -4618,6 +4624,7 @@ paths:
       description: |
         에이전트가 끝내 못 한 일을 개발자가 직접 커밋해 넘긴다(027). 커밋을 태스크 브랜치에 push한 뒤 sha와 **태스크 브랜치에서 바꾼 모든 경로**를 낸다.
         에이전트 제출과 **같은 V3**(실제 diff와 신고 대조, 경로 소유권)를 서버가 돌린다 — 실패면 아무것도 바뀌지 않고 422 `MANUAL_COMPLETION_INVALID`(details에 undeclared·overdeclared·거부 사유).
+        서버가 커밋을 읽지 못하면(레포 clone_url·GitHub 미연결 — V3 SKIPPED) 받지 않는다: 409 `MANUAL_COMPLETION_UNVERIFIABLE`. 확인 안 된 sha로 DONE이 되지 않게.
         통과하면 산출물(gateMode HUMAN)과 V3 결과가 남고 태스크는 DONE, 이벤트 `TASK_COMPLETED_MANUALLY`(지표에서 사람이 처리한 것으로 따로 센다).
         에이전트가 붙잡지 않은 상태(READY·BLOCKED·ESCALATED)에서만. 그 역할 담당(에이전트 주인)이나 대표가 아니면 403 `NOT_TASK_OWNER`.
       security: [{ userToken: [] }]

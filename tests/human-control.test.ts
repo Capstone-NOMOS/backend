@@ -110,6 +110,16 @@ describe('사람이 직접 완료 (그 역할 담당 또는 대표)', () => {
     expect(ev.rows[0]).toMatchObject({ on_behalf_of: w.be.userId, payload: { v3: 'PASS', note: '직접 고침' } });
   });
 
+  it('서버가 커밋을 못 읽으면(V3 SKIPPED) 받지 않는다 — 확인 안 된 sha로 DONE이 되지 않게', async () => {
+    const w = await world();
+    // clone_url 없는 로컬 레포처럼 — 검사기가 못 읽음을 알린다.
+    const { InspectionSkipped } = await import('../src/domain/verification/inspection.js');
+    setCommitInspector({ kind: 'fake', async changedPaths() { throw new InspectionSkipped('repos.clone_url 미설정'); } });
+    const res = await http('POST', `/tasks/${w.t1}/manual-completion`, w.be.token, { commitSha: 'deadbee', changedPaths: ['src/a.ts'] });
+    expect(res).toMatchObject({ status: 409, error: { code: 'MANUAL_COMPLETION_UNVERIFIABLE' } });
+    expect(await stateOf(w.t1)).toBe('READY');
+  });
+
   it('신고가 실제 diff와 다르면 422(위반 목록)이고 아무것도 바뀌지 않는다', async () => {
     const w = await world();
     setCommitInspector({ kind: 'fake', async changedPaths() { return ['src/a.ts', 'src/secret-extra.ts']; } });
