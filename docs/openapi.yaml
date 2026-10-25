@@ -4871,7 +4871,7 @@ paths:
                     - stage: V1A
                       result: SKIPPED
                       executedBy: server
-                      detail: { reason: 'contracts 테이블 미구현 — ⑦ 이후 가능' }
+                      detail: { reason: '계약 대조 검사 미구현 — 확정한 계약(contracts)은 있지만 BE 구현(코드·실제 응답)을 서버가 읽어 비교하는 단계가 아직 없다' }
                     - stage: V3
                       result: FAIL
                       executedBy: server
