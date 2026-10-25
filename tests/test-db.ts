@@ -74,6 +74,7 @@ export async function dropSchema(): Promise<void> {
     DROP TABLE IF EXISTS plans;
     DROP TABLE IF EXISTS specs;
     DROP TABLE IF EXISTS project_members;
+    DROP FUNCTION IF EXISTS project_members_fill_user();
     DROP TABLE IF EXISTS project_repos;
     DROP TABLE IF EXISTS projects;
     DROP TABLE IF EXISTS agent_tokens;

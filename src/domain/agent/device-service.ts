@@ -15,7 +15,7 @@ import {
   recordDevicePoll,
   type DeviceRequest,
 } from './device-repository.js';
-import { issueAgentCredentials, type AgentSpec, type ConnectAgentResult } from './service.js';
+import { flushReattached, issueAgentCredentials, type AgentSpec, type ConnectAgentResult } from './service.js';
 
 // CLI 연결을 브라우저 승인으로 — OAuth Device Authorization Grant(RFC 8628). NOMOS가 인증 서버다.
 //   CLI: start → (코드 출력·브라우저 열기) → interval마다 poll
@@ -117,7 +117,7 @@ export type DevicePollResult =
   | ({ status: 'approved'; account: { loginId: string | null; nickname: string | null; orgName: string | null } } & ConnectAgentResult);
 
 export async function pollDeviceFlow(deviceCode: string): Promise<DevicePollResult> {
-  return withTransaction(async (tx) => {
+  const result = await withTransaction(async (tx): Promise<DevicePollResult> => {
     const req = await findDeviceRequestByCodeHash(tx, hashSecret(deviceCode));
     if (!req) throw new AppError('INVALID_DEVICE_CODE', 'invalid device code');
 
@@ -154,6 +154,9 @@ export async function pollDeviceFlow(deviceCode: string): Promise<DevicePollResu
       account: { loginId: user.loginId, nickname: user.nickname, orgName: org?.name ?? null },
     };
   });
+  // 다시 붙은 역할(028)이 있으면 커밋 뒤에 태스크 스냅샷을 보낸다.
+  flushReattached();
+  return result;
 }
 
 // ── 웹 쪽 (사람 토큰) ─────────────────────────────────────────────────────

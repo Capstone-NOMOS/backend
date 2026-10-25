@@ -621,6 +621,10 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
   - 인증은 첫 메시지(사람 JWT, `resolveUserToken` — HTTP `authenticate`와 한 벌). Origin은 CORS 허용 목록 + 서버 자신만 받는다(Origin 없음 = 브라우저 아님 → 통과).
   - 에이전트 접속 상태(`presence.ts`)는 이벤트가 아니라서 `onPresenceChanged`로 따로 받는다. 바뀐 순간에만 알리고, 60초가 지나 offline이 되는 것은 10초마다 훑는다.
   - 웹소켓 경로는 `realtime/upgrade-router.ts`가 서버당 하나의 upgrade 리스너로 나눈다. 스트림마다 `server.on('upgrade')`를 걸면 서로의 소켓을 끊는다.
+- **역할 담당은 사람이다(028, FE 요청)** — `project_members.user_id`가 담당, `agent_id`는 그 사람이 붙인 에이전트(비울 수 있다). 가시성·프로젝트 목록·답할 자격·계약 확정은
+  `user_id`로 판정한다(에이전트 조인으로 판정하지 말 것 — 해제하면 사람까지 빠졌다). **에이전트 연결 해제는 에이전트만 뗀다**(`MEMBER_AGENT_DETACHED`, GitHub 권한 그대로),
+  같은 사람이 다시 연결하면 에이전트 없이 담당만 남은 진행 중 프로젝트가 하나일 때 자동으로 다시 붙는다(`reattachAgentInTx`, `MEMBER_AGENT_ATTACHED` — 토큰 발급 전이라 새 토큰에 프로젝트가 실린다).
+  사람을 역할에서 빼는 것(대표의 해제·조직 탈퇴)만 접근·GitHub 권한까지 뺀다. 해제 API 경로의 식별자는 에이전트 id, 에이전트가 없으면 담당자 user id.
 - **멤버는 시작(G1) 뒤에도 바꿀 수 있다**(021, 대표 결정 — 사람이 빠지거나 교체해야 할 때). 단 그 에이전트가 진행 중 태스크(CLAIMED·IN_PROGRESS·VERIFYING)를
   붙잡고 있으면 409 `ACTIVE_TASKS_HELD`(details에 태스크) — 빼 버리면 그 태스크는 아무도 끝내지 못한다. 끝난 프로젝트(completed·aborted)의 멤버는 기록이라 409 `PROJECT_NOT_OPEN`.
   빠진 역할의 태스크는 새 사람을 배정할 때까지 READY로 기다린다. 역할 교체는 해제 후 재배정이다 — UPDATE 경로를 두면 한 역할에 둘이 잠깐 겹친다.

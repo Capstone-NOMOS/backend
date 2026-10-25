@@ -18,7 +18,13 @@ import {
   approveAppliedPlans,
   approveProjectSpecs,
   copyPoliciesFromCatalog,
-  deleteProjectMember,
+  deleteAgentlessMemberships,
+  deleteMemberByRole,
+  detachMemberAgent,
+  attachMemberAgent,
+  findMemberRow,
+  findRoleMember,
+  listAgentlessRolesOfUser,
   findAgentOrg,
   findAgentOwnerGithub,
   findOtherActiveAssignment,
@@ -80,7 +86,8 @@ export type ProjectDetail = {
 async function membersWithInvites(db: Queryable, projectId: string, members?: ProjectMember[]): Promise<ProjectMemberView[]> {
   const list = members ?? (await listProjectMembers(db, projectId));
   const invites = await listLatestInvites(db, projectId);
-  return list.map((m) => ({ ...m, githubInvites: invites.get(m.agentId) ?? [] }));
+  // 초대는 사람에게 한다 — 에이전트를 다시 붙여도 결과가 이어지게 담당자(user)로 찾는다.
+  return list.map((m) => ({ ...m, githubInvites: invites.get(m.userId) ?? [] }));
 }
 
 // 어휘 위반은 형식 오류(zod 400)와 구분해 422로 답한다 — 무엇이 허용되는지 함께 알려준다.
@@ -114,34 +121,40 @@ function assertMembersEditable(project: Project): void {
 
 // 멤버 한 명을 뺀다(트랜잭션 안, 프로젝트 행은 호출부가 잠근다). 그 에이전트가 붙잡은 진행 중 태스크가 있으면 거부한다(대표 결정) —
 // 빼 버리면 그 태스크는 아무도 끝내지 못한다. 잡고 있던 것을 끝내거나 멈춘(BLOCKED) 뒤에 뺀다.
+// 담당을 뺀다(사람이 역할에서 빠진다). 식별자는 에이전트 id(붙어 있으면) 또는 담당자 user id(028 — 에이전트를 뗀 담당).
 async function removeMemberInTx(
   tx: PoolClient,
   project: Project,
-  agentId: string,
+  agentOrUserId: string,
   onBehalfOf: string,
-  cause?: 'agent_disconnected' | 'org_member_removed',
+  cause?: 'org_member_removed',
 ): Promise<void> {
-  const active = await listActiveTasksOfAgent(tx, project.id, agentId);
-  if (active.length > 0) {
-    throw new AppError('ACTIVE_TASKS_HELD', `agent ${agentId} still holds ${active.length} task(s) in progress; finish or stop them first`, active);
-  }
+  const row = await findMemberRow(tx, project.id, agentOrUserId);
+  if (!row) throw new AppError('MEMBER_NOT_FOUND', `${agentOrUserId} is not a member of this project`);
+  if (row.agentId) await assertNoActiveTasks(tx, project.id, row.agentId);
   // 역할 교체는 삭제 후 재배정으로 한다 — UPDATE 경로를 두면 한 역할에 둘이 잠깐 겹칠 수 있다.
-  const teamRole = await deleteProjectMember(tx, project.id, agentId);
-  if (teamRole === null) {
-    throw new AppError('MEMBER_NOT_FOUND', `agent ${agentId} is not a member of this project`);
-  }
+  await deleteMemberByRole(tx, project.id, row.teamRole);
   await appendEvent(tx, {
     orgId: project.orgId,
     projectId: project.id,
     type: 'MEMBER_UNASSIGNED',
-    actorAgentId: agentId,
+    ...(row.agentId ? { actorAgentId: row.agentId } : {}),
     onBehalfOf,
     policyHash: project.policyHash,
-    payload: { agentId, teamRole, ...(cause ? { cause } : {}) },
+    payload: { agentId: row.agentId, teamRole: row.teamRole, userId: row.userId, ...(cause ? { cause } : {}) },
   });
 }
 
-// 에이전트를 지금 맡은 진행 중 프로젝트에서 뺀다(연결 해제·조직 탈퇴가 부른다). 맡은 곳이 없으면 null.
+async function assertNoActiveTasks(tx: PoolClient, projectId: string, agentId: string): Promise<void> {
+  const active = await listActiveTasksOfAgent(tx, projectId, agentId);
+  if (active.length > 0) {
+    throw new AppError('ACTIVE_TASKS_HELD', `agent ${agentId} still holds ${active.length} task(s) in progress; finish or stop them first`, active);
+  }
+}
+
+// 에이전트를 지금 맡은 진행 중 프로젝트에서 떼거나 뺀다. 맡은 곳이 없으면 null.
+//   agent_disconnected — 에이전트만 뗀다(028). 사람은 그 역할 담당으로 남아 질문 답·계약 확정·기록 보기를 계속한다.
+//   org_member_removed — 사람째 뺀다(조직을 떠났다).
 // 호출부의 트랜잭션 안에서 프로젝트 행을 FOR SHARE로 잠근다 — 시작·배정과 같은 잠금이다.
 export async function detachAgentFromActiveProject(
   tx: PoolClient,
@@ -153,8 +166,61 @@ export async function detachAgentFromActiveProject(
   if (membership === null) return null;
   const project = await findProjectById(tx, membership.projectId, { lock: 'share' });
   if (!project) return null;
-  await removeMemberInTx(tx, project, agentId, onBehalfOf, cause);
+  if (cause === 'org_member_removed') {
+    await removeMemberInTx(tx, project, agentId, onBehalfOf, cause);
+    return project.id;
+  }
+  await assertNoActiveTasks(tx, project.id, agentId);
+  const detached = await detachMemberAgent(tx, project.id, agentId);
+  if (!detached) return null;
+  await appendEvent(tx, {
+    orgId: project.orgId,
+    projectId: project.id,
+    type: 'MEMBER_AGENT_DETACHED',
+    actorAgentId: agentId,
+    onBehalfOf,
+    policyHash: project.policyHash,
+    payload: { agentId, teamRole: detached.teamRole, userId: detached.userId, cause },
+  });
   return project.id;
+}
+
+// 조직을 떠난 사람의, 에이전트 없이 남은 담당 줄을 뺀다(028). 뺀 프로젝트 id들.
+export async function removeAgentlessMembershipsInTx(tx: PoolClient, userId: string, onBehalfOf: string): Promise<string[]> {
+  const removed = await deleteAgentlessMemberships(tx, userId);
+  for (const r of removed) {
+    const project = (await findProjectById(tx, r.projectId))!;
+    await appendEvent(tx, {
+      orgId: project.orgId,
+      projectId: r.projectId,
+      type: 'MEMBER_UNASSIGNED',
+      onBehalfOf,
+      policyHash: project.policyHash,
+      payload: { agentId: null, teamRole: r.teamRole, userId, cause: 'org_member_removed' },
+    });
+  }
+  return removed.map((r) => r.projectId);
+}
+
+// 같은 사람이 다시 연결했다(028) — 그 사람이 에이전트 없이 담당만 남은 진행 중 프로젝트가 **하나**면 이 에이전트를 그 역할에 다시 붙인다.
+// 여럿이면 어느 것인지 알 수 없어 붙이지 않는다(대표가 배정 API로 붙인다). 이 에이전트가 이미 다른 진행 중 프로젝트에 있으면 건너뛴다.
+export async function reattachAgentInTx(tx: PoolClient, agentId: string, userId: string): Promise<string | null> {
+  if ((await findAgentMembership(tx, agentId)) !== null) return null;
+  const roles = await listAgentlessRolesOfUser(tx, userId);
+  if (roles.length !== 1) return null;
+  const { projectId, teamRole } = roles[0]!;
+  const project = await findProjectById(tx, projectId, { lock: 'share' });
+  if (!project || !(await attachMemberAgent(tx, projectId, teamRole, agentId))) return null;
+  await appendEvent(tx, {
+    orgId: project.orgId,
+    projectId,
+    type: 'MEMBER_AGENT_ATTACHED',
+    actorAgentId: agentId,
+    onBehalfOf: userId,
+    policyHash: project.policyHash,
+    payload: { agentId, teamRole, userId, cause: 'reconnected' },
+  });
+  return projectId;
 }
 
 export async function createProject(
@@ -293,6 +359,24 @@ export async function assignMember(
       );
     }
 
+    // 그 역할에 담당이 이미 있고 에이전트만 비어 있으면(028) — 같은 사람의 에이전트면 붙이고, 다른 사람이면 역할이 찬 것이다.
+    const seat = await findRoleMember(tx, projectId, teamRole);
+    if (seat && seat.agentId === null) {
+      if (!(await attachMemberAgent(tx, projectId, teamRole, agentId))) {
+        throw new AppError('ROLE_ALREADY_ASSIGNED', `${teamRole} is held by another member; unassign them first`);
+      }
+      await appendEvent(tx, {
+        orgId: actor.orgId,
+        projectId,
+        type: 'MEMBER_AGENT_ATTACHED',
+        actorAgentId: agentId,
+        onBehalfOf: actor.userId,
+        policyHash: project.policyHash,
+        payload: { agentId, teamRole, userId: seat.userId, cause: 'assigned' },
+      });
+      return membersWithInvites(tx, projectId);
+    }
+
     try {
       await insertProjectMember(tx, projectId, agentId, teamRole);
     } catch (err) {
@@ -300,7 +384,7 @@ export async function assignMember(
       if (constraint === 'uq_project_members_role') {
         throw new AppError('ROLE_ALREADY_ASSIGNED', `${teamRole} is already assigned in this project`);
       }
-      if (constraint === 'project_members_pkey') {
+      if (constraint === 'uq_project_members_agent') {
         throw new AppError('AGENT_ALREADY_ASSIGNED', 'this agent is already a member of the project');
       }
       throw err;
@@ -398,12 +482,12 @@ async function inviteToProjectGithubRepos(
 export async function unassignMember(
   actor: Actor,
   projectId: string,
-  agentId: string,
+  agentOrUserId: string,
 ): Promise<ProjectMemberView[]> {
   const members = await withTransaction(async (tx) => {
     const project = await assertProjectInOrg(tx, actor.orgId, projectId, 'share');
     assertMembersEditable(project);
-    await removeMemberInTx(tx, project, agentId, actor.userId);
+    await removeMemberInTx(tx, project, agentOrUserId, actor.userId);
     return membersWithInvites(tx, projectId);
   });
   // 커밋 뒤 — 빠진 에이전트의 스트림은 다음 스냅샷에서 NOT_PROJECT_MEMBER로 닫힌다.
@@ -462,7 +546,7 @@ export async function startProject(actor: Actor, projectId: string): Promise<Pro
       onBehalfOf: actor.userId,
       policyHash: project.policyHash,
       payload: {
-        members: members.map((m) => ({ agentId: m.agentId, teamRole: m.teamRole })),
+        members: members.map((m) => ({ agentId: m.agentId, teamRole: m.teamRole, userId: m.userId })),
         taskCount: total,
         approvedSpecCount,
         approvedPlanIds,
@@ -560,17 +644,18 @@ export async function revokeGithubAccess(input: {
 export async function unassignMemberWithRevocations(
   actor: Actor,
   projectId: string,
-  agentId: string,
+  agentOrUserId: string,
 ): Promise<{ members: ProjectMemberView[]; githubRevocations: GithubRevokeResult[] }> {
-  const owner = await findAgentOwnerGithub(pool, agentId);
-  const members = await unassignMember(actor, projectId, agentId);
-  const githubRevocations = owner
+  // 식별자는 에이전트 id 또는 (에이전트를 뗀 담당이면) user id(028). 회수 대상은 그 담당자(사람)다.
+  const row = await withTransaction((tx) => findMemberRow(tx, projectId, agentOrUserId));
+  await unassignMember(actor, projectId, agentOrUserId);
+  const githubRevocations = row
     ? await revokeGithubAccess({
         orgId: actor.orgId,
         onBehalfOf: actor.userId,
         projectId,
-        agentId,
-        userId: owner.userId,
+        agentId: row.agentId,
+        userId: row.userId,
         scope: { kind: 'project', projectId },
         trigger: 'unassign',
       })

@@ -154,7 +154,8 @@ export async function listRooms(actor: UserContext, projectId: string): Promise<
     const member = members.find((m) => m.teamRole === role);
     rooms.push({
       role,
-      agent: member ? { agentId: member.agentId, agentName: member.agentName, ...presenceOf(member.agentId) } : null,
+      // 담당은 있는데 에이전트를 떼었으면(028) null — 화면이 "에이전트 연결 필요"로 그린다.
+      agent: member?.agentId ? { agentId: member.agentId, agentName: member.agentName ?? '', ...presenceOf(member.agentId) } : null,
       activeTasks: await listActiveRoleTasks(pool, projectId, role),
     });
   }

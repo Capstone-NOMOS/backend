@@ -651,12 +651,15 @@ components:
         fullName: { type: string }
     ProjectMember:
       type: object
+      description: |
+        역할 담당(**사람**, 028)과 그 사람이 붙인 에이전트. 에이전트 연결을 해제하면 `agentId`·`agentName`이 null — 사람은 담당으로 남아
+        프로젝트를 보고 질문 답·계약 확정을 계속한다(화면은 "에이전트 연결 필요"). 같은 사람이 다시 연결하면 그 역할에 자동으로 다시 붙는다.
       required: [agentId, agentName, teamRole, userId, githubInvites]
       properties:
-        agentId: { type: string, format: uuid }
-        agentName: { type: string }
+        agentId: { type: string, format: uuid, nullable: true, description: '붙어 있는 에이전트. 없으면 null' }
+        agentName: { type: string, nullable: true }
         teamRole: { type: string, enum: [FRONTEND, BACKEND] }
-        userId: { type: string, format: uuid, description: '에이전트 주인' }
+        userId: { type: string, format: uuid, description: '역할 담당(사람). 에이전트가 있으면 그 주인이다' }
         githubInvites:
           type: array
           description: |
@@ -3373,6 +3376,9 @@ paths:
           - `TASK_RESUMED` — `taskId, note, from('AGENT_STOPPED'|'ESCALATED'), previousRetryCount?`
           - `QUESTION_ASKED` — `questionId, taskId, askerRole, targetRole('FRONTEND'|'BACKEND'|'PM'|'SELF'), routedBy, confidence, latencyMs, fallback, costUsd, questionCount`
           - `QUESTION_GOLD_LABELED` — `questionId, goldTarget('FRONTEND'|'BACKEND'|'PM'|'SELF'), previousGoldTarget`(대표가 정답 담당자를 붙임, 026)
+          - `MEMBER_AGENT_DETACHED` — `agentId, teamRole, userId, cause('agent_disconnected')`(에이전트만 떨어짐 — 사람은 담당으로 남음, 028)
+          - `MEMBER_AGENT_ATTACHED` — `agentId, teamRole, userId, cause('reconnected'|'assigned')`(빈 담당 자리에 에이전트가 다시 붙음, 028)
+          - `MEMBER_UNASSIGNED` — `agentId(없으면 null), teamRole, userId, cause?`(사람이 역할에서 빠짐)
       security: [{ userToken: [] }]
       parameters:
         - $ref: '#/components/parameters/ProjectId'
@@ -3609,6 +3615,8 @@ paths:
       tags: [프로젝트]
       summary: 배정 해제 (대표 전용)
       description: |
+        역할 담당(사람)을 역할에서 뺀다 — 그 사람의 프로젝트 접근과 GitHub 레포 접근도 빠진다.
+        경로의 `agentId` 자리에는 붙어 있는 에이전트 id를, **에이전트가 없는 담당(`agentId: null`)이면 그 담당의 `userId`**를 넣는다(028).
         **역할 교체는 해제 후 재배정으로 한다.** UPDATE 경로를 두면 한 역할에 둘이 잠깐 겹칠 수 있다.
         시작(G1) 뒤에도 된다(021) — 단 그 에이전트가 진행 중 태스크(CLAIMED·IN_PROGRESS·VERIFYING)를 붙잡고 있으면 409 `ACTIVE_TASKS_HELD`(details에 태스크 목록).
         빠진 역할의 태스크는 새 사람을 배정할 때까지 READY로 기다린다. 끝난 프로젝트(completed·aborted)는 409 `PROJECT_NOT_OPEN`.
@@ -3653,9 +3661,11 @@ paths:
       summary: 에이전트 연결 해제
       description: |
         노트북 CLI 연결을 끊는다(021) — 그 에이전트의 주인이나 같은 조직의 대표가 한다(아니면 403 `NOT_AGENT_OWNER`).
-        맡은 진행 중 프로젝트에서 빠지고(진행 중 태스크가 있으면 409 `ACTIVE_TASKS_HELD`), refresh token이 폐기되며, 남은 access token도 401 `AGENT_DISCONNECTED`로 거부된다.
-        실행 중인 CLI의 태스크 스트림도 끊긴다. 목록(`GET /orgs/{orgId}/agents`)에서 빠진다.
-        같은 노트북에서 같은 이름으로 다시 `connect`하면 그 에이전트가 되살아난다.
+        맡은 진행 중 프로젝트에서 **에이전트만 떨어진다**(028) — 사람은 그 역할 담당으로 남아 프로젝트를 보고 질문 답·계약 확정을 계속하며, GitHub 레포 접근도 그대로다(`githubRevocations`는 빈 배열).
+        진행 중 태스크가 있으면 409 `ACTIVE_TASKS_HELD`. refresh token이 폐기되고, 남은 access token도 401 `AGENT_DISCONNECTED`로 거부된다.
+        실행 중인 CLI의 태스크 스트림도 끊긴다. 목록(`GET /orgs/{orgId}/agents`)에서 빠진다. 응답의 `unassignedFrom`은 에이전트가 떨어진 프로젝트다.
+        같은 사람이 다시 `connect`(연결 키·브라우저 승인·`--code` 모두)하면 — 같은 이름이면 같은 에이전트가 되살아나고 — 에이전트 없이 담당만 남은 진행 중 프로젝트가 하나면 그 역할에 **자동으로 다시 붙는다**
+        (이벤트 `MEMBER_AGENT_ATTACHED`). 여럿이면 대표가 배정 API로 붙인다.
       security: [{ userToken: [] }]
       parameters:
         - { name: agentId, in: path, required: true, schema: { type: string, format: uuid }, example: '{{AGENT_BE}}' }

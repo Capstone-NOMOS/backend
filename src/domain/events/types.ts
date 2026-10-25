@@ -40,6 +40,8 @@ export type EventType =
   | 'QUESTION_DRAFTED'
   | 'TASK_BLOCKED_ON_QUESTION'
   | 'MEMBER_UNASSIGNED'
+  | 'MEMBER_AGENT_DETACHED'
+  | 'MEMBER_AGENT_ATTACHED'
   | 'GITHUB_COLLABORATORS_INVITED'
   | 'TASK_DISPATCHED'
   | 'AGENT_RUN_STARTED'
@@ -333,7 +335,8 @@ export type ProjectSettingsUpdatedPayload = {
 
 // G1 — 이 시점의 멤버·태스크 수·승인한 계획을 남긴다. 이후 지표("이 구성으로 시작해서 어땠나")의 기준점이다.
 export type ProjectStartedPayload = {
-  members: { agentId: string; teamRole: string }[];
+  // 시작 시점의 역할 담당(028부터 사람 — 에이전트가 없으면 agentId null).
+  members: { agentId: string | null; teamRole: string; userId?: string }[];
   taskCount: number;
   approvedSpecCount: number;
   approvedPlanIds: string[];
@@ -345,11 +348,17 @@ export type MemberAssignedPayload = {
 };
 
 export type MemberUnassignedPayload = {
-  agentId: string;
+  // 에이전트 없이 담당만 있던 줄을 뺐으면 null(028).
+  agentId: string | null;
   teamRole: string;
+  userId?: string;
   // 무엇 때문에 빠졌나(021) — 없으면 대표의 직접 해제.
   cause?: 'agent_disconnected' | 'org_member_removed';
 };
+
+// 028 — 역할 담당(사람)은 남고 에이전트만 떨어지거나 붙었다. 사람의 접근은 그대로다(MEMBER_UNASSIGNED와 다르다).
+export type MemberAgentDetachedPayload = { agentId: string; teamRole: string; userId: string; cause: 'agent_disconnected' };
+export type MemberAgentAttachedPayload = { agentId: string; teamRole: string; userId: string; cause: 'reconnected' | 'assigned' };
 
 // 021 해제·삭제. 행은 지우지 않고 표시만 한다(되살릴 수 있고, 기록이 가리킨다).
 export type AgentDisconnectedPayload = { agentId: string; userId: string; name: string; byOwner: boolean; unassignedFrom: string | null };
@@ -611,6 +620,8 @@ export type EventPayloadMap = {
   NOTE_PUBLISHED: NotePublishedPayload;
   PROJECT_CREATED: ProjectCreatedPayload;
   MEMBER_ASSIGNED: MemberAssignedPayload;
+  MEMBER_AGENT_DETACHED: MemberAgentDetachedPayload;
+  MEMBER_AGENT_ATTACHED: MemberAgentAttachedPayload;
   PROJECT_STARTED: ProjectStartedPayload;
   NOTES_ACK_REQUIRED: NotesAckRequiredPayload;
   APPROVAL_REQUESTED: ApprovalRequestedPayload;
