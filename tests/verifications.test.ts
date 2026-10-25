@@ -293,7 +293,7 @@ describe('검증 결과 조회 권한', () => {
 });
 
 describe('V1A — 계약(OpenAPI) 대조', () => {
-  it('지금은 SKIPPED이고, 사유는 LLM이 아니라 contracts 테이블이 없어서다', async () => {
+  it('지금은 SKIPPED이고, 사유는 LLM이 아니라 구현 쪽을 읽는 단계가 없어서다', async () => {
     const ctx = await setup();
     setCommitInspector(fakeInspector(['src/api/join.ts']));
 
@@ -305,7 +305,7 @@ describe('V1A — 계약(OpenAPI) 대조', () => {
     );
     expect(rows[0]).toMatchObject({ result: 'SKIPPED', executed_by: 'server' });
     const reason = String(rows[0]!.detail.reason);
-    expect(reason).toContain('contracts');
+    expect(reason).toContain('계약 대조 검사 미구현');
     // 회귀 방지: 이 단계는 응답 스키마·상태코드·필드명을 결정적으로 비교하는 자리다.
     // 사유가 "LLM 판정"으로 바뀌면 P2를 근거로 영원히 안 붙게 된다.
     expect(reason).not.toContain('LLM');
