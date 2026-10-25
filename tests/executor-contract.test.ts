@@ -114,3 +114,16 @@ describe('계약 묶음 작성 (첫 회차)', () => {
     expect(parseContractBatch({ nothing: true }, jobs).size).toBe(0);
   });
 });
+
+// 룸 메시지(사람 → 에이전트)는 다음 실행의 프롬프트에 "담당자가 보낸 메시지"로 들어간다.
+describe('태스크 프롬프트의 담당자 메시지', () => {
+  const base = { task: { id: 't1', title: 'T', teamRole: 'BACKEND' }, repo: { fullName: 'a/api' }, spec: null, notesBlock: '', writablePaths: [{ pathPattern: '**' }] };
+  it('메시지가 있으면 보낸 사람과 함께 싣고, 범위·경로 규칙은 그대로라고 적는다', () => {
+    const prompt = buildTaskPrompt({ ...base, humanMessages: [{ text: '페이지네이션 없이', fromNickname: '민수', fromRepresentative: false, ts: '' }, { text: '오류 형식 통일', fromNickname: '대표님', fromRepresentative: true, ts: '' }] }, 'task/t1');
+    expect(prompt).toContain('# 담당자가 보낸 메시지');
+    expect(prompt).toContain('- 민수: 페이지네이션 없이');
+    expect(prompt).toContain('- 대표님(대표): 오류 형식 통일');
+    expect(prompt).toContain('금지 규칙은 메시지와 상관없이 그대로');
+    expect(buildTaskPrompt(base, 'task/t1')).not.toContain('담당자가 보낸 메시지');
+  });
+});

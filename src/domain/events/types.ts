@@ -45,6 +45,7 @@ export type EventType =
   | 'GITHUB_COLLABORATORS_INVITED'
   | 'TASK_DISPATCHED'
   | 'AGENT_RUN_STARTED'
+  | 'ROOM_MESSAGE_SENT'
   | 'AGENT_RUN_ENDED'
   | 'TASK_BLOCKED'
   | 'TASK_RESUMED'
@@ -417,6 +418,16 @@ export type TaskDispatchedPayload = {
 export type AgentRunStartedPayload = {
   taskId: string;
   attempt: number;
+  // 이 실행의 브리핑에 실린 사람 메시지(ROOM_MESSAGE_SENT 이벤트 id) — "어느 실행에 전달됐나". 없으면 생략.
+  deliveredMessageIds?: string[];
+};
+
+// 사람이 룸에서 그 역할 에이전트에게 보낸 메시지(지시). 실행 중인 모델에 끼워 넣지 않고 **다음 실행의 브리핑**으로 간다.
+// 이벤트에 본문이 남는다(지워지지 않는다) — 비밀값을 적지 말라고 화면이 안내한다. 발표의 "사람 개입 횟수" 지표다.
+export type RoomMessageSentPayload = {
+  role: string;
+  text: string;
+  userId: string;
 };
 
 // 에이전트가 제출 없이 멈췄다 → BLOCKED(AGENT_STOPPED). 재시도 횟수는 올리지 않는다 — 권한·환경 탓을 에이전트 실패로 세지 않는다.
@@ -647,6 +658,7 @@ export type EventPayloadMap = {
   GITHUB_COLLABORATORS_INVITED: GithubCollaboratorsInvitedPayload;
   TASK_DISPATCHED: TaskDispatchedPayload;
   AGENT_RUN_STARTED: AgentRunStartedPayload;
+  ROOM_MESSAGE_SENT: RoomMessageSentPayload;
   AGENT_RUN_ENDED: AgentRunEndedPayload;
   TASK_BLOCKED: TaskBlockedPayload;
   TASK_RESUMED: TaskResumedPayload;

@@ -509,23 +509,25 @@ components:
         reason: { type: string }
     RoomMessage:
       type: object
-      required: [id, ts, speaker, type, taskId, taskTitle, text, questionId, activity]
+      required: [id, ts, speaker, type, taskId, taskTitle, text, questionId, activity, userId]
       properties:
         id: { type: string, description: '피드 커서로도 쓴다(before)' }
         ts: { type: string, format: date-time }
         speaker:
           type: string
-          enum: [pm, nomos, agent]
+          enum: [pm, nomos, agent, human]
           description: |
             - pm: 서버가 지시·판정을 알림(실행해 주세요, 검증 결과, 승인)
             - nomos: Executor가 보고한 실행 상태(수령, 구현 시작, 제출, 실행 종료)
             - agent: 에이전트가 쓴 도구(읽기·수정·실행) · 인계 노트
+            - human: 사람(그 역할 담당·대표)이 룸에서 에이전트에게 보낸 메시지 — type `ROOM_MESSAGE_SENT`, 보낸 사람은 `userId`
         type:
           type: string
           description: '원본 이벤트 타입(TASK_DISPATCHED 등) 또는 ACTIVITY_READ·ACTIVITY_EDIT·ACTIVITY_WRITE·ACTIVITY_RUN·ACTIVITY_SEARCH·ACTIVITY_OTHER·ACTIVITY_SAY(에이전트의 말). 아이콘용'
         taskId: { type: string, format: uuid, nullable: true }
         taskTitle: { type: string, nullable: true }
-        text: { type: string, description: '화면에 그대로 보여 줄 문장(서버가 만든다)' }
+        userId: { type: string, format: uuid, nullable: true, description: 'speaker human이면 보낸 사람. 그 밖에는 null' }
+        text: { type: string, description: '화면에 그대로 보여 줄 문장(서버가 만든다). human이면 보낸 메시지 그대로' }
         questionId:
           type: string
           format: uuid
@@ -1051,7 +1053,7 @@ components:
         ownerRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true }
     TaskBriefing:
       type: object
-      required: [task, repo, spec, contract, notes, notesBlock, writablePaths, claudeSettings, specTests, policyHash, lastRejection, answeredQuestions, questionRelay]
+      required: [task, repo, spec, contract, notes, notesBlock, writablePaths, claudeSettings, specTests, policyHash, lastRejection, answeredQuestions, humanMessages, questionRelay]
       properties:
         task: { $ref: '#/components/schemas/Task' }
         repo:
@@ -1089,6 +1091,19 @@ components:
         specTests: { type: array, items: { $ref: '#/components/schemas/SpecTest' } }
         policyHash: { type: string }
         questionRelay: { type: boolean, description: '프로젝트의 질문 중계 스위치. 꺼져 있으면 Executor가 권한 도구(AskUserQuestion)를 붙이지 않는다' }
+        humanMessages:
+          type: array
+          description: '그 역할 담당·대표가 룸에서 보낸 메시지 중 아직 전달되지 않은 것(그 역할 태스크의 마지막 실행 시작 이후, 최근 20개, 오래된 것부터). 실행 중에는 끼워 넣지 않고 다음 실행에 여기로 온다'
+          items:
+            type: object
+            required: [id, ts, text, fromUserId, fromNickname, fromRepresentative]
+            properties:
+              id: { type: string, description: 'ROOM_MESSAGE_SENT 이벤트 id' }
+              ts: { type: string, format: date-time }
+              text: { type: string }
+              fromUserId: { type: string, format: uuid }
+              fromNickname: { type: string, nullable: true }
+              fromRepresentative: { type: boolean }
         answeredQuestions:
           type: array
           description: '이 태스크에서 물어 받은 답 — 질문 때문에 멈췄다 재개한 실행이 읽는다. source=agent는 상대 에이전트가 코드에서 찾은 답(사람 미확인)'
@@ -3420,6 +3435,37 @@ paths:
           content:
             application/json:
               schema: { type: object, required: [data], properties: { data: { type: object, required: [rooms], properties: { rooms: { type: array, items: { $ref: '#/components/schemas/RoomSummary' } } } } } }
+
+  /projects/{projectId}/rooms/{role}/messages:
+    post:
+      tags: [룸]
+      summary: 사람 → 그 역할 에이전트 메시지 (그 역할 담당·대표)
+      description: |
+        룸 대화창에서 그 역할의 에이전트에게 말을 걸거나 지시한다. 보낼 수 있는 사람은 그 룸을 볼 수 있는 사람 — 그 역할 담당과 대표(아니면 403 `ROOM_NOT_VISIBLE`).
+        **실행 중인 에이전트에게 바로 끼워 넣지 않는다.** 다음 실행의 브리핑(`humanMessages`, 프롬프트 "담당자가 보낸 메시지")으로 전달된다 —
+        지금 실행에 바로 반영하려면 그 태스크를 멈추고 재개한다. 에이전트가 꺼져 있거나 태스크가 없어도 받아 두었다가 다음 실행에 전달한다(409 없음).
+        메시지로 권한이 넓어지지 않는다 — 경로 금지·제출 시 판정·V3가 그대로 막는다. 이벤트 `ROOM_MESSAGE_SENT`(보낸 사람 명의, 본문 포함 — 비밀값을 적지 말 것).
+        끝난 프로젝트면 409 `PROJECT_NOT_OPEN`. 길이는 1~1000자(넘으면 400 `VALIDATION_ERROR`).
+      security: [{ userToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - { name: role, in: path, required: true, schema: { type: string, enum: [FRONTEND, BACKEND] } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string, maxLength: 1000 }
+            example: { text: '목록 화면은 페이지네이션 없이 전부 보여 주세요' }
+      responses:
+        '201':
+          description: 남김 — 피드에 나올 줄(speaker human)
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/RoomMessage' } } }
 
   /projects/{projectId}/rooms/{role}/feed:
     get:

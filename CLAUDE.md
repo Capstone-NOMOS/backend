@@ -289,6 +289,9 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
   서버가 준 주소라도 노트북에서 한 번 더 거른다(https·로컬 경로만, `-` 시작·`::`·자격 증명 거부, `git clone --`). git 비밀값은 서버가 주지 않는다 — 사용자의 git 자격 증명을 쓴다.
 - **npm 배포는 `cli-v*` 태그 → Trusted Publishing(OIDC)이다**(`publish-cli.yml`). `NPM_TOKEN`을 Secrets에 두지 말 것. 태그와 `packages/cli/package.json` 버전이 다르면 멈춘다.
 
+- **백그라운드 실행**(`executor/background.ts`, FE 요청): `connect --background`는 같은 인자로 connect를 분리된 자식으로 띄우고 바로 끝난다(출력은 `~/.nomos/logs/connect.log`,
+  pid는 `~/.nomos/daemon.json`). `status`·`stop`. 브라우저 승인은 화면이 필요해서 이 서버의 자격 증명이 없으면 `--code`와 함께만 받는다. 로그인 시 자동 시작은 아직 없다(OS마다 다름).
+  진행 상황은 터미널이 아니라 웹의 룸(도구 사용·에이전트의 말)에서 본다 — 명령 출력·파일 내용은 서버로 보내지 않는다.
 - **자격 증명의 정본은 `~/.nomos/credentials`(0600)다.** MCP 설정 파일에 토큰을 넣지 말 것 —
   그 파일은 Claude Code에 넘기는 설정이고, 재발급 결과를 되돌려 쓸 곳이 없어 매 실행이 401로 시작했다.
   `onTokensChanged`로 갱신된 토큰을 파일에 쓴다.
@@ -577,7 +580,10 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
 - **질문 중계(018, 실험 브랜치)와의 관계**: 답을 기다리느라 태스크를 내려놓은 실행(BLOCKED·`QUESTION`)의 종료는 멈춤(`AGENT_STOPPED`)이 아니다(`waitingQuestion`).
   답이 와서 READY가 되면 "다시 실행해 주세요 (재개)"가 나가도록 `task_dispatches.resumes`에 `TASK_BLOCKED_ON_QUESTION`도 센다.
   질문 줄(`QUESTION_*`)은 묻는 쪽 태스크의 룸과 **답할 역할(`targetRole`)의 룸** 둘 다에 나온다.
-- 사람 메시지(룸 채팅)는 아직 없다. 넣을 때도 **실행 중인 모델에 끼워 넣지 않는다**(인계 노트와 같은 이유 — 리플레이가 깨지고 노트가 채널이 된다).
+- **사람 → 에이전트 메시지**(`POST /projects/:id/rooms/:role/messages`, 그 역할 담당·대표, FE 요청): 이벤트 `ROOM_MESSAGE_SENT`(본문 포함)로 남고 피드에 `speaker: human`으로 나온다.
+  **실행 중인 모델에 끼워 넣지 않는다**(인계 노트와 같은 이유 — 리플레이가 깨지고 노트가 채널이 된다). 그 역할 태스크의 마지막 실행 시작 이후에 온 메시지가
+  다음 실행의 브리핑 `humanMessages`(프롬프트 "담당자가 보낸 메시지")로 가고, 그 실행의 `AGENT_RUN_STARTED.payload.deliveredMessageIds`에 전달이 남는다.
+  메시지로 권한이 넓어지지 않는다(경로 금지·제출 판정·V3 그대로). "사람 개입 횟수" 지표는 이 이벤트 수다.
 
 ### 프로젝트와 멤버
 

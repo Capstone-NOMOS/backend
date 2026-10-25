@@ -39,6 +39,7 @@ export const TOPICS_BY_EVENT: Record<EventType, Mapping> = {
   PROJECT_STARTED: { project: ['project', 'tasks', 'specs', 'plans', 'room'], org: ['projects'] },
   MEMBER_ASSIGNED: { project: ['members'], org: ['agents'] },
   MEMBER_UNASSIGNED: { project: ['members'], org: ['agents'] },
+  ROOM_MESSAGE_SENT: { project: ['room'] },
   MEMBER_AGENT_DETACHED: { project: ['members', 'room'], org: ['agents'] },
   MEMBER_AGENT_ATTACHED: { project: ['members', 'room'], org: ['agents'] },
   AGENT_DISCONNECTED: { org: ['agents'] },
