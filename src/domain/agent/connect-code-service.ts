@@ -6,7 +6,7 @@ import { appendEvent } from '../events/append.js';
 import { findOrganizationById, findUserById } from '../org/repository.js';
 import { insertConnectCode, lockUsableConnectCode, markConnectCodeUsed } from './connect-code-repository.js';
 import { displayUserCode, newUserCode, normalizeUserCode } from './device-service.js';
-import { issueAgentCredentials, type AgentSpec, type ConnectAgentResult } from './service.js';
+import { flushReattached, issueAgentCredentials, type AgentSpec, type ConnectAgentResult } from './service.js';
 
 // 1회용 연결 코드(024) — 웹에서 받은 연결 명령(`connect --code`)이 "이 계정으로" 연결되게 한다.
 //
@@ -48,7 +48,7 @@ export type ConnectByCodeResult = ConnectAgentResult & {
 export async function connectByCode(rawCode: string, spec: AgentSpec): Promise<ConnectByCodeResult> {
   const code = normalizeUserCode(rawCode);
   if (!code) throw new AppError('INVALID_CONNECT_REQUEST', 'invalid connect request');
-  return withTransaction(async (tx) => {
+  const result = await withTransaction(async (tx) => {
     const row = await lockUsableConnectCode(tx, hashSecret(code));
     if (!row) throw new AppError('INVALID_CONNECT_REQUEST', 'invalid connect request');
     const user = await findUserById(tx, row.userId);
@@ -58,4 +58,6 @@ export async function connectByCode(rawCode: string, spec: AgentSpec): Promise<C
     const org = user.orgId ? await findOrganizationById(tx, user.orgId) : null;
     return { ...credentials, account: { loginId: user.loginId, nickname: user.nickname, orgName: org?.name ?? null } };
   });
+  flushReattached();
+  return result;
 }

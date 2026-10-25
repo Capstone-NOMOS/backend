@@ -154,6 +154,56 @@ export type FeedRow = {
   changedPathCount: number | null;
 };
 
+// 아직 그 역할의 에이전트에게 전달되지 않은 사람 메시지 — 그 역할 태스크의 마지막 실행 시작 이후에 온 것(그 실행 동안 온 것 포함).
+// 실행 중인 모델에 끼워 넣지 않으므로 다음 실행의 브리핑으로 간다. 오래된 것부터, 최근 20개까지.
+export type PendingRoomMessage = { id: string; ts: string; text: string; fromUserId: string; fromNickname: string | null; fromRepresentative: boolean };
+
+export async function listPendingRoomMessages(db: Queryable, projectId: string, role: TeamRole): Promise<PendingRoomMessage[]> {
+  const { rows } = await db.query(
+    `SELECT * FROM (
+       SELECT e.id::text AS id, e.ts, e.payload->>'text' AS text, u.id AS user_id, u.nickname, u.org_role
+         FROM events e
+         JOIN users u ON u.id = (e.payload->>'userId')::uuid
+        WHERE e.project_id = $1 AND e.type = 'ROOM_MESSAGE_SENT' AND e.payload->>'role' = $2
+          AND e.ts > coalesce((
+                SELECT max(r.ts) FROM events r JOIN tasks t ON t.id = (r.payload->>'taskId')::uuid
+                 WHERE r.project_id = $1 AND r.type = 'AGENT_RUN_STARTED' AND t.team_role = $2), '-infinity'::timestamptz)
+        ORDER BY e.ts DESC, e.id DESC
+        LIMIT 20) recent
+     ORDER BY ts, id::bigint`,
+    [projectId, role],
+  );
+  return rows.map((r) => ({
+    id: r.id as string,
+    ts: (r.ts as Date).toISOString(),
+    text: r.text as string,
+    fromUserId: r.user_id as string,
+    fromNickname: (r.nickname as string | null) ?? null,
+    fromRepresentative: r.org_role === 'REPRESENTATIVE',
+  }));
+}
+
+// 방금 남긴 메시지 이벤트를 피드 줄로 읽는다(응답용).
+export async function findRoomMessageRow(db: Queryable, projectId: string, eventId: string): Promise<FeedRow | null> {
+  const { rows } = await db.query(
+    `SELECT e.id::text AS id, (extract(epoch FROM e.ts) * 1000000)::bigint AS ts_us, e.ts, e.type, e.payload
+       FROM events e WHERE e.project_id = $1 AND e.id = $2::bigint AND e.type = 'ROOM_MESSAGE_SENT'`,
+    [projectId, eventId],
+  );
+  const r = rows[0];
+  return r
+    ? { source: 'e', id: r.id as string, tsMicros: String(r.ts_us), ts: (r.ts as Date).toISOString(), type: r.type as string, payload: r.payload, taskId: null, taskTitle: null, changedPathCount: null }
+    : null;
+}
+
+export async function latestRoomMessageId(db: Queryable, projectId: string, userId: string): Promise<string | null> {
+  const { rows } = await db.query(
+    `SELECT id::text AS id FROM events WHERE project_id = $1 AND type = 'ROOM_MESSAGE_SENT' AND payload->>'userId' = $2 ORDER BY id DESC LIMIT 1`,
+    [projectId, userId],
+  );
+  return (rows[0]?.id as string | undefined) ?? null;
+}
+
 // 이벤트와 활동을 시각순으로 섞어 최신부터 읽는다. 커서는 (시각 마이크로초, 출처, id) — 시각만으로는 같은 트랜잭션·같은 묶음에서 겹친다.
 // 시각을 JS Date로 옮기면 마이크로초가 잘려 커서 경계에서 행이 빠지므로 정수로 비교한다.
 export async function listRoomFeed(
@@ -176,6 +226,7 @@ export async function listRoomFeed(
             (e.type = ANY($3::text[]) AND t.id IS NOT NULL
               AND (t.team_role IS NULL OR t.team_role = $2 OR (e.type LIKE 'QUESTION\_%' AND e.payload->>'targetRole' = $2)))
             OR e.type = ANY($4::text[])
+            OR (e.type = 'ROOM_MESSAGE_SENT' AND e.payload->>'role' = $2)
           )
        UNION ALL
        SELECT 'a'::text, a.id::text, (extract(epoch FROM a.ts) * 1000000)::bigint, a.ts,

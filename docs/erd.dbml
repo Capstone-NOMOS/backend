@@ -219,13 +219,20 @@ Table project_repos {
 
 Table project_members {
   project_id uuid [not null]
-  agent_id   uuid [not null]
+  user_id    uuid [not null, note: '★ 028 역할 담당(사람). 가시성·답할 자격·계약 확정은 이 칸으로']
+  agent_id   uuid [note: '★ 028 NULL 허용 — 에이전트 연결 해제면 NULL("에이전트 연결 필요"), 같은 사람이 다시 연결하면 다시 붙는다']
   team_role  text [not null, note: 'FRONTEND | BACKEND. QA 삭제']
 
   indexes {
-    (project_id, agent_id) [pk]
-    (project_id, team_role) [unique, note: '역할당 1개 — 실험 통제']
+    (project_id, team_role) [unique, name: 'uq_project_members_role', note: '역할당 담당 1명 — 실험 통제']
+    (project_id, agent_id) [unique, name: 'uq_project_members_agent', note: 'WHERE agent_id IS NOT NULL']
+    user_id [name: 'idx_project_members_user']
   }
+
+  Note: '''
+  ★ 028 FK project_members_agent_owner_fk (agent_id, user_id) → agents(id, user_id) — 에이전트의 주인은 그 역할 담당이다.
+  트리거 project_members_fill_user — agent_id만 주고 넣으면 user_id를 에이전트 주인으로 채운다.
+  '''
 }
 
 // ═══════════ 정책 사다리 ═══════════

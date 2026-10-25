@@ -2,7 +2,7 @@ import { cancelTask, completeTaskManually } from '../domain/task/human-control.j
 import { Router, type Request } from 'express';
 import { z } from 'zod';
 import { ACTIVITY_KINDS, ACTIVITY_TARGET_MAX, type ActivityInput } from '../domain/room/repository.js';
-import { endRun, getRoomFeed, listRooms, recordActivity, startRun } from '../domain/room/service.js';
+import { endRun, getRoomFeed, listRooms, recordActivity, ROOM_MESSAGE_MAX, sendRoomMessage, startRun } from '../domain/room/service.js';
 import { resumeTask } from '../domain/task/stall.js';
 import { TEAM_ROLES } from '../domain/roles.js';
 import type { UserContext } from '../domain/project/visibility.js';
@@ -145,6 +145,19 @@ const feedQuerySchema = z.object({
   before: z.string().max(80).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
 });
+
+// POST /api/projects/:projectId/rooms/:role/messages — 사람이 그 역할 에이전트에게 메시지(지시). 다음 실행의 브리핑으로 간다.
+const messageBodySchema = z.object({ text: z.string().trim().min(1).max(ROOM_MESSAGE_MAX) }).strict();
+roomsRouter.post(
+  '/projects/:projectId/rooms/:role/messages',
+  validate({ params: feedParamsSchema, body: messageBodySchema }),
+  authenticate,
+  async (req, res) => {
+    const { projectId, role } = req.params as z.infer<typeof feedParamsSchema>;
+    const { text } = req.body as z.infer<typeof messageBodySchema>;
+    res.status(201).json({ data: await sendRoomMessage(userOf(req), projectId, role, text) });
+  },
+);
 
 // GET /api/projects/:projectId/rooms/:role/feed — 룸 피드(최신부터). nextBefore로 더 오래된 것을 읽는다.
 roomsRouter.get(

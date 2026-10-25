@@ -129,7 +129,7 @@ describe('프로젝트 시작(G1)', () => {
     expect(events.rows).toHaveLength(1);
     expect(events.rows[0]!.on_behalf_of).toBe(w.rep.userId);
     expect(events.rows[0]!.payload).toEqual({
-      members: [{ agentId: agent.agentId, teamRole: 'BACKEND' }],
+      members: [{ agentId: agent.agentId, teamRole: 'BACKEND', userId: expect.any(String) }],
       taskCount: 1,
       approvedSpecCount: 1,
       approvedPlanIds: [],

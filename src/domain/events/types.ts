@@ -40,9 +40,12 @@ export type EventType =
   | 'QUESTION_DRAFTED'
   | 'TASK_BLOCKED_ON_QUESTION'
   | 'MEMBER_UNASSIGNED'
+  | 'MEMBER_AGENT_DETACHED'
+  | 'MEMBER_AGENT_ATTACHED'
   | 'GITHUB_COLLABORATORS_INVITED'
   | 'TASK_DISPATCHED'
   | 'AGENT_RUN_STARTED'
+  | 'ROOM_MESSAGE_SENT'
   | 'AGENT_RUN_ENDED'
   | 'TASK_BLOCKED'
   | 'TASK_RESUMED'
@@ -333,7 +336,8 @@ export type ProjectSettingsUpdatedPayload = {
 
 // G1 — 이 시점의 멤버·태스크 수·승인한 계획을 남긴다. 이후 지표("이 구성으로 시작해서 어땠나")의 기준점이다.
 export type ProjectStartedPayload = {
-  members: { agentId: string; teamRole: string }[];
+  // 시작 시점의 역할 담당(028부터 사람 — 에이전트가 없으면 agentId null).
+  members: { agentId: string | null; teamRole: string; userId?: string }[];
   taskCount: number;
   approvedSpecCount: number;
   approvedPlanIds: string[];
@@ -345,11 +349,17 @@ export type MemberAssignedPayload = {
 };
 
 export type MemberUnassignedPayload = {
-  agentId: string;
+  // 에이전트 없이 담당만 있던 줄을 뺐으면 null(028).
+  agentId: string | null;
   teamRole: string;
+  userId?: string;
   // 무엇 때문에 빠졌나(021) — 없으면 대표의 직접 해제.
   cause?: 'agent_disconnected' | 'org_member_removed';
 };
+
+// 028 — 역할 담당(사람)은 남고 에이전트만 떨어지거나 붙었다. 사람의 접근은 그대로다(MEMBER_UNASSIGNED와 다르다).
+export type MemberAgentDetachedPayload = { agentId: string; teamRole: string; userId: string; cause: 'agent_disconnected' };
+export type MemberAgentAttachedPayload = { agentId: string; teamRole: string; userId: string; cause: 'reconnected' | 'assigned' };
 
 // 021 해제·삭제. 행은 지우지 않고 표시만 한다(되살릴 수 있고, 기록이 가리킨다).
 export type AgentDisconnectedPayload = { agentId: string; userId: string; name: string; byOwner: boolean; unassignedFrom: string | null };
@@ -408,6 +418,16 @@ export type TaskDispatchedPayload = {
 export type AgentRunStartedPayload = {
   taskId: string;
   attempt: number;
+  // 이 실행의 브리핑에 실린 사람 메시지(ROOM_MESSAGE_SENT 이벤트 id) — "어느 실행에 전달됐나". 없으면 생략.
+  deliveredMessageIds?: string[];
+};
+
+// 사람이 룸에서 그 역할 에이전트에게 보낸 메시지(지시). 실행 중인 모델에 끼워 넣지 않고 **다음 실행의 브리핑**으로 간다.
+// 이벤트에 본문이 남는다(지워지지 않는다) — 비밀값을 적지 말라고 화면이 안내한다. 발표의 "사람 개입 횟수" 지표다.
+export type RoomMessageSentPayload = {
+  role: string;
+  text: string;
+  userId: string;
 };
 
 // 에이전트가 제출 없이 멈췄다 → BLOCKED(AGENT_STOPPED). 재시도 횟수는 올리지 않는다 — 권한·환경 탓을 에이전트 실패로 세지 않는다.
@@ -611,6 +631,8 @@ export type EventPayloadMap = {
   NOTE_PUBLISHED: NotePublishedPayload;
   PROJECT_CREATED: ProjectCreatedPayload;
   MEMBER_ASSIGNED: MemberAssignedPayload;
+  MEMBER_AGENT_DETACHED: MemberAgentDetachedPayload;
+  MEMBER_AGENT_ATTACHED: MemberAgentAttachedPayload;
   PROJECT_STARTED: ProjectStartedPayload;
   NOTES_ACK_REQUIRED: NotesAckRequiredPayload;
   APPROVAL_REQUESTED: ApprovalRequestedPayload;
@@ -636,6 +658,7 @@ export type EventPayloadMap = {
   GITHUB_COLLABORATORS_INVITED: GithubCollaboratorsInvitedPayload;
   TASK_DISPATCHED: TaskDispatchedPayload;
   AGENT_RUN_STARTED: AgentRunStartedPayload;
+  ROOM_MESSAGE_SENT: RoomMessageSentPayload;
   AGENT_RUN_ENDED: AgentRunEndedPayload;
   TASK_BLOCKED: TaskBlockedPayload;
   TASK_RESUMED: TaskResumedPayload;

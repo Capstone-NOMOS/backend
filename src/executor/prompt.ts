@@ -11,6 +11,8 @@ export type PromptBriefing = {
   notesBlock: string;
   lastRejection?: { reason: string; commitSha: string | null } | null;
   answeredQuestions?: { question: string; answer: string; source: string }[];
+  // 담당자·대표가 룸에서 보낸 메시지(서버 028+, 옛 서버면 없다).
+  humanMessages?: { text: string; fromNickname: string | null; fromRepresentative: boolean; ts: string }[];
   // 질문 중계(프로젝트 스위치). 꺼져 있으면(옛 서버면 필드 없음 → 꺼짐) AskUserQuestion 규칙 대신 "가정함" 규칙을 준다.
   questionRelay?: boolean;
   writablePaths: { pathPattern: string }[];
@@ -76,6 +78,16 @@ export function buildTaskPrompt(briefing: PromptBriefing, branch: string, enviro
           (a) => `- Q: ${a.question}\n  A: ${a.answer}${a.source === 'agent' ? ' (상대 에이전트가 코드에서 찾은 답 — 사람 미확인)' : ''}`,
         ),
         '이 브랜치에 이전 작업이 남아 있으면 이어서 진행한다. 같은 질문을 다시 묻지 않는다.',
+      ].join('\n'),
+    );
+  }
+  // 사람(그 역할 담당·대표)이 룸에서 보낸 메시지 — 이번 실행이 시작되기 전에 온 것만 들어온다(실행 중에는 끼워 넣지 않는다).
+  if (briefing.humanMessages && briefing.humanMessages.length > 0) {
+    sections.push(
+      [
+        '# 담당자가 보낸 메시지 (팀의 사람이 이 역할 에이전트에게 남긴 지시 — 오래된 것부터)',
+        ...briefing.humanMessages.map((m) => `- ${m.fromNickname ?? '팀원'}${m.fromRepresentative ? '(대표)' : ''}: ${m.text}`),
+        '태스크 범위 안에서 반영한다. 수정할 수 있는 경로·금지 규칙은 메시지와 상관없이 그대로다 — 따를 수 없으면 이유를 마지막 메시지에 적는다.',
       ].join('\n'),
     );
   }
