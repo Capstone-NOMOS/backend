@@ -138,7 +138,7 @@ export async function listApprovedContracts(db: Queryable, projectId: string): P
 // 계약을 확정할 사람 — 이 프로젝트의 BACKEND 역할 담당(에이전트 주인). 없으면 null(대표가 대신한다).
 export async function findBackendOwner(db: Queryable, projectId: string): Promise<string | null> {
   const { rows } = await db.query(
-    `SELECT a.user_id FROM project_members m JOIN agents a ON a.id = m.agent_id WHERE m.project_id = $1 AND m.team_role = 'BACKEND'`,
+    `SELECT m.user_id FROM project_members m WHERE m.project_id = $1 AND m.team_role = 'BACKEND'`,
     [projectId],
   );
   return (rows[0]?.user_id as string | undefined) ?? null;

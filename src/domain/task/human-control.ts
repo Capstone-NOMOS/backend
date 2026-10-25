@@ -16,6 +16,7 @@ import { closeTaskByHuman, findTaskById, insertArtifact, listOpenDependents, typ
 //              안 그러면 그 태스크 하나 때문에 프로젝트가 영원히 끝나지 않는다. 대신할 일은 새 태스크로 만든다.
 //   직접 완료(그 역할 담당 또는 대표): 에이전트가 끝내 못 한 일을 개발자가 태스크 브랜치에 직접 커밋하고 넘긴다.
 //              에이전트 제출과 **같은 V3**(실제 diff·신고 대조·경로 소유권)를 통과해야 DONE이다. 실패면 아무것도 바뀌지 않는다(422).
+//              서버가 커밋을 못 읽으면(SKIPPED) 받지 않는다(409 MANUAL_COMPLETION_UNVERIFIABLE) — 확인 안 된 sha로 DONE이 되지 않게.
 //
 // 둘 다 사람이 붙잡지 않은 상태(READY·BLOCKED·ESCALATED)에서만 — 에이전트가 작업 중인 태스크를 밑에서 닫지 않는다(409 TASK_IN_PROGRESS).
 // 재시도 횟수는 건드리지 않는다. 이벤트(TASK_CANCELLED·TASK_COMPLETED_MANUALLY)로 지표에서 따로 센다.
@@ -82,6 +83,14 @@ export async function completeTaskManually(
   const v3 = await inspectManualCommit({ task, projectId: task.projectId, policyHash, commitSha: input.commitSha, changedPaths: input.changedPaths });
   if (v3.result === 'FAIL') {
     throw new AppError('MANUAL_COMPLETION_INVALID', `the commit did not pass the path check: ${String(v3.detail.reason ?? '')}`, v3.detail);
+  }
+  // 사람이 넘기는 결과는 **확인된 커밋만** 받는다. 에이전트 제출의 SKIPPED(서버 사정으로 못 읽음)는 에이전트 잘못이 아니라 허용하지만,
+  // 직접 완료에서 허용하면 없는 sha로도 DONE이 된다(FE 보고 — clone_url이 없는 로컬 프로젝트).
+  if (v3.result !== 'PASS') {
+    throw new AppError(
+      'MANUAL_COMPLETION_UNVERIFIABLE',
+      `the server could not read the commit, so it cannot be accepted: ${String(v3.detail.reason ?? '')} — check the repository's clone_url or GitHub connection`,
+    );
   }
 
   const closed = await withTransaction(async (tx) => {

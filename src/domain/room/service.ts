@@ -12,7 +12,19 @@ import { tasksChanged } from '../dispatch/tasks-changed.js';
 import { blockStoppedTaskInTx } from '../task/stall.js';
 import { activityRecorded } from './activity-hub.js';
 import { parseCursor, renderFeedRow, type RoomMessage } from './render.js';
-import { findOpenRun, findRunOutcome, insertActivity, listActiveRoleTasks, listRoomFeed, type ActivityInput, type RoomTask } from './repository.js';
+import {
+  findOpenRun,
+  findRoomMessageRow,
+  findRunOutcome,
+  insertActivity,
+  latestRoomMessageId,
+  listActiveRoleTasks,
+  listPendingRoomMessages,
+  listRoomFeed,
+  type ActivityInput,
+  type RoomTask,
+} from './repository.js';
+import { findProjectById } from '../project/repository.js';
 
 // 룸 = 프로젝트 × 역할. 그 역할의 에이전트가 무엇을 하는지(활동), 서버(PM)가 무엇을 지시·판정했는지를 한 줄씩 보여 준다.
 // 팀원은 자기 역할 룸만, 대표는 전부 본다. PM(서버)의 프로젝트 단위 알림은 모든 룸에 나온다.
@@ -43,6 +55,8 @@ export async function startRun(ctx: AgentContext, taskId: string): Promise<{ tas
     if (!held && !claimable) {
       throw new AppError('RUN_NOT_ALLOWED', `task ${taskId} is neither held nor claimable by this agent (state ${task.state})`);
     }
+    // 이 실행의 브리핑에 실린 사람 메시지 — 브리핑과 같은 선택이다(마지막 실행 시작 이후). 이 이벤트가 남으면 다음 실행부터는 빠진다.
+    const delivered = task.teamRole ? await listPendingRoomMessages(tx, ctx.projectId, task.teamRole) : [];
     await appendEvent(tx, {
       orgId: ctx.orgId,
       projectId: ctx.projectId,
@@ -50,7 +64,7 @@ export async function startRun(ctx: AgentContext, taskId: string): Promise<{ tas
       actorAgentId: ctx.agentId,
       onBehalfOf: ctx.onBehalfOf,
       policyHash: ctx.policyHash,
-      payload: { taskId, attempt: task.retryCount },
+      payload: { taskId, attempt: task.retryCount, ...(delivered.length > 0 ? { deliveredMessageIds: delivered.map((m) => m.id) } : {}) },
     });
     return { taskId, attempt: task.retryCount };
   });
@@ -154,11 +168,40 @@ export async function listRooms(actor: UserContext, projectId: string): Promise<
     const member = members.find((m) => m.teamRole === role);
     rooms.push({
       role,
-      agent: member ? { agentId: member.agentId, agentName: member.agentName, ...presenceOf(member.agentId) } : null,
+      // 담당은 있는데 에이전트를 떼었으면(028) null — 화면이 "에이전트 연결 필요"로 그린다.
+      agent: member?.agentId ? { agentId: member.agentId, agentName: member.agentName ?? '', ...presenceOf(member.agentId) } : null,
       activeTasks: await listActiveRoleTasks(pool, projectId, role),
     });
   }
   return rooms;
+}
+
+// 사람 → 그 역할 에이전트 메시지(FE 요청 2026-10-25). 그 룸을 볼 수 있는 사람(그 역할 담당·대표)이 보낸다.
+// **실행 중인 모델에 끼워 넣지 않는다** — 도착 시각에 따라 모델이 본 것이 달라져 리플레이가 깨지고, 노트가 채널이 된다(인계 노트와 같은 이유).
+// 다음 실행의 브리핑("담당자가 보낸 메시지")으로 간다. 지금 실행에 바로 반영하려면 그 태스크를 멈추고 재개한다.
+// 지시로 권한이 넓어지지 않는다 — 경로 금지·제출 시 판정·V3가 그대로 막는다.
+export const ROOM_MESSAGE_MAX = 1000;
+
+export async function sendRoomMessage(actor: UserContext, projectId: string, role: TeamRole, text: string): Promise<RoomMessage> {
+  const roles = await visibleRoles(actor, projectId);
+  if (!roles.includes(role)) throw new AppError('ROOM_NOT_VISIBLE', `you cannot post to the ${role} room of this project`);
+  const project = await findProjectById(pool, projectId);
+  if (!project || project.status === 'completed' || project.status === 'aborted') {
+    throw new AppError('PROJECT_NOT_OPEN', `project is ${project?.status ?? 'gone'}`);
+  }
+  const eventId = await withTransaction(async (tx) => {
+    await appendEvent(tx, {
+      orgId: actor.orgId,
+      projectId,
+      type: 'ROOM_MESSAGE_SENT',
+      onBehalfOf: actor.userId,
+      policyHash: project.policyHash,
+      payload: { role, text, userId: actor.userId },
+    });
+    return latestRoomMessageId(tx, projectId, actor.userId);
+  });
+  const row = eventId ? await findRoomMessageRow(pool, projectId, eventId) : null;
+  return renderFeedRow(row!)!;
 }
 
 // 최신부터. nextBefore를 다음 요청의 before로 넘기면 더 오래된 것을 읽는다.

@@ -315,7 +315,7 @@ describe('멤버 배정', () => {
 
     expect(await unassignMember(ctx.actor, project.id, be.agentId)).toEqual([]);
     const { rows } = await pool.query(`SELECT payload FROM events WHERE type = 'MEMBER_UNASSIGNED'`);
-    expect(rows[0]!.payload).toEqual({ agentId: be.agentId, teamRole: 'BACKEND' });
+    expect(rows[0]!.payload).toEqual({ agentId: be.agentId, teamRole: 'BACKEND', userId: expect.any(String) });
 
     // 같은 에이전트를 다른 역할로 다시 배정할 수 있다.
     const after = await assignMember(ctx.actor, project.id, be.agentId, 'FRONTEND');

@@ -219,8 +219,8 @@ export async function listQuestionsForAnswerer(
       WHERE p.org_id = $1
         AND ($2 = 'all' OR q.status = $2)
         AND ($3 OR EXISTS (
-              SELECT 1 FROM project_members m JOIN agents a ON a.id = m.agent_id
-               WHERE m.project_id = q.project_id AND m.team_role = q.target_role AND a.user_id = $4))
+              SELECT 1 FROM project_members m
+               WHERE m.project_id = q.project_id AND m.team_role = q.target_role AND m.user_id = $4))
       ORDER BY q.created_at DESC, q.id
       LIMIT $5`,
     [input.orgId, input.status, input.isRepresentative, input.userId, input.limit],

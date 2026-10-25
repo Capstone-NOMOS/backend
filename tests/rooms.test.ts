@@ -414,3 +414,39 @@ describe('질문 중계와 룸', () => {
     expect((await testPool.query(`SELECT state FROM tasks WHERE id = $1`, [w.feTaskId])).rows[0]).toEqual({ state: 'CLAIMED' });
   });
 });
+
+// 사람 → 그 역할 에이전트 메시지(FE 요청 2026-10-25). 실행 중에는 끼워 넣지 않고 다음 실행의 브리핑으로 전달한다.
+describe('룸 메시지 (사람 → 에이전트)', () => {
+  it('그 역할 담당·대표만 보낸다 — 피드에 human 줄로 나오고, 다음 실행의 브리핑에 실려 전달되면 그다음 실행에는 빠진다', async () => {
+    const w = await world();
+    // FE 담당은 BE 룸에 보낼 수 없다.
+    expect((await http('POST', `/projects/${w.projectId}/rooms/BACKEND/messages`, w.fe.token, { text: 'x' })).error?.code).toBe('ROOM_NOT_VISIBLE');
+    const sent = await http('POST', `/projects/${w.projectId}/rooms/BACKEND/messages`, w.be.token, { text: '목록은 페이지네이션 없이' });
+    expect(sent).toMatchObject({ status: 201, data: { speaker: 'human', type: 'ROOM_MESSAGE_SENT', text: '목록은 페이지네이션 없이', userId: w.be.userId } });
+    await http('POST', `/projects/${w.projectId}/rooms/BACKEND/messages`, w.rep.token, { text: '오류 형식은 { code, message }' });
+
+    const feed = (await http('GET', `/projects/${w.projectId}/rooms/BACKEND/feed`, w.be.token)).data.messages as { speaker: string; text: string }[];
+    expect(feed.filter((m) => m.speaker === 'human').map((m) => m.text)).toEqual(['오류 형식은 { code, message }', '목록은 페이지네이션 없이']);
+    // FE 룸에는 나오지 않는다.
+    const feFeed = (await http('GET', `/projects/${w.projectId}/rooms/FRONTEND/feed`, w.rep.token)).data.messages as { speaker: string }[];
+    expect(feFeed.some((m) => m.speaker === 'human')).toBe(false);
+
+    // 다음 실행의 브리핑에 오래된 것부터 실린다(보낸 사람·대표 표시).
+    const briefing = (await http('GET', `/tasks/${w.beTaskId}/briefing`, w.beAgentToken)).data as { humanMessages: { text: string; fromRepresentative: boolean }[] };
+    expect(briefing.humanMessages.map((m) => [m.text, m.fromRepresentative])).toEqual([
+      ['목록은 페이지네이션 없이', false],
+      ['오류 형식은 { code, message }', true],
+    ]);
+    // 실행이 시작되면 전달된 것으로 남고, 그다음 브리핑에는 없다.
+    expect((await http('POST', `/tasks/${w.beTaskId}/runs/start`, w.beAgentToken)).status).toBe(201);
+    const started = await testPool.query(`SELECT payload FROM events WHERE type = 'AGENT_RUN_STARTED' ORDER BY id DESC LIMIT 1`);
+    expect(started.rows[0].payload.deliveredMessageIds).toHaveLength(2);
+    const after = (await http('GET', `/tasks/${w.beTaskId}/briefing`, w.beAgentToken)).data as { humanMessages: unknown[] };
+    expect(after.humanMessages).toEqual([]);
+  });
+
+  it('길이가 1000자를 넘으면 400', async () => {
+    const w = await world();
+    expect((await http('POST', `/projects/${w.projectId}/rooms/BACKEND/messages`, w.be.token, { text: 'x'.repeat(1001) })).status).toBe(400);
+  });
+});

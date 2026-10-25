@@ -105,16 +105,56 @@ describe('에이전트 연결 해제 (DELETE /agents/:agentId)', () => {
     expect(rows).toEqual([{ on_behalf_of: w.fe.userId, payload: expect.objectContaining({ agentId: w.feAgent.agentId, byOwner: true }) }]);
   });
 
-  it('대표는 멤버의 에이전트를 끊을 수 있다 — 시작한 프로젝트 배정도 함께 풀린다. 다른 멤버는 403', async () => {
+  it('대표는 멤버의 에이전트를 끊을 수 있다 — 에이전트만 떨어지고 사람은 그 역할 담당으로 남는다(028). 다른 멤버는 403', async () => {
     const w = await world({ started: true });
     expect((await http('DELETE', `/agents/${w.beAgent.agentId}`, w.fe.token))).toMatchObject({ status: 403, error: { code: 'NOT_AGENT_OWNER' } });
 
     const res = await http('DELETE', `/agents/${w.beAgent.agentId}`, w.rep.token);
-    expect(res).toMatchObject({ status: 200, data: { unassignedFrom: w.projectId } });
+    expect(res).toMatchObject({ status: 200, data: { unassignedFrom: w.projectId, githubRevocations: [] } });
     const members = (await http('GET', `/projects/${w.projectId}`, w.rep.token)).data.members as unknown[];
+    expect(members).toEqual([expect.objectContaining({ agentId: null, agentName: null, teamRole: 'BACKEND', userId: w.be.userId })]);
+    const { rows } = await testPool.query(`SELECT payload FROM events WHERE type = 'MEMBER_AGENT_DETACHED'`);
+    expect(rows[0]!.payload).toMatchObject({ agentId: w.beAgent.agentId, userId: w.be.userId, cause: 'agent_disconnected' });
+    expect((await testPool.query(`SELECT count(*)::int AS n FROM events WHERE type = 'MEMBER_UNASSIGNED'`)).rows[0].n).toBe(0);
+  });
+
+  // FE 요청(2026-10-25): 해제하면 사람까지 빠져 대시보드·질문·계약이 전부 403이었고, 다시 연결해도 대표가 다시 배정해야 했다.
+  it('에이전트를 끊어도 그 사람은 프로젝트를 보고, 다시 연결하면 같은 역할에 자동으로 다시 붙는다', async () => {
+    const w = await world({ started: true });
+    expect((await http('DELETE', `/agents/${w.beAgent.agentId}`, w.be.token)).status).toBe(200);
+
+    // 사람은 그대로 담당 — 프로젝트 목록·상세가 보인다.
+    const listed = (await http('GET', `/orgs/${w.orgId}/projects`, w.be.token)).data.projects as { id: string }[];
+    expect(listed.map((p) => p.id)).toEqual([w.projectId]);
+    expect((await http('GET', `/projects/${w.projectId}`, w.be.token)).status).toBe(200);
+
+    // 같은 사람이 같은 노트북 이름으로 다시 연결 → 에이전트가 되살아나고 BACKEND 역할에 다시 붙는다(대표 배정 없이).
+    const again = await connectAgent({ connectKey: w.be.connectKey, ...spec('be-laptop') });
+    expect(again.agentId).toBe(w.beAgent.agentId);
+    const members = (await http('GET', `/projects/${w.projectId}`, w.rep.token)).data.members as { agentId: string | null; teamRole: string }[];
+    expect(members).toEqual([expect.objectContaining({ agentId: w.beAgent.agentId, teamRole: 'BACKEND' })]);
+    const { rows } = await testPool.query(`SELECT payload FROM events WHERE type = 'MEMBER_AGENT_ATTACHED'`);
+    expect(rows[0]!.payload).toMatchObject({ agentId: w.beAgent.agentId, teamRole: 'BACKEND', cause: 'reconnected' });
+    // 새 토큰에 그 프로젝트가 실려 바로 태스크를 가져갈 수 있다.
+    expect((await http('POST', `/tasks/${w.taskId}/claim`, again.accessToken)).status).toBe(200);
+  });
+
+  it('다른 노트북(다른 에이전트)으로 연결하면 대표가 배정 API로 그 사람의 빈 자리에 붙인다 — 다른 사람의 에이전트는 붙일 수 없다', async () => {
+    const w = await world({ started: true });
+    await http('DELETE', `/agents/${w.beAgent.agentId}`, w.be.token);
+    const other = await connectAgent({ connectKey: w.be.connectKey, ...spec('be-desktop') });
+    // 자리가 하나라 다시 연결할 때 자동으로 붙는다.
+    let members = (await http('GET', `/projects/${w.projectId}`, w.rep.token)).data.members as { agentId: string | null }[];
+    expect(members[0]!.agentId).toBe(other.agentId);
+    // 떼고 FE 사람의 에이전트로 그 자리를 채우려 하면 거부된다(담당은 BE 사람).
+    await http('DELETE', `/agents/${other.agentId}`, w.be.token);
+    const res = await http('POST', `/projects/${w.projectId}/members`, w.rep.token, { agentId: w.feAgent.agentId, teamRole: 'BACKEND' });
+    expect(res).toMatchObject({ status: 409, error: { code: 'ROLE_ALREADY_ASSIGNED' } });
+    // 대표가 그 담당(사람)을 빼면 — 에이전트가 없어 경로의 식별자는 user id다 — 자리가 비어 다른 사람을 배정할 수 있다.
+    expect((await http('DELETE', `/projects/${w.projectId}/members/${w.be.userId}`, w.rep.token)).status).toBe(200);
+    members = (await http('GET', `/projects/${w.projectId}`, w.rep.token)).data.members as { agentId: string | null }[];
     expect(members).toEqual([]);
-    const { rows } = await testPool.query(`SELECT payload FROM events WHERE type = 'MEMBER_UNASSIGNED'`);
-    expect(rows[0]!.payload).toMatchObject({ agentId: w.beAgent.agentId, cause: 'agent_disconnected' });
+    expect((await http('POST', `/projects/${w.projectId}/members`, w.rep.token, { agentId: w.feAgent.agentId, teamRole: 'BACKEND' })).status).toBe(201);
   });
 
   it('진행 중 태스크를 붙잡고 있으면 409 ACTIVE_TASKS_HELD(태스크 목록) — 연결은 그대로', async () => {

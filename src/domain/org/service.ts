@@ -11,7 +11,7 @@ import {
 import { agentRevoked } from '../dispatch/agent-revoked.js';
 import { tasksChanged } from '../dispatch/tasks-changed.js';
 import type { GithubRevokeResult } from '../events/types.js';
-import { detachAgentFromActiveProject, revokeGithubAccess } from '../project/service.js';
+import { detachAgentFromActiveProject, removeAgentlessMembershipsInTx, revokeGithubAccess } from '../project/service.js';
 import { appendEvent } from '../events/append.js';
 import { logger } from '../../config/logger.js';
 import { githubRepApi, type GithubRepoInfo } from '../github/rep-api.js';
@@ -178,6 +178,10 @@ export async function removeOrgMember(
       if (projectId) unassignedFrom.push(projectId);
       await markAgentDisconnected(tx, agent.id);
       await revokeAgentTokens(tx, agent.id);
+    }
+    // 에이전트를 떼고 담당만 남아 있던 줄도 뺀다(028) — 조직을 떠난 사람은 어느 역할의 담당도 아니다.
+    for (const projectId of await removeAgentlessMembershipsInTx(tx, userId, actor.userId)) {
+      if (!unassignedFrom.includes(projectId)) unassignedFrom.push(projectId);
     }
     await detachUserAgentsFromOrg(tx, userId);
     if (!(await removeUserFromOrg(tx, userId, orgId))) {

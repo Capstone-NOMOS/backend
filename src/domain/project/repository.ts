@@ -93,8 +93,8 @@ export async function insertProject(
   return toProject(rows[0]!);
 }
 
-// 프로젝트 목록. userId를 주면 그 사람의 에이전트가 배정된 프로젝트만 — "볼 수 있는가"는
-// visibility.ts(대표는 전체, 팀원은 배정된 것만)와 같은 정의다.
+// 프로젝트 목록. userId를 주면 그 사람이 역할 담당인 프로젝트만(에이전트가 없어도, 028) — "볼 수 있는가"는
+// visibility.ts(대표는 전체, 팀원은 담당인 것만)와 같은 정의다.
 export async function listProjectsByOrg(
   db: Queryable,
   orgId: string,
@@ -104,8 +104,7 @@ export async function listProjectsByOrg(
     `SELECT p.* FROM projects p
       WHERE p.org_id = $1
         AND ($2::uuid IS NULL OR EXISTS (
-              SELECT 1 FROM project_members m JOIN agents a ON a.id = m.agent_id
-               WHERE m.project_id = p.id AND a.user_id = $2))
+              SELECT 1 FROM project_members m WHERE m.project_id = p.id AND m.user_id = $2))
       ORDER BY p.created_at DESC`,
     [orgId, onlyForUserId],
   );
@@ -240,22 +239,100 @@ export async function listProjectRepos(db: Queryable, projectId: string): Promis
   return rows.map((r) => ({ id: r.id, orgId: r.org_id, fullName: r.full_name }));
 }
 
-export type ProjectMember = { agentId: string; agentName: string; teamRole: TeamRole; userId: string };
+// 역할 담당(사람, 028)과 그 사람이 붙인 에이전트. 에이전트를 해제했으면 agentId·agentName이 null — "에이전트 연결 필요".
+export type ProjectMember = { agentId: string | null; agentName: string | null; teamRole: TeamRole; userId: string };
 
 export async function listProjectMembers(db: Queryable, projectId: string): Promise<ProjectMember[]> {
   const { rows } = await db.query(
-    `SELECT m.agent_id, m.team_role, a.name, a.user_id FROM project_members m
-       JOIN agents a ON a.id = m.agent_id
+    `SELECT m.agent_id, m.team_role, a.name, m.user_id FROM project_members m
+       LEFT JOIN agents a ON a.id = m.agent_id
       WHERE m.project_id = $1
       ORDER BY m.team_role`,
     [projectId],
   );
   return rows.map((r) => ({
-    agentId: r.agent_id,
-    agentName: r.name,
+    agentId: (r.agent_id as string | null) ?? null,
+    agentName: (r.name as string | null) ?? null,
     teamRole: r.team_role as TeamRole,
     userId: r.user_id,
   }));
+}
+
+// 멤버 한 줄 — 경로의 식별자는 에이전트 id(붙어 있으면) 또는 담당자 user id(에이전트가 없을 때). 잠근다.
+export async function findMemberRow(
+  db: Queryable,
+  projectId: string,
+  agentOrUserId: string,
+): Promise<{ agentId: string | null; userId: string; teamRole: TeamRole } | null> {
+  const { rows } = await db.query(
+    `SELECT agent_id, user_id, team_role FROM project_members
+      WHERE project_id = $1 AND (agent_id = $2 OR (agent_id IS NULL AND user_id = $2))
+      ORDER BY team_role LIMIT 1 FOR UPDATE`,
+    [projectId, agentOrUserId],
+  );
+  const r = rows[0];
+  return r ? { agentId: (r.agent_id as string | null) ?? null, userId: r.user_id as string, teamRole: r.team_role as TeamRole } : null;
+}
+
+// 역할의 담당 한 줄(잠금).
+export async function findRoleMember(
+  db: Queryable,
+  projectId: string,
+  teamRole: TeamRole,
+): Promise<{ agentId: string | null; userId: string } | null> {
+  const { rows } = await db.query(
+    `SELECT agent_id, user_id FROM project_members WHERE project_id = $1 AND team_role = $2 FOR UPDATE`,
+    [projectId, teamRole],
+  );
+  const r = rows[0];
+  return r ? { agentId: (r.agent_id as string | null) ?? null, userId: r.user_id as string } : null;
+}
+
+export async function deleteMemberByRole(db: Queryable, projectId: string, teamRole: TeamRole): Promise<boolean> {
+  const { rowCount } = await db.query(`DELETE FROM project_members WHERE project_id = $1 AND team_role = $2`, [projectId, teamRole]);
+  return rowCount === 1;
+}
+
+// 에이전트만 뗀다(담당은 남는다). 그 에이전트가 붙어 있던 역할을 돌려준다.
+export async function detachMemberAgent(db: Queryable, projectId: string, agentId: string): Promise<{ teamRole: TeamRole; userId: string } | null> {
+  const { rows } = await db.query(
+    `UPDATE project_members SET agent_id = NULL WHERE project_id = $1 AND agent_id = $2 RETURNING team_role, user_id`,
+    [projectId, agentId],
+  );
+  return rows[0] ? { teamRole: rows[0].team_role as TeamRole, userId: rows[0].user_id as string } : null;
+}
+
+// 비어 있는 담당 자리에 그 사람의 에이전트를 붙인다(같은 사람만 — 복합 FK가 한 번 더 본다).
+export async function attachMemberAgent(db: Queryable, projectId: string, teamRole: TeamRole, agentId: string): Promise<boolean> {
+  const { rowCount } = await db.query(
+    `UPDATE project_members m SET agent_id = $3
+       FROM agents a
+      WHERE m.project_id = $1 AND m.team_role = $2 AND m.agent_id IS NULL AND a.id = $3 AND a.user_id = m.user_id`,
+    [projectId, teamRole, agentId],
+  );
+  return rowCount === 1;
+}
+
+// 이 사람이 에이전트 없이 담당만 남아 있는 진행 중 프로젝트들(다시 연결하면 자동으로 붙일 후보).
+export async function listAgentlessRolesOfUser(db: Queryable, userId: string): Promise<{ projectId: string; teamRole: TeamRole }[]> {
+  const { rows } = await db.query(
+    `SELECT m.project_id, m.team_role FROM project_members m JOIN projects p ON p.id = m.project_id
+      WHERE m.user_id = $1 AND m.agent_id IS NULL AND p.status NOT IN ('completed', 'aborted')
+      ORDER BY p.created_at, m.team_role`,
+    [userId],
+  );
+  return rows.map((r) => ({ projectId: r.project_id as string, teamRole: r.team_role as TeamRole }));
+}
+
+// 조직에서 빠진 사람의 담당 줄(에이전트 없는 것) — 진행 중 프로젝트에서 지운다.
+export async function deleteAgentlessMemberships(db: Queryable, userId: string): Promise<{ projectId: string; teamRole: TeamRole }[]> {
+  const { rows } = await db.query(
+    `DELETE FROM project_members m USING projects p
+      WHERE p.id = m.project_id AND m.user_id = $1 AND m.agent_id IS NULL AND p.status NOT IN ('completed', 'aborted')
+      RETURNING m.project_id, m.team_role`,
+    [userId],
+  );
+  return rows.map((r) => ({ projectId: r.project_id as string, teamRole: r.team_role as TeamRole }));
 }
 
 export async function insertProjectMember(
@@ -375,10 +452,10 @@ export type MemberInviteStatus = {
 
 export async function listLatestInvites(db: Queryable, projectId: string): Promise<Map<string, MemberInviteStatus[]>> {
   const { rows } = await db.query(
-    `SELECT DISTINCT ON (payload->>'agentId') payload->>'agentId' AS agent_id, payload->'results' AS results, ts
+    `SELECT DISTINCT ON (payload->>'userId') payload->>'userId' AS agent_id, payload->'results' AS results, ts
        FROM events
       WHERE project_id = $1 AND type = 'GITHUB_COLLABORATORS_INVITED'
-      ORDER BY payload->>'agentId', id DESC`,
+      ORDER BY payload->>'userId', id DESC`,
     [projectId],
   );
   const byAgent = new Map<string, MemberInviteStatus[]>();
@@ -436,7 +513,7 @@ export async function findUserGithubLogin(db: Queryable, userId: string): Promis
 // 그 사람의 다른 에이전트가 아직 이 프로젝트 멤버인가 — 그러면 레포 접근을 회수하지 않는다(한 사람이 두 역할을 맡은 경우).
 export async function userStillInProject(db: Queryable, projectId: string, userId: string): Promise<boolean> {
   const { rows } = await db.query(
-    `SELECT 1 FROM project_members m JOIN agents a ON a.id = m.agent_id WHERE m.project_id = $1 AND a.user_id = $2 LIMIT 1`,
+    `SELECT 1 FROM project_members m WHERE m.project_id = $1 AND m.user_id = $2 LIMIT 1`,
     [projectId, userId],
   );
   return rows.length > 0;

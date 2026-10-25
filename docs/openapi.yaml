@@ -509,23 +509,25 @@ components:
         reason: { type: string }
     RoomMessage:
       type: object
-      required: [id, ts, speaker, type, taskId, taskTitle, text, questionId, activity]
+      required: [id, ts, speaker, type, taskId, taskTitle, text, questionId, activity, userId]
       properties:
         id: { type: string, description: '피드 커서로도 쓴다(before)' }
         ts: { type: string, format: date-time }
         speaker:
           type: string
-          enum: [pm, nomos, agent]
+          enum: [pm, nomos, agent, human]
           description: |
             - pm: 서버가 지시·판정을 알림(실행해 주세요, 검증 결과, 승인)
             - nomos: Executor가 보고한 실행 상태(수령, 구현 시작, 제출, 실행 종료)
             - agent: 에이전트가 쓴 도구(읽기·수정·실행) · 인계 노트
+            - human: 사람(그 역할 담당·대표)이 룸에서 에이전트에게 보낸 메시지 — type `ROOM_MESSAGE_SENT`, 보낸 사람은 `userId`
         type:
           type: string
           description: '원본 이벤트 타입(TASK_DISPATCHED 등) 또는 ACTIVITY_READ·ACTIVITY_EDIT·ACTIVITY_WRITE·ACTIVITY_RUN·ACTIVITY_SEARCH·ACTIVITY_OTHER·ACTIVITY_SAY(에이전트의 말). 아이콘용'
         taskId: { type: string, format: uuid, nullable: true }
         taskTitle: { type: string, nullable: true }
-        text: { type: string, description: '화면에 그대로 보여 줄 문장(서버가 만든다)' }
+        userId: { type: string, format: uuid, nullable: true, description: 'speaker human이면 보낸 사람. 그 밖에는 null' }
+        text: { type: string, description: '화면에 그대로 보여 줄 문장(서버가 만든다). human이면 보낸 메시지 그대로' }
         questionId:
           type: string
           format: uuid
@@ -651,12 +653,15 @@ components:
         fullName: { type: string }
     ProjectMember:
       type: object
+      description: |
+        역할 담당(**사람**, 028)과 그 사람이 붙인 에이전트. 에이전트 연결을 해제하면 `agentId`·`agentName`이 null — 사람은 담당으로 남아
+        프로젝트를 보고 질문 답·계약 확정을 계속한다(화면은 "에이전트 연결 필요"). 같은 사람이 다시 연결하면 그 역할에 자동으로 다시 붙는다.
       required: [agentId, agentName, teamRole, userId, githubInvites]
       properties:
-        agentId: { type: string, format: uuid }
-        agentName: { type: string }
+        agentId: { type: string, format: uuid, nullable: true, description: '붙어 있는 에이전트. 없으면 null' }
+        agentName: { type: string, nullable: true }
         teamRole: { type: string, enum: [FRONTEND, BACKEND] }
-        userId: { type: string, format: uuid, description: '에이전트 주인' }
+        userId: { type: string, format: uuid, description: '역할 담당(사람). 에이전트가 있으면 그 주인이다' }
         githubInvites:
           type: array
           description: |
@@ -1048,7 +1053,7 @@ components:
         ownerRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true }
     TaskBriefing:
       type: object
-      required: [task, repo, spec, contract, notes, notesBlock, writablePaths, claudeSettings, specTests, policyHash, lastRejection, answeredQuestions, questionRelay]
+      required: [task, repo, spec, contract, notes, notesBlock, writablePaths, claudeSettings, specTests, policyHash, lastRejection, answeredQuestions, humanMessages, questionRelay]
       properties:
         task: { $ref: '#/components/schemas/Task' }
         repo:
@@ -1086,6 +1091,19 @@ components:
         specTests: { type: array, items: { $ref: '#/components/schemas/SpecTest' } }
         policyHash: { type: string }
         questionRelay: { type: boolean, description: '프로젝트의 질문 중계 스위치. 꺼져 있으면 Executor가 권한 도구(AskUserQuestion)를 붙이지 않는다' }
+        humanMessages:
+          type: array
+          description: '그 역할 담당·대표가 룸에서 보낸 메시지 중 아직 전달되지 않은 것(그 역할 태스크의 마지막 실행 시작 이후, 최근 20개, 오래된 것부터). 실행 중에는 끼워 넣지 않고 다음 실행에 여기로 온다'
+          items:
+            type: object
+            required: [id, ts, text, fromUserId, fromNickname, fromRepresentative]
+            properties:
+              id: { type: string, description: 'ROOM_MESSAGE_SENT 이벤트 id' }
+              ts: { type: string, format: date-time }
+              text: { type: string }
+              fromUserId: { type: string, format: uuid }
+              fromNickname: { type: string, nullable: true }
+              fromRepresentative: { type: boolean }
         answeredQuestions:
           type: array
           description: '이 태스크에서 물어 받은 답 — 질문 때문에 멈췄다 재개한 실행이 읽는다. source=agent는 상대 에이전트가 코드에서 찾은 답(사람 미확인)'
@@ -3367,6 +3385,15 @@ paths:
         - `types`로 거른다(쉼표로 여러 개). `payload` 모양은 `type`마다 다르다.
         - `onBehalfOf`는 사람(user id)이거나 시스템 주체 문자열(`system:pm`, `system:device-flow` 등)이다.
         - `tokenCost`는 그 행의 비용(USD) — 지금은 PM 호출(`PM_CALL`)에만 있다. 태스크별·사람별 비용 집계는 별도 API로 다룬다.
+        - 화면이 문구를 만들 때 자주 쓰는 type과 payload(전체 목록은 서버 `domain/events/types.ts`):
+          - `TASK_CANCELLED` — `taskId, title, previousState, reason, expiredQuestionIds[], unblockedDependents[]`(대표가 취소, 027)
+          - `TASK_COMPLETED_MANUALLY` — `taskId, title, artifactId, commitSha, changedPaths[], previousState, v3('PASS'), note`(사람이 직접 완료, 027)
+          - `TASK_RESUMED` — `taskId, note, from('AGENT_STOPPED'|'ESCALATED'), previousRetryCount?`
+          - `QUESTION_ASKED` — `questionId, taskId, askerRole, targetRole('FRONTEND'|'BACKEND'|'PM'|'SELF'), routedBy, confidence, latencyMs, fallback, costUsd, questionCount`
+          - `QUESTION_GOLD_LABELED` — `questionId, goldTarget('FRONTEND'|'BACKEND'|'PM'|'SELF'), previousGoldTarget`(대표가 정답 담당자를 붙임, 026)
+          - `MEMBER_AGENT_DETACHED` — `agentId, teamRole, userId, cause('agent_disconnected')`(에이전트만 떨어짐 — 사람은 담당으로 남음, 028)
+          - `MEMBER_AGENT_ATTACHED` — `agentId, teamRole, userId, cause('reconnected'|'assigned')`(빈 담당 자리에 에이전트가 다시 붙음, 028)
+          - `MEMBER_UNASSIGNED` — `agentId(없으면 null), teamRole, userId, cause?`(사람이 역할에서 빠짐)
       security: [{ userToken: [] }]
       parameters:
         - $ref: '#/components/parameters/ProjectId'
@@ -3408,6 +3435,37 @@ paths:
           content:
             application/json:
               schema: { type: object, required: [data], properties: { data: { type: object, required: [rooms], properties: { rooms: { type: array, items: { $ref: '#/components/schemas/RoomSummary' } } } } } }
+
+  /projects/{projectId}/rooms/{role}/messages:
+    post:
+      tags: [룸]
+      summary: 사람 → 그 역할 에이전트 메시지 (그 역할 담당·대표)
+      description: |
+        룸 대화창에서 그 역할의 에이전트에게 말을 걸거나 지시한다. 보낼 수 있는 사람은 그 룸을 볼 수 있는 사람 — 그 역할 담당과 대표(아니면 403 `ROOM_NOT_VISIBLE`).
+        **실행 중인 에이전트에게 바로 끼워 넣지 않는다.** 다음 실행의 브리핑(`humanMessages`, 프롬프트 "담당자가 보낸 메시지")으로 전달된다 —
+        지금 실행에 바로 반영하려면 그 태스크를 멈추고 재개한다. 에이전트가 꺼져 있거나 태스크가 없어도 받아 두었다가 다음 실행에 전달한다(409 없음).
+        메시지로 권한이 넓어지지 않는다 — 경로 금지·제출 시 판정·V3가 그대로 막는다. 이벤트 `ROOM_MESSAGE_SENT`(보낸 사람 명의, 본문 포함 — 비밀값을 적지 말 것).
+        끝난 프로젝트면 409 `PROJECT_NOT_OPEN`. 길이는 1~1000자(넘으면 400 `VALIDATION_ERROR`).
+      security: [{ userToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - { name: role, in: path, required: true, schema: { type: string, enum: [FRONTEND, BACKEND] } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string, maxLength: 1000 }
+            example: { text: '목록 화면은 페이지네이션 없이 전부 보여 주세요' }
+      responses:
+        '201':
+          description: 남김 — 피드에 나올 줄(speaker human)
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/RoomMessage' } } }
 
   /projects/{projectId}/rooms/{role}/feed:
     get:
@@ -3603,6 +3661,8 @@ paths:
       tags: [프로젝트]
       summary: 배정 해제 (대표 전용)
       description: |
+        역할 담당(사람)을 역할에서 뺀다 — 그 사람의 프로젝트 접근과 GitHub 레포 접근도 빠진다.
+        경로의 `agentId` 자리에는 붙어 있는 에이전트 id를, **에이전트가 없는 담당(`agentId: null`)이면 그 담당의 `userId`**를 넣는다(028).
         **역할 교체는 해제 후 재배정으로 한다.** UPDATE 경로를 두면 한 역할에 둘이 잠깐 겹칠 수 있다.
         시작(G1) 뒤에도 된다(021) — 단 그 에이전트가 진행 중 태스크(CLAIMED·IN_PROGRESS·VERIFYING)를 붙잡고 있으면 409 `ACTIVE_TASKS_HELD`(details에 태스크 목록).
         빠진 역할의 태스크는 새 사람을 배정할 때까지 READY로 기다린다. 끝난 프로젝트(completed·aborted)는 409 `PROJECT_NOT_OPEN`.
@@ -3647,9 +3707,11 @@ paths:
       summary: 에이전트 연결 해제
       description: |
         노트북 CLI 연결을 끊는다(021) — 그 에이전트의 주인이나 같은 조직의 대표가 한다(아니면 403 `NOT_AGENT_OWNER`).
-        맡은 진행 중 프로젝트에서 빠지고(진행 중 태스크가 있으면 409 `ACTIVE_TASKS_HELD`), refresh token이 폐기되며, 남은 access token도 401 `AGENT_DISCONNECTED`로 거부된다.
-        실행 중인 CLI의 태스크 스트림도 끊긴다. 목록(`GET /orgs/{orgId}/agents`)에서 빠진다.
-        같은 노트북에서 같은 이름으로 다시 `connect`하면 그 에이전트가 되살아난다.
+        맡은 진행 중 프로젝트에서 **에이전트만 떨어진다**(028) — 사람은 그 역할 담당으로 남아 프로젝트를 보고 질문 답·계약 확정을 계속하며, GitHub 레포 접근도 그대로다(`githubRevocations`는 빈 배열).
+        진행 중 태스크가 있으면 409 `ACTIVE_TASKS_HELD`. refresh token이 폐기되고, 남은 access token도 401 `AGENT_DISCONNECTED`로 거부된다.
+        실행 중인 CLI의 태스크 스트림도 끊긴다. 목록(`GET /orgs/{orgId}/agents`)에서 빠진다. 응답의 `unassignedFrom`은 에이전트가 떨어진 프로젝트다.
+        같은 사람이 다시 `connect`(연결 키·브라우저 승인·`--code` 모두)하면 — 같은 이름이면 같은 에이전트가 되살아나고 — 에이전트 없이 담당만 남은 진행 중 프로젝트가 하나면 그 역할에 **자동으로 다시 붙는다**
+        (이벤트 `MEMBER_AGENT_ATTACHED`). 여럿이면 대표가 배정 API로 붙인다.
       security: [{ userToken: [] }]
       parameters:
         - { name: agentId, in: path, required: true, schema: { type: string, format: uuid }, example: '{{AGENT_BE}}' }
@@ -4618,6 +4680,7 @@ paths:
       description: |
         에이전트가 끝내 못 한 일을 개발자가 직접 커밋해 넘긴다(027). 커밋을 태스크 브랜치에 push한 뒤 sha와 **태스크 브랜치에서 바꾼 모든 경로**를 낸다.
         에이전트 제출과 **같은 V3**(실제 diff와 신고 대조, 경로 소유권)를 서버가 돌린다 — 실패면 아무것도 바뀌지 않고 422 `MANUAL_COMPLETION_INVALID`(details에 undeclared·overdeclared·거부 사유).
+        서버가 커밋을 읽지 못하면(레포 clone_url·GitHub 미연결 — V3 SKIPPED) 받지 않는다: 409 `MANUAL_COMPLETION_UNVERIFIABLE`. 확인 안 된 sha로 DONE이 되지 않게.
         통과하면 산출물(gateMode HUMAN)과 V3 결과가 남고 태스크는 DONE, 이벤트 `TASK_COMPLETED_MANUALLY`(지표에서 사람이 처리한 것으로 따로 센다).
         에이전트가 붙잡지 않은 상태(READY·BLOCKED·ESCALATED)에서만. 그 역할 담당(에이전트 주인)이나 대표가 아니면 403 `NOT_TASK_OWNER`.
       security: [{ userToken: [] }]

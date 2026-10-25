@@ -289,6 +289,9 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
   서버가 준 주소라도 노트북에서 한 번 더 거른다(https·로컬 경로만, `-` 시작·`::`·자격 증명 거부, `git clone --`). git 비밀값은 서버가 주지 않는다 — 사용자의 git 자격 증명을 쓴다.
 - **npm 배포는 `cli-v*` 태그 → Trusted Publishing(OIDC)이다**(`publish-cli.yml`). `NPM_TOKEN`을 Secrets에 두지 말 것. 태그와 `packages/cli/package.json` 버전이 다르면 멈춘다.
 
+- **백그라운드 실행**(`executor/background.ts`, FE 요청): `connect --background`는 같은 인자로 connect를 분리된 자식으로 띄우고 바로 끝난다(출력은 `~/.nomos/logs/connect.log`,
+  pid는 `~/.nomos/daemon.json`). `status`·`stop`. 브라우저 승인은 화면이 필요해서 이 서버의 자격 증명이 없으면 `--code`와 함께만 받는다. 로그인 시 자동 시작은 아직 없다(OS마다 다름).
+  진행 상황은 터미널이 아니라 웹의 룸(도구 사용·에이전트의 말)에서 본다 — 명령 출력·파일 내용은 서버로 보내지 않는다.
 - **자격 증명의 정본은 `~/.nomos/credentials`(0600)다.** MCP 설정 파일에 토큰을 넣지 말 것 —
   그 파일은 Claude Code에 넘기는 설정이고, 재발급 결과를 되돌려 쓸 곳이 없어 매 실행이 401로 시작했다.
   `onTokensChanged`로 갱신된 토큰을 파일에 쓴다.
@@ -577,7 +580,10 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
 - **질문 중계(018, 실험 브랜치)와의 관계**: 답을 기다리느라 태스크를 내려놓은 실행(BLOCKED·`QUESTION`)의 종료는 멈춤(`AGENT_STOPPED`)이 아니다(`waitingQuestion`).
   답이 와서 READY가 되면 "다시 실행해 주세요 (재개)"가 나가도록 `task_dispatches.resumes`에 `TASK_BLOCKED_ON_QUESTION`도 센다.
   질문 줄(`QUESTION_*`)은 묻는 쪽 태스크의 룸과 **답할 역할(`targetRole`)의 룸** 둘 다에 나온다.
-- 사람 메시지(룸 채팅)는 아직 없다. 넣을 때도 **실행 중인 모델에 끼워 넣지 않는다**(인계 노트와 같은 이유 — 리플레이가 깨지고 노트가 채널이 된다).
+- **사람 → 에이전트 메시지**(`POST /projects/:id/rooms/:role/messages`, 그 역할 담당·대표, FE 요청): 이벤트 `ROOM_MESSAGE_SENT`(본문 포함)로 남고 피드에 `speaker: human`으로 나온다.
+  **실행 중인 모델에 끼워 넣지 않는다**(인계 노트와 같은 이유 — 리플레이가 깨지고 노트가 채널이 된다). 그 역할 태스크의 마지막 실행 시작 이후에 온 메시지가
+  다음 실행의 브리핑 `humanMessages`(프롬프트 "담당자가 보낸 메시지")로 가고, 그 실행의 `AGENT_RUN_STARTED.payload.deliveredMessageIds`에 전달이 남는다.
+  메시지로 권한이 넓어지지 않는다(경로 금지·제출 판정·V3 그대로). "사람 개입 횟수" 지표는 이 이벤트 수다.
 
 ### 프로젝트와 멤버
 
@@ -621,6 +627,10 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
   - 인증은 첫 메시지(사람 JWT, `resolveUserToken` — HTTP `authenticate`와 한 벌). Origin은 CORS 허용 목록 + 서버 자신만 받는다(Origin 없음 = 브라우저 아님 → 통과).
   - 에이전트 접속 상태(`presence.ts`)는 이벤트가 아니라서 `onPresenceChanged`로 따로 받는다. 바뀐 순간에만 알리고, 60초가 지나 offline이 되는 것은 10초마다 훑는다.
   - 웹소켓 경로는 `realtime/upgrade-router.ts`가 서버당 하나의 upgrade 리스너로 나눈다. 스트림마다 `server.on('upgrade')`를 걸면 서로의 소켓을 끊는다.
+- **역할 담당은 사람이다(028, FE 요청)** — `project_members.user_id`가 담당, `agent_id`는 그 사람이 붙인 에이전트(비울 수 있다). 가시성·프로젝트 목록·답할 자격·계약 확정은
+  `user_id`로 판정한다(에이전트 조인으로 판정하지 말 것 — 해제하면 사람까지 빠졌다). **에이전트 연결 해제는 에이전트만 뗀다**(`MEMBER_AGENT_DETACHED`, GitHub 권한 그대로),
+  같은 사람이 다시 연결하면 에이전트 없이 담당만 남은 진행 중 프로젝트가 하나일 때 자동으로 다시 붙는다(`reattachAgentInTx`, `MEMBER_AGENT_ATTACHED` — 토큰 발급 전이라 새 토큰에 프로젝트가 실린다).
+  사람을 역할에서 빼는 것(대표의 해제·조직 탈퇴)만 접근·GitHub 권한까지 뺀다. 해제 API 경로의 식별자는 에이전트 id, 에이전트가 없으면 담당자 user id.
 - **멤버는 시작(G1) 뒤에도 바꿀 수 있다**(021, 대표 결정 — 사람이 빠지거나 교체해야 할 때). 단 그 에이전트가 진행 중 태스크(CLAIMED·IN_PROGRESS·VERIFYING)를
   붙잡고 있으면 409 `ACTIVE_TASKS_HELD`(details에 태스크) — 빼 버리면 그 태스크는 아무도 끝내지 못한다. 끝난 프로젝트(completed·aborted)의 멤버는 기록이라 409 `PROJECT_NOT_OPEN`.
   빠진 역할의 태스크는 새 사람을 배정할 때까지 READY로 기다린다. 역할 교체는 해제 후 재배정이다 — UPDATE 경로를 두면 한 역할에 둘이 잠깐 겹친다.

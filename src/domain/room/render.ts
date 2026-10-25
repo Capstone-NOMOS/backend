@@ -9,7 +9,7 @@ export type RoomActivity = { kind: string; target: string; ok: boolean | null; a
 export type RoomMessage = {
   id: string;
   ts: string;
-  speaker: 'pm' | 'nomos' | 'agent';
+  speaker: 'pm' | 'nomos' | 'agent' | 'human';
   type: string;
   taskId: string | null;
   taskTitle: string | null;
@@ -17,6 +17,8 @@ export type RoomMessage = {
   // 질문 줄(QUESTION_*·TASK_BLOCKED_ON_QUESTION)이면 그 질문 — 화면이 GET /projects/:id/questions의 같은 id로 카드를 그린다.
   questionId: string | null;
   activity: RoomActivity | null;
+  // 사람이 보낸 메시지(speaker human)면 보낸 사람. 그 밖에는 null.
+  userId: string | null;
 };
 
 const ACTIVITY_TEXT: Record<string, (target: string) => string> = {
@@ -195,12 +197,15 @@ export function renderFeedRow(row: FeedRow): RoomMessage | null {
       added: nullableNum(p.added),
       removed: nullableNum(p.removed),
     };
-    return { ...base, type: `ACTIVITY_${row.type.toUpperCase()}`, speaker: 'agent', text: activityText(activity), questionId: null, activity };
+    return { ...base, type: `ACTIVITY_${row.type.toUpperCase()}`, speaker: 'agent', text: activityText(activity), questionId: null, activity, userId: null };
+  }
+  if (row.type === 'ROOM_MESSAGE_SENT') {
+    return { ...base, speaker: 'human', text: str(row.payload.text), questionId: null, activity: null, userId: str(row.payload.userId) || null };
   }
   const rendered = eventText(row);
   if (rendered === null) return null;
   const questionId = row.type.startsWith('QUESTION_') || row.type === 'TASK_BLOCKED_ON_QUESTION' ? str(row.payload.questionId) || null : null;
-  return { ...base, ...rendered, questionId, activity: null };
+  return { ...base, ...rendered, questionId, activity: null, userId: null };
 }
 
 // 커서 문자열("<마이크로초>.<e|a>.<id>")을 되돌린다. 형식이 틀리면 null(→ 400).

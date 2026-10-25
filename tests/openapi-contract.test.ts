@@ -326,6 +326,8 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     const artifactId = submitted.data.id as string;
     await call('POST', `/tasks/${taskId}/runs/end`, agent, { outcome: 'completed', committed: true, durationMs: 1200, exitCode: 0 });
     await call('GET', `/projects/${projectId}/rooms`, rep);
+    // 사람 → 에이전트 메시지(다음 실행의 브리핑으로 간다)
+    await call('POST', `/projects/${projectId}/rooms/BACKEND/messages`, rep, { text: '목록은 페이지네이션 없이' });
     await call('GET', `/projects/${projectId}/rooms/BACKEND/feed?limit=20`, rep);
     // 제출 없이 끝난 실행 → 멈춤(BLOCKED) → 대표 재개
     const stuck = await call('POST', `/projects/${projectId}/tasks`, rep, { title: 'T-9 막히는 태스크', teamRole: 'BACKEND', kind: 'INTEGRATION', repoId });

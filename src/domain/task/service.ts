@@ -19,6 +19,7 @@ import { findRepoById, listRepoPaths } from '../repo/repository.js';
 import { inspectPaths, recordToolDenied, strictestMode } from '../policy/scope-check.js';
 import { resolveRule, samplePath } from '../repo/glob.js';
 import { findApprovedContractForSpec } from '../contract/repository.js';
+import { listPendingRoomMessages, type PendingRoomMessage } from '../room/repository.js';
 import type { TeamRole } from '../roles.js';
 import { runServerVerifications, type VerificationSummary } from '../verification/service.js';
 import {
@@ -399,6 +400,8 @@ export type TaskBriefing = {
   // 직전 제출이 대표에게 반려됐으면 그 사유. 반려되면 태스크가 READY로 돌아오고, 같은 태스크 브랜치에서 이어서 고친다.
   lastRejection: { approvalId: string; reason: string; decidedAt: string; artifactId: string | null; commitSha: string | null } | null;
   answeredQuestions: { question: string; answer: string; source: string }[];
+  // 그 역할 담당·대표가 룸에서 보낸 메시지 중 아직 전달되지 않은 것(마지막 실행 시작 이후). 실행 중에 끼워 넣지 않고 여기로 온다.
+  humanMessages: PendingRoomMessage[];
   // 질문 중계(018). 꺼져 있으면 Executor가 권한 도구(AskUserQuestion)를 붙이지 않고, 다른 역할 소관은 GOTCHA "가정함"으로 남기게 한다.
   questionRelay: boolean;
 };
@@ -449,6 +452,7 @@ export async function getTaskBriefing(ctx: AgentContext, taskId: string): Promis
       lastRejection: await findLatestRejection(tx, taskId),
       questionRelay: (await findProjectById(tx, task.projectId))?.questionRelay ?? true,
       // 질문 때문에 멈췄다 재개한 태스크 — 그동안 받은 답(에이전트가 코드로 찾은 답은 source=agent, 사람 미확인).
+      humanMessages: task.teamRole ? await listPendingRoomMessages(tx, task.projectId, task.teamRole) : [],
       answeredQuestions: (await listTaskAnswers(tx, taskId)).flatMap((q) =>
         q.questions.map((x) => ({ question: x.question, answer: q.answers?.[x.question] ?? '', source: q.answerSource! })),
       ),

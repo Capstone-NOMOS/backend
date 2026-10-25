@@ -32,6 +32,7 @@ import {
 import { NomosApiError, NomosClient, type ContractJobPayload } from '../bridge/nomos-client.js';
 import { ActivityReporter, ActivityTracker, RunObserver } from './activity.js';
 import { accountLine, connect, DEFAULT_SERVER, serverCalls } from './connect.js';
+import { runningDaemon, startDaemon, stopDaemon, tailLog } from './background.js';
 import { deviceLogin } from './device-login.js';
 import { cliVersion, mcpServerPath } from './paths.js';
 import { checkTools } from './preflight.js';
@@ -75,6 +76,7 @@ type Briefing = {
   notes: { id: string }[];
   lastRejection: { reason: string; commitSha: string | null } | null;
   answeredQuestions?: { question: string; answer: string; source: string }[];
+  humanMessages?: { text: string; fromNickname: string | null; fromRepresentative: boolean; ts: string }[];
   questionRelay?: boolean;
   notesBlock: string;
   writablePaths: { pathPattern: string }[];
@@ -434,16 +436,25 @@ async function postJson(url: string, body: unknown): Promise<Record<string, unkn
   return json.data;
 }
 
-type ParsedArgs = { positional: string | undefined; server: string | undefined; name: string | undefined; code: string | undefined; connectKey: boolean; json: boolean };
+type ParsedArgs = {
+  positional: string | undefined;
+  server: string | undefined;
+  name: string | undefined;
+  code: string | undefined;
+  connectKey: boolean;
+  json: boolean;
+  background: boolean;
+};
 
 function parseArgs(argv: string[]): ParsedArgs {
-  const out: ParsedArgs = { positional: undefined, server: undefined, name: undefined, code: undefined, connectKey: false, json: false };
+  const out: ParsedArgs = { positional: undefined, server: undefined, name: undefined, code: undefined, connectKey: false, json: false, background: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
     if (arg === '--name') out.name = argv[(i += 1)];
     else if (arg === '--server') out.server = argv[(i += 1)];
     else if (arg === '--connect-key') out.connectKey = true;
     else if (arg === '--code') out.code = argv[(i += 1)];
+    else if (arg === '--background') out.background = true;
     else if (arg === '--json') out.json = true;
     else out.positional ??= arg;
   }
@@ -526,6 +537,20 @@ async function connectCommand(argv: string[]): Promise<void> {
     throw new Error('필요한 도구가 없어 시작하지 않는다');
   }
 
+  // 백그라운드(창 없이) — 같은 인자로 connect를 분리된 자식으로 띄우고 여기서 끝난다. 브라우저 승인 로그인은 화면이 필요하므로
+  // 이 서버의 자격 증명이 없으면 --code(1회용 연결 코드)와 함께만 받는다.
+  if (args.background) {
+    const saved = readCredentials();
+    if (!args.code && (!saved || saved.baseUrl !== server)) {
+      throw new Error('백그라운드로 띄우려면 먼저 한 번 connect로 로그인하거나, 웹의 연결 명령(--code)에 --background를 붙여라');
+    }
+    const info = startDaemon({ cliPath: process.argv[1]!, args: argv, server });
+    log(`백그라운드에서 실행한다 — pid ${info.pid}. 창을 닫아도 계속 돈다`);
+    log(`로그: ${info.logFile}`);
+    log('상태: nomos status · 끄기: nomos stop · 진행 상황은 웹의 룸에서 본다');
+    return;
+  }
+
   // 배정이 풀리면(해제·프로젝트 중단) 창을 닫지 않고 다시 배정을 기다린다. 연결 해제면 멈춘다.
   // 1회용 코드는 처음 한 번만 쓴다 — 그 뒤로는 그 코드로 받은 자격 증명이 저장돼 있다.
   let code = args.code?.trim() || undefined;
@@ -605,6 +630,17 @@ async function pmWorker(): Promise<void> {
   }
 }
 
+function daemonStatus(): void {
+  const info = runningDaemon();
+  if (!info) {
+    log('백그라운드에서 돌고 있는 connect가 없다 (켜려면 connect --background)');
+    return;
+  }
+  log(`실행 중 — pid ${info.pid}, ${info.startedAt}부터, 서버 ${info.server}`);
+  log(`로그: ${info.logFile}`);
+  for (const line of tailLog(info.logFile)) process.stdout.write(`  ${line}\n`);
+}
+
 async function main(): Promise<void> {
   const command = process.argv[2];
   if (command === 'connect') return connectCommand(process.argv.slice(3));
@@ -614,6 +650,12 @@ async function main(): Promise<void> {
     return;
   }
   if (command === 'login') return login(process.argv.slice(3));
+  if (command === 'status') return daemonStatus();
+  if (command === 'stop') {
+    const stopped = stopDaemon();
+    log(stopped ? `백그라운드 connect를 껐다(pid ${stopped.pid})` : '백그라운드에서 돌고 있는 connect가 없다');
+    return;
+  }
   if (command === 'refresh') return refresh();
   if (command === 'once') return once();
   if (command === 'start') {
@@ -629,7 +671,8 @@ async function main(): Promise<void> {
   process.stderr.write(
     [
       '사용법: nomos <명령>',
-      '  connect [--code 코드] [--server 주소] [--name 이름]  로그인 → 배정 대기 → 작업 시작 (--code: 웹이 준 1회용 코드, 그 계정으로 연결)',
+      '  connect [--code 코드] [--server 주소] [--name 이름] [--background]  로그인 → 배정 대기 → 작업 시작 (--code: 웹이 준 1회용 코드, --background: 창 없이)',
+      '  status | stop                                백그라운드 connect 상태 보기 · 끄기',
       '  doctor                                       설치 상태 점검',
       '  login [주소] [--name 이름] [--connect-key]   로그인만',
       '  refresh | once | start | clean | --version',

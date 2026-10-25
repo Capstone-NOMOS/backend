@@ -11,7 +11,7 @@ import { findOrganizationById, findUserByConnectKeyHash, findUserById } from '..
 import { agentRevoked } from '../dispatch/agent-revoked.js';
 import { tasksChanged } from '../dispatch/tasks-changed.js';
 import type { GithubRevokeResult } from '../events/types.js';
-import { detachAgentFromActiveProject, revokeGithubAccess } from '../project/service.js';
+import { detachAgentFromActiveProject, reattachAgentInTx } from '../project/service.js';
 import {
   findAgentByActiveRefreshToken,
   findAgentById,
@@ -90,13 +90,17 @@ export async function issueAgentCredentials(
     onBehalfOf: user.id,
     payload: { agentId: agent.id, userId: user.id, name: agent.name, harness: agent.harness, reconnected: !created, method },
   });
+  // 같은 사람이 다시 연결했고 에이전트 없이 담당만 남은 역할이 하나면 다시 붙인다(028) — 대표가 다시 배정하지 않아도 된다.
+  // 토큰보다 먼저 붙여야 토큰에 그 프로젝트가 실린다.
+  const reattachedTo = await reattachAgentInTx(tx, agent.id, user.id);
+  if (reattachedTo) reattached.push(reattachedTo);
 
   return { accessToken: await signAgentAccessToken(tx, agent), refreshToken, agentId: agent.id };
 }
 
 // 연결 키 경로. 브라우저가 없는 환경(SSH·서버)용으로 남긴다. 조직·프로젝트가 없어도 연결된다.
 export async function connectAgent(input: ConnectAgentInput): Promise<ConnectAgentResult> {
-  return withTransaction(async (tx) => {
+  const result = await withTransaction(async (tx) => {
     const user = await findUserByConnectKeyHash(tx, hashSecret(input.connectKey));
     if (!user) {
       throw new AppError('INVALID_CONNECT_REQUEST', 'invalid connect request');
@@ -104,6 +108,8 @@ export async function connectAgent(input: ConnectAgentInput): Promise<ConnectAge
     const { connectKey: _connectKey, ...spec } = input;
     return issueAgentCredentials(tx, user, spec, 'connect_key');
   });
+  flushReattached();
+  return result;
 }
 
 export async function refreshAgentToken(refreshToken: string): Promise<{ accessToken: string }> {
@@ -196,10 +202,18 @@ export async function agentOrgId(agentId: string): Promise<string | null> {
   return (await findAgentById(pool, agentId))?.orgId ?? null;
 }
 
+// 커밋 뒤에 태스크 스냅샷을 다시 계산할 프로젝트 — 다시 붙은 에이전트에게 가져갈 태스크를 보낸다.
+// issueAgentCredentials는 호출부의 트랜잭션 안이라 여기 모았다가 호출부가 커밋 뒤 tasksChanged를 부른다(flushReattached).
+const reattached: string[] = [];
+export function flushReattached(): void {
+  for (const projectId of reattached.splice(0)) tasksChanged(projectId);
+}
+
 // ── 연결 해제(021) ───────────────────────────────────────────────────────
 
 // 에이전트 연결 해제 — 그 에이전트의 주인이나 같은 조직의 대표가 한다(대표 결정).
-// - 맡은 진행 중 프로젝트에서 빠진다. 진행 중 태스크를 붙잡고 있으면 409 ACTIVE_TASKS_HELD(멤버 해제와 같은 규칙).
+// - 맡은 진행 중 프로젝트에서 **에이전트만 떨어진다**(028). 사람은 그 역할 담당으로 남는다 — 접근·GitHub 권한도 그대로다.
+//   진행 중 태스크를 붙잡고 있으면 409 ACTIVE_TASKS_HELD(멤버 해제와 같은 규칙). 다시 연결하면 그 역할에 다시 붙는다.
 // - refresh token을 전부 폐기하고 disconnected_at을 찍는다. 남은 access token은 인증이 거부한다(AGENT_DISCONNECTED).
 // - 행은 지우지 않는다(이벤트·태스크가 가리킨다). 같은 노트북에서 같은 이름으로 다시 connect하면 되살아난다.
 export async function disconnectAgent(
@@ -226,21 +240,9 @@ export async function disconnectAgent(
     });
     return { agentId, disconnectedAt: marked.disconnectedAt!, unassignedFrom };
   });
-  // 커밋 뒤 — 빠진 프로젝트의 태스크 스냅샷을 다시 계산하고, 그 에이전트의 스트림을 끊는다.
+  // 커밋 뒤 — 떨어진 프로젝트의 태스크 스냅샷을 다시 계산하고, 그 에이전트의 스트림을 끊는다.
   if (result.unassignedFrom) tasksChanged(result.unassignedFrom);
   agentRevoked(agentId);
-  // 배정이 풀렸으면 그 프로젝트의 GitHub 레포 접근도 회수한다(커밋 뒤 — 실패해도 해제는 그대로).
-  const githubRevocations =
-    result.unassignedFrom && agent.orgId
-      ? await revokeGithubAccess({
-          orgId: agent.orgId,
-          onBehalfOf: actor.userId,
-          projectId: result.unassignedFrom,
-          agentId,
-          userId: agent.userId,
-          scope: { kind: 'project', projectId: result.unassignedFrom },
-          trigger: 'agent_disconnected',
-        })
-      : [];
-  return { ...result, githubRevocations };
+  // 사람은 담당으로 남으므로 GitHub 레포 접근은 회수하지 않는다(028). 회수는 사람이 빠질 때(멤버 해제·조직 탈퇴)만.
+  return { ...result, githubRevocations: [] };
 }
