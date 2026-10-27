@@ -68,6 +68,7 @@ export const TOPICS_BY_EVENT: Record<EventType, Mapping> = {
   ACTION_DETECTED: { project: ['tasks'] },
   RELEASE_DECIDED: { project: ['approvals', 'project', 'room'], org: ['approvals', 'projects'] },
   NOTES_ACK_REQUIRED: {},
+  DECISIONS_ACK_REQUIRED: {},
   TOOL_DENIED: {},
   PM_REVIEW_DEGRADED: {},
   NOTE_PUBLISHED: { project: ['notes', 'room'] },

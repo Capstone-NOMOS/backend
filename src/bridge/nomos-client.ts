@@ -86,7 +86,8 @@ export class NomosClient {
 
   async submitArtifact(
     taskId: string,
-    input: { commitSha: string; changedPaths: string[]; acknowledgedNoteIds?: string[] },
+    // acknowledgedDecisionIds: MCP submit_artifact는 비어 있어도 항상 보낸다(없으면 서버가 옛 CLI로 보고 결정 확인을 건너뛴다).
+    input: { commitSha: string; changedPaths: string[]; acknowledgedNoteIds?: string[]; acknowledgedDecisionIds?: string[] },
   ): Promise<Record<string, unknown>> {
     return (await this.request('POST', `/api/tasks/${taskId}/artifacts`, input)) as Record<string, unknown>;
   }

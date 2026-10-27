@@ -568,6 +568,19 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
   `GET /projects/:id/routing-report`가 라우터별 일치율·분류 지연·요청당 비용을 낸다. `baseline:asker` = 조건 A(질문한 사람에게 — SELF).
   Decision AI는 `DECISION_ROUTER_URL`(HTTP, `question/http-router.ts`) — 질문·명세가 외부로 나가므로 켜기 전에 팀이 동의한다.
   오프라인 데이터셋 비교(100문항)는 `scripts/eval-question-router.ts`가 같은 프롬프트·해석으로 한다.
+- **질문으로 정해진 결정은 다른 태스크에도 간다**(`question/decisions.ts`) — 답은 원래 질문한 태스크에만 갔다(같은 실행·재개 브리핑의 `answeredQuestions`). FE가 "페이지 크기?"를 묻고
+  BE 담당이 코드에 없던 "20개"를 정하면 그 API를 만드는 BE 태스크는 몰랐다.
+  - **확정된 결정** = status `answered`(사람이 정한 답: human·agent_confirmed·human_override), 질문 문장 하나당 한 결정(id `<questionId>:<인덱스>`).
+    `agent_answered`(상담 실행이 코드·명세에서 찾은 답)는 이미 코드에 있는 것이라 전달하지 않는다(조회 API에는 나온다).
+  - 사람은 `GET /projects/:id/decisions`로 인계 노트처럼 본다(읽기 전용, 이벤트 없음 — 그래서 만료 정리 `settleExpiry`도 부르지 않는다). 요약 문장은 서버가 만든다.
+  - 전달은 인계 노트와 같은 두 겹이다: 시작할 때 브리핑 `decisions`(프롬프트 "# 질문으로 정해진 결정"), 제출할 때 확인(409 `DECISIONS_UNACKNOWLEDGED`, 이벤트 `DECISIONS_ACK_REQUIRED`,
+    `TOOL_DENIED`·재시도 없음). 대상은 같은 프로젝트의 모든 태스크(역할 무관)이고 **질문한 태스크 자신은 뺀다**(이미 `answeredQuestions`로 받는다). 실행 중인 모델에 끼워 넣지 않는다.
+  - **선택 함수는 `selectDecisions` 한 벌**이다 — 조회 API·브리핑·제출 확인이 같은 함수를 쓴다(`selectDecisionsForTask`). 둘이 갈리면 브리핑으로 준 것과 요구하는 것이 어긋난다.
+  - 노트와 결정이 함께 미확인이면 **`DECISIONS_UNACKNOWLEDGED` 하나로 한 번에** 알린다(`details: { decisions, notes }`) — 따로 알리면 왕복이 하나 는다.
+    노트만 미확인이면 예전 그대로 `NOTES_UNACKNOWLEDGED`(노트 배열 — 배포된 CLI가 읽는 모양).
+  - **옛 CLI 호환**: 본문에 `acknowledgedDecisionIds` 필드 자체가 없으면(CLI 0.1.14 이하) 결정 확인을 건너뛰고 `ARTIFACT_SUBMITTED.payload.decisionAck = 'skipped_legacy_client'`.
+    옛 CLI는 결정을 브리핑에서 읽지도, 작업공간 파일에 남기지도 않아 id를 알 수 없다 — 요구하면 같은 제출을 반복하다 멈춘다. 새 CLI(0.1.15+, `buildSubmitBody`)는 **빈 배열이라도 항상** 보낸다.
+    그래서 배포는 서버 먼저, CLI 나중이다.
 - **`GET /me/questions`**: 내가 답할 질문(대표는 전부, 팀원은 자기 역할이 대상인 것) — 알림 배지용. 답할 자격 정의는 `answerQuestion`과 같아야 한다.
 
 ### 룸 (`domain/room`, 017) — 보기 전용

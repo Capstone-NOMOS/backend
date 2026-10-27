@@ -54,6 +54,9 @@ const submitBodySchema = z.object({
   changedPaths: z.array(z.string().min(1)).min(1).max(1000),
   // 확인한 인계 노트 id. 관련 노트를 다 확인하지 않았으면 409 NOTES_UNACKNOWLEDGED(details에 노트 전문).
   acknowledgedNoteIds: z.array(z.string().uuid()).max(200).optional(),
+  // 확인한 질문 결정 id("<questionId>:<질문 인덱스>"). 확정된 결정을 다 확인하지 않았으면 409 DECISIONS_UNACKNOWLEDGED.
+  // 필드가 없으면 옛 CLI(0.1.14 이하)로 보고 결정 확인을 건너뛴다 — 새 CLI는 빈 배열이라도 항상 보낸다.
+  acknowledgedDecisionIds: z.array(z.string().regex(/^[0-9a-f-]{36}:\d{1,2}$/, 'decision id is <questionId>:<index>')).max(500).optional(),
 });
 
 // POST /api/tasks/:taskId/artifacts — MCP 도구 submit_artifact의 서버 쪽.

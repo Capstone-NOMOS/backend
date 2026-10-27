@@ -11,6 +11,8 @@ export type PromptBriefing = {
   notesBlock: string;
   lastRejection?: { reason: string; commitSha: string | null } | null;
   answeredQuestions?: { question: string; answer: string; source: string }[];
+  // 다른 태스크의 질문으로 정해진 결정(서버가 확정된 것만 준다, 오래된 것부터). 옛 서버면 필드가 없다.
+  decisions?: { question: string; answer: string | null; askerRole: string; targetRole: string; decidedByName: string | null }[];
   // 담당자·대표가 룸에서 보낸 메시지(서버 028+, 옛 서버면 없다).
   humanMessages?: { text: string; fromNickname: string | null; fromRepresentative: boolean; ts: string }[];
   // 질문 중계(프로젝트 스위치). 꺼져 있으면(옛 서버면 필드 없음 → 꺼짐) AskUserQuestion 규칙 대신 "가정함" 규칙을 준다.
@@ -81,6 +83,20 @@ export function buildTaskPrompt(briefing: PromptBriefing, branch: string, enviro
       ].join('\n'),
     );
   }
+  // 다른 역할·PM이 질문에 답해 확정한 결정 — 이 태스크가 물은 것이 아니어도 프로젝트 전체가 따른다.
+  // 실행 중에는 끼워 넣지 않는다. 작업 중에 새로 정해진 결정은 제출 때 DECISIONS_UNACKNOWLEDGED로 온다.
+  if (briefing.decisions && briefing.decisions.length > 0) {
+    sections.push(
+      [
+        '# 질문으로 정해진 결정',
+        '다른 역할·PM이 질문에 답해 확정한 결정이다. 구현이 이 결정과 다르면 결정을 따른다.',
+        '결정 자체가 틀렸거나 바꿔야 한다고 보면 임의로 바꾸지 말고 AskUserQuestion으로 그 역할에 다시 묻는다.',
+        ...briefing.decisions.map(
+          (d) => `- [물은 쪽 ${d.askerRole} · 정한 쪽 ${d.targetRole}${d.decidedByName ? ` ${d.decidedByName}` : ''}] Q: ${d.question}\n  A: ${d.answer ?? ''}`,
+        ),
+      ].join('\n'),
+    );
+  }
   // 사람(그 역할 담당·대표)이 룸에서 보낸 메시지 — 이번 실행이 시작되기 전에 온 것만 들어온다(실행 중에는 끼워 넣지 않는다).
   if (briefing.humanMessages && briefing.humanMessages.length > 0) {
     sections.push(
@@ -113,6 +129,7 @@ export function buildTaskPrompt(briefing: PromptBriefing, branch: string, enviro
       '  바꾸지 않은 경로를 적거나 sha를 지어내지 않는다 — 서버가 제출 시점에 다시 검증한다.',
       '- 제출이 NOTES_UNACKNOWLEDGED로 반려되면, 작업 중에 새로 올라온 인계 노트가 함께 온다. 읽고, 작업에 영향이 있으면 고쳐서 커밋한 뒤',
       '  submit_artifact를 다시 부르며 그 노트 id를 acknowledged_note_ids에 넣는다. 위 [인계 노트]의 노트는 따로 넣지 않아도 된다.',
+      '- 제출이 DECISIONS_UNACKNOWLEDGED로 반려되면, 작업 중에 새로 정해진 결정이 함께 온다. 반영하고 그 id를 acknowledged_decision_ids에 넣어 다시 제출하라(함께 온 노트가 있으면 그 id는 acknowledged_note_ids에).',
       '- 다음 사람이 알아야 할 결정이나 함정이 있으면 publish_note로 남긴다. 다른 사람도 따라야 할 결정(계약·형식)은 DECIDED로 남긴다 — 프로젝트 전체에 전달된다.',
       // 실험(E6): 이 줄이 없으면 FE 에이전트가 명세에 없는 BE 계약을 스스로 정해 DECIDED로 발행했다 — 그 노트가 BE 브리핑에 "결정"으로 들어간다.
       `- 단, 다른 역할이 정해야 하는 계약(그 역할이 만드는 API의 응답 형식·상태 코드·필드 이름 등)은 DECIDED로 남기지 않는다 — 네 역할(${task.teamRole ?? '제한 없음'})이 정할 수 있는 것이 아니다.`,
