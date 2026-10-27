@@ -31,7 +31,7 @@ export function loadSpec(): Oas {
 }
 
 // OpenAPI 3.0 스키마 → JSON Schema(draft-07, ajv). 다른 점은 둘뿐이다:
-//   nullable: true  → null 허용
+//   nullable: true  → null 허용(타입 없는 oneOf·anyOf면 null 갈래를 더한다)
 //   $ref            → #/definitions/<이름>
 // 그리고 properties가 있는 객체는 additionalProperties를 명시하지 않았으면 false로 본다.
 function toJsonSchema(node: unknown): unknown {
@@ -63,6 +63,8 @@ function toJsonSchema(node: unknown): unknown {
     out.additionalProperties = false;
   }
   if (src.nullable === true) {
+    // 타입 없는 oneOf·anyOf(예: QuestionDecision.decidedBy — 사람 또는 에이전트)는 null을 갈래 하나로 더한다.
+    if (out.type === undefined && (out.oneOf !== undefined || out.anyOf !== undefined)) return { anyOf: [out, { type: 'null' }] };
     if (typeof out.type === 'string') out.type = [out.type, 'null'];
     if (Array.isArray(out.enum) && !out.enum.includes(null)) out.enum = [...out.enum, null];
   }

@@ -16,6 +16,7 @@ import { routeQuestion } from './router-registry.js';
 import { recordRouting } from './routing-eval.js';
 import { PM_TARGET, type QuestionTarget } from './router.js';
 import { schedulePmDraft } from './pm-draft.js';
+import { ALL_DECISION_STATUSES, ANSWERED_DECISION_STATUSES, selectDecisions, type QuestionDecision } from './decisions.js';
 import { findApprovedContractForSpec } from '../contract/repository.js';
 import type { AgentContext } from '../task/service.js';
 import {
@@ -263,6 +264,23 @@ export async function listProjectQuestions(
   await assertProjectVisibleToUser(pool, actor, projectId);
   const questions = await listQuestions(pool, projectId, status, limit);
   return Promise.all(questions.map((q) => settleExpiry(q, actor.orgId)));
+}
+
+// 질문으로 정해진 결정(사람 전용, 읽기 전용) — 인계 노트처럼 본다. 기본은 답이 있는 것(answered·agent_answered), all이면 대기·만료·자기 소관도.
+// 만료 정리(settleExpiry)를 부르지 않는다 — 조회는 이벤트를 남기지 않는다(시각이 지난 대기 질문은 다음 질문 조회·주기 정리가 만료시킨다).
+export async function listProjectDecisions(
+  actor: UserContext,
+  projectId: string,
+  query: { status: 'answered' | 'all'; role: QuestionTarget | null; taskId: string | null; limit: number },
+): Promise<QuestionDecision[]> {
+  await assertProjectVisibleToUser(pool, actor, projectId);
+  return selectDecisions(pool, projectId, {
+    statuses: query.status === 'all' ? ALL_DECISION_STATUSES : ANSWERED_DECISION_STATUSES,
+    role: query.role,
+    taskId: query.taskId,
+    order: 'newest',
+    limit: query.limit,
+  });
 }
 
 // 내가 답할 질문(조직 전체) — 알림 배지와 "답할 질문" 목록. 대표는 전부, 팀원은 자기 에이전트가 맡은 역할을 대상으로 한 것만.

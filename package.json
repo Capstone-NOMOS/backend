@@ -19,7 +19,8 @@
     "build:cli": "node -e \"require('fs').rmSync('packages/cli/dist',{recursive:true,force:true})\" && tsc -p tsconfig.cli.json",
     "check:cli-package": "tsx scripts/check-cli-package.ts",
     "verify:settings": "tsx scripts/verify-workspace-settings.ts",
-    "seed:tasks": "tsx scripts/seed-remote-tasks.ts"
+    "seed:tasks": "tsx scripts/seed-remote-tasks.ts",
+    "probe:questions": "tsx scripts/question-probe.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.129.0",

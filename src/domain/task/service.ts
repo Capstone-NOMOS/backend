@@ -6,6 +6,7 @@ import { findProjectById } from '../project/repository.js';
 import { recordDispatches } from '../room/dispatch.js';
 import { findLatestRejection } from '../approval/repository.js';
 import { listTaskAnswers } from '../question/repository.js';
+import { selectDecisionsForTask, type QuestionDecision } from '../question/decisions.js';
 import type { DenialStage, PathDenialReason } from '../events/types.js';
 import { settle, type Outcome } from '../outcome.js';
 import { getPolicySnapshot } from '../policy/policy-cache.js';
@@ -137,7 +138,43 @@ export type SubmitArtifactInput = {
   changedPaths: string[];
   // 확인한 인계 노트. 브리핑으로 받은 노트는 브릿지가 자동으로 넣고, 반려 뒤 새로 받은 노트는 모델이 넣는다.
   acknowledgedNoteIds?: string[];
+  // 확인한 질문 결정("<questionId>:<인덱스>"). 브리핑으로 받은 결정은 브릿지가 자동으로 넣고, 반려 뒤 새로 받은 결정은 모델이 넣는다.
+  // 필드 자체가 없으면(undefined) 옛 CLI(0.1.14 이하)다 — 결정 확인을 건너뛴다(아래 submitArtifact). 새 CLI는 빈 배열이라도 항상 보낸다.
+  acknowledgedDecisionIds?: string[];
 };
+
+// 확인 반려에 싣는 전문 — 모델이 이것만 보고 반영할 수 있어야 한다.
+function noteForAck(n: Note) {
+  return { id: n.id, seq: n.seq, kind: n.kind, headline: n.headline, keyPoints: n.keyPoints, affects: n.affects };
+}
+
+// 브리핑·확인 반려에 싣는 결정 한 줄. 화면용 조회 API(QuestionDecision)보다 좁다 — 모델이 반영하는 데 필요한 것만.
+export type BriefingDecision = {
+  id: string;
+  question: string;
+  answer: string | null;
+  askerRole: TeamRole;
+  targetRole: string;
+  decidedByName: string | null;
+  answeredAt: string | null;
+};
+
+function decisionForAck(d: QuestionDecision): BriefingDecision {
+  return {
+    id: d.id,
+    question: d.question,
+    answer: d.answer,
+    askerRole: d.askerRole,
+    targetRole: d.targetRole,
+    decidedByName: deciderName(d),
+    answeredAt: d.answeredAt,
+  };
+}
+
+// 정한 쪽의 이름 — 전달되는 확정된 결정은 전부 사람이 답한 것이라 실제로는 닉네임이다. 없으면 null.
+function deciderName(d: QuestionDecision): string | null {
+  return d.decidedBy?.kind === 'user' ? d.decidedBy.nickname : d.decidedBy?.kind === 'agent' ? d.decidedBy.agentName : null;
+}
 
 // 제출 결과에는 서버가 즉시 판정한 단계(V1A·V1B·V3)의 결론이 함께 온다.
 // 비동기로 돌리면 "제출은 됐는데 결과는 언제 오는가"를 관리하는 상태가 하나 더 늘고,
@@ -243,6 +280,17 @@ export async function submitArtifact(
       // 막을 수 있는 건 전달까지다 — 모델이 내용을 반영했는지는 검증(V1A·V3)의 몫이다.
       const acknowledged = new Set(input.acknowledgedNoteIds ?? []);
       const unacknowledged = (await notesRequiringAck(tx, task.id, ctx.agentId)).filter((n) => !acknowledged.has(n.id));
+
+      // 질문 결정 확인 — 노트와 같은 방식이다. 이 태스크에 전달되는 확정된 결정(브리핑 decisions와 같은 선택 — 범위는 selectDecisionsForTask)을
+      // 전부 확인했어야 받는다. 옛 CLI 호환: 0.1.14 이하는 이 필드를 모르고 결정을 브리핑에서 읽지도 않으므로, 확인을 요구하면
+      // 모델이 id를 알 수 없어 같은 제출을 반복하다 멈춘다. 그래서 필드 자체가 없으면 확인을 건너뛰고 ARTIFACT_SUBMITTED에
+      // decisionAck: 'skipped_legacy_client'를 남긴다(지표에서 가른다). 새 CLI는 빈 배열이라도 항상 보낸다.
+      const decisionAckSkipped = input.acknowledgedDecisionIds === undefined;
+      const acknowledgedDecisions = new Set(input.acknowledgedDecisionIds ?? []);
+      const unacknowledgedDecisions = decisionAckSkipped
+        ? []
+        : (await selectDecisionsForTask(tx, ctx.projectId, task.id)).filter((d) => !acknowledgedDecisions.has(d.id));
+
       if (unacknowledged.length > 0) {
         await appendEvent(tx, {
           orgId: ctx.orgId,
@@ -253,20 +301,42 @@ export async function submitArtifact(
           policyHash: ctx.policyHash,
           payload: { taskId: task.id, noteIds: unacknowledged.map((n) => n.id) },
         });
+      }
+      if (unacknowledgedDecisions.length > 0) {
+        await appendEvent(tx, {
+          orgId: ctx.orgId,
+          projectId: ctx.projectId,
+          type: 'DECISIONS_ACK_REQUIRED',
+          actorAgentId: ctx.agentId,
+          onBehalfOf: ctx.onBehalfOf,
+          policyHash: ctx.policyHash,
+          payload: { taskId: task.id, decisionIds: unacknowledgedDecisions.map((d) => d.id) },
+        });
+      }
+      // 노트와 결정이 함께 걸리면 한 번에 알린다(DECISIONS_UNACKNOWLEDGED에 노트도 싣는다) — 따로 알리면 반려·재제출 왕복이 하나 는다.
+      // 노트만 걸렸을 때는 예전 모양(NOTES_UNACKNOWLEDGED + 노트 배열) 그대로다 — 옛 CLI가 읽는다.
+      // 거부 이벤트를 커밋하고 밖에서 던진다(settle) — 트랜잭션 안에서 throw하면 이벤트까지 롤백된다.
+      if (unacknowledgedDecisions.length > 0) {
+        return {
+          denied: {
+            code: 'DECISIONS_UNACKNOWLEDGED',
+            message:
+              `${unacknowledgedDecisions.length} decision(s) were made by answering other tasks' questions after your briefing` +
+              (unacknowledged.length > 0 ? `, and ${unacknowledged.length} related handover note(s) were published` : '') +
+              '. Read them, change your work if it differs (follow the decision), then submit again with their ids in acknowledged_decision_ids' +
+              (unacknowledged.length > 0 ? ' and acknowledged_note_ids.' : '.'),
+            details: { decisions: unacknowledgedDecisions.map(decisionForAck), notes: unacknowledged.map(noteForAck) },
+          },
+        };
+      }
+      if (unacknowledged.length > 0) {
         return {
           denied: {
             code: 'NOTES_UNACKNOWLEDGED',
             message:
               `${unacknowledged.length} handover note(s) related to this task were published after your briefing. ` +
               'Read them, change your work if they affect it, then submit again with their ids in acknowledged_note_ids.',
-            details: unacknowledged.map((n) => ({
-              id: n.id,
-              seq: n.seq,
-              kind: n.kind,
-              headline: n.headline,
-              keyPoints: n.keyPoints,
-              affects: n.affects,
-            })),
+            details: unacknowledged.map(noteForAck),
           },
         };
       }
@@ -298,6 +368,9 @@ export async function submitArtifact(
           triggeredActions,
           gateMode,
           acknowledgedNoteIds: [...acknowledged].sort(),
+          ...(decisionAckSkipped
+            ? { decisionAck: 'skipped_legacy_client' as const }
+            : { acknowledgedDecisionIds: [...acknowledgedDecisions].sort() }),
         },
       });
 
@@ -400,6 +473,10 @@ export type TaskBriefing = {
   // 직전 제출이 대표에게 반려됐으면 그 사유. 반려되면 태스크가 READY로 돌아오고, 같은 태스크 브랜치에서 이어서 고친다.
   lastRejection: { approvalId: string; reason: string; decidedAt: string; artifactId: string | null; commitSha: string | null } | null;
   answeredQuestions: { question: string; answer: string; source: string }[];
+  // 다른 태스크가 물어 사람이 정한 결정 중 이 태스크에 전달할 것(오래된 것부터) — PM 대상은 전부, FE·BE 대상은 같은 명세만(selectDecisionsForTask).
+  // 이 태스크가 한 질문은 answeredQuestions로 받으므로 뺀다.
+  // 제출 때 이 id들을 확인한 것으로 보낸다(DECISIONS_UNACKNOWLEDGED) — 브릿지가 작업공간 파일에서 읽어 자동으로 넣는다.
+  decisions: BriefingDecision[];
   // 그 역할 담당·대표가 룸에서 보낸 메시지 중 아직 전달되지 않은 것(마지막 실행 시작 이후). 실행 중에 끼워 넣지 않고 여기로 온다.
   humanMessages: PendingRoomMessage[];
   // 질문 중계(018). 꺼져 있으면 Executor가 권한 도구(AskUserQuestion)를 붙이지 않고, 다른 역할 소관은 GOTCHA "가정함"으로 남기게 한다.
@@ -456,6 +533,7 @@ export async function getTaskBriefing(ctx: AgentContext, taskId: string): Promis
       answeredQuestions: (await listTaskAnswers(tx, taskId)).flatMap((q) =>
         q.questions.map((x) => ({ question: x.question, answer: q.answers?.[x.question] ?? '', source: q.answerSource! })),
       ),
+      decisions: (await selectDecisionsForTask(tx, task.projectId, taskId)).map(decisionForAck),
       writablePaths,
       // 로컬 방어선. 이 결과를 Executor가 worktree의 .claude/settings.json으로 깐다.
       claudeSettings: buildClaudePermissions(rules),

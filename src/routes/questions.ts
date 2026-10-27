@@ -1,6 +1,7 @@
 import { Router, type Request } from 'express';
 import { z } from 'zod';
-import { answerQuestion, askQuestion, detachFromQuestion, getQuestionForAgent, listConsultJobs, listProjectQuestions, submitDraft, listMyQuestions } from '../domain/question/service.js';
+import { answerQuestion, askQuestion, detachFromQuestion, getQuestionForAgent, listConsultJobs, listProjectDecisions, listProjectQuestions, submitDraft, listMyQuestions } from '../domain/question/service.js';
+import { TEAM_ROLES } from '../domain/roles.js';
 import type { UserContext } from '../domain/project/visibility.js';
 import { labelGold, routingReport } from '../domain/question/routing-eval.js';
 import { agentContextOf, authenticateAgent } from '../middleware/agent-auth.js';
@@ -107,6 +108,29 @@ questionsRouter.get(
     const { projectId } = req.params as { projectId: string };
     const { status, limit } = req.query as unknown as z.infer<typeof listQuery>;
     res.status(200).json({ data: { questions: await listProjectQuestions(actorOf(req), projectId, status, limit) } });
+  },
+);
+
+const decisionsQuery = z.object({
+  // 기본: 답이 있는 것(answered·agent_answered). all이면 대기·만료·자기 소관까지.
+  status: z.enum(['answered', 'all']).default('answered'),
+  // 묻는 쪽 또는 답할 쪽이 이 역할인 결정.
+  role: z.enum([...TEAM_ROLES, 'PM']).optional(),
+  taskId: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+});
+
+// GET /api/projects/:projectId/decisions — 질문으로 정해진 결정을 인계 노트처럼 본다(사람 전용, 읽기 전용, 질문 문장 하나당 한 줄).
+questionsRouter.get(
+  '/projects/:projectId/decisions',
+  validate({ params: z.object({ projectId: z.string().uuid() }), query: decisionsQuery }),
+  authenticate,
+  async (req, res) => {
+    const { projectId } = req.params as { projectId: string };
+    const { status, role, taskId, limit } = req.query as unknown as z.infer<typeof decisionsQuery>;
+    const decisions = await listProjectDecisions(actorOf(req), projectId, { status, role: role ?? null, taskId: taskId ?? null, limit });
+    // id(<questionId>:<질문 인덱스>)도 낸다 — 한 질문 행에 질문이 둘이면 questionId가 겹쳐 화면이 줄마다 고유 키를 못 쓴다.
+    res.status(200).json({ data: { decisions } });
   },
 );
 
