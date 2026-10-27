@@ -238,3 +238,60 @@ export async function listDueQuestions(db: Queryable, limit = 100): Promise<{ qu
   );
   return rows.map((r) => ({ question: toQuestion(r), orgId: r.question_org_id as string }));
 }
+
+// 질문으로 정해진 결정(조회 API·브리핑·제출 확인) — 결정 한 줄을 그리는 데 필요한 이름을 함께 읽는다.
+// decided_by: answered면 답한 사람(answered_by), agent_answered면 초안을 낸 에이전트(drafted_by_agent).
+export type DecisionRow = {
+  question: AgentQuestion;
+  taskTitle: string;
+  askedByAgentName: string;
+  draftedByAgentName: string | null;
+  answeredByNickname: string | null;
+  answeredByIsRepresentative: boolean;
+};
+
+export async function listDecisionRows(
+  db: Queryable,
+  input: {
+    projectId: string;
+    statuses: readonly QuestionStatus[];
+    role: QuestionTarget | null;
+    taskId: string | null;
+    // 이 태스크에 전달할 결정만(브리핑·제출 확인). null이면 범위를 좁히지 않는다(조회 API).
+    deliverToTaskId: string | null;
+    order: 'oldest' | 'newest';
+    limit: number | null;
+  },
+): Promise<DecisionRow[]> {
+  const direction = input.order === 'oldest' ? 'ASC' : 'DESC';
+  const { rows } = await db.query(
+    `SELECT q.*, t.title AS task_title, asker.name AS asked_by_agent_name, drafter.name AS drafted_by_agent_name,
+            u.nickname AS answered_by_nickname, (u.org_role = 'REPRESENTATIVE') AS answered_by_is_representative
+       FROM agent_questions q
+       JOIN tasks t ON t.id = q.task_id
+       JOIN agents asker ON asker.id = q.asked_by_agent
+       LEFT JOIN agents drafter ON drafter.id = q.drafted_by_agent
+       LEFT JOIN users u ON u.id = q.answered_by
+      WHERE q.project_id = $1
+        AND q.status = ANY($2::text[])
+        AND ($3::text IS NULL OR q.asker_role = $3 OR q.target_role = $3)
+        AND ($4::uuid IS NULL OR q.task_id = $4)
+        -- 전달 범위(decisions.ts의 selectDecisionsForTask): 질문한 태스크 자신은 빼고, PM 대상은 전부,
+        -- FE·BE 대상은 질문한 태스크와 받는 태스크의 명세가 같을 때만(둘 다 NOT NULL — NULL = NULL은 일치가 아니다).
+        AND ($5::uuid IS NULL OR (
+              q.task_id <> $5
+              AND (q.target_role = 'PM'
+                   OR (t.spec_id IS NOT NULL AND t.spec_id = (SELECT r.spec_id FROM tasks r WHERE r.id = $5)))))
+      ORDER BY COALESCE(q.answered_at, q.created_at) ${direction}, q.id ${direction}
+      LIMIT $6`,
+    [input.projectId, [...input.statuses], input.role, input.taskId, input.deliverToTaskId, input.limit],
+  );
+  return rows.map((r) => ({
+    question: toQuestion(r),
+    taskTitle: r.task_title as string,
+    askedByAgentName: r.asked_by_agent_name as string,
+    draftedByAgentName: (r.drafted_by_agent_name as string | null) ?? null,
+    answeredByNickname: (r.answered_by_nickname as string | null) ?? null,
+    answeredByIsRepresentative: r.answered_by_is_representative === true,
+  }));
+}

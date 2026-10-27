@@ -79,6 +79,7 @@ export type ErrorCode =
   | 'PROJECT_START_INVALID'
   | 'PROJECT_NOT_STARTED'
   | 'NOTES_UNACKNOWLEDGED'
+  | 'DECISIONS_UNACKNOWLEDGED'
   | 'MEMBER_NOT_FOUND'
   | 'REPO_OWNERSHIP_NOT_SET'
   // 해제·삭제(021)
@@ -238,6 +239,8 @@ const STATUS_BY_CODE: Record<ErrorCode, number> = {
   PROJECT_NOT_STARTED: 409,
   // 409 — 브리핑 뒤에 관련 인계 노트가 새로 생겼다. 읽고(필요하면 고치고) acknowledgedNoteIds에 넣어 다시 제출한다.
   NOTES_UNACKNOWLEDGED: 409,
+  // 409 — 브리핑 뒤에 다른 태스크의 질문으로 결정이 새로 정해졌다(같은 순간 걸린 노트도 함께 싣는다). 반영하고 acknowledgedDecisionIds에 넣어 다시 제출한다.
+  DECISIONS_UNACKNOWLEDGED: 409,
   MEMBER_NOT_FOUND: 404,
   // 422 — 요청 형식은 맞지만 레포가 아직 쓸 수 있는 상태가 아니다. 무엇을 먼저 해야 하는지 함께 알려준다.
   REPO_OWNERSHIP_NOT_SET: 422,

@@ -31,6 +31,7 @@ export type EventType =
   | 'MEMBER_ASSIGNED'
   | 'PROJECT_STARTED'
   | 'NOTES_ACK_REQUIRED'
+  | 'DECISIONS_ACK_REQUIRED'
   | 'APPROVAL_REQUESTED'
   | 'APPROVAL_RESULT'
   | 'QUESTION_ASKED'
@@ -203,6 +204,10 @@ export type ArtifactSubmittedPayload = {
   gateMode: string;
   // 이 제출이 확인한 인계 노트(브리핑으로 받은 것 + 반려 뒤 모델이 확인한 것). "무엇을 보고 냈나"의 기록이다.
   acknowledgedNoteIds?: string[];
+  // 이 제출이 확인한 질문 결정("<questionId>:<인덱스>", 정렬). 새 CLI(0.1.15+)만 남는다.
+  acknowledgedDecisionIds?: string[];
+  // 옛 CLI(0.1.14 이하)는 acknowledgedDecisionIds를 보내지 않는다 — 결정 확인을 건너뛰었다는 표시(지표에서 가른다).
+  decisionAck?: 'skipped_legacy_client';
 };
 
 // 제출을 반려하고 노트 확인을 요구했다. 정책 거부(TOOL_DENIED)가 아니다 — 새 정보가 생긴 것이라 M5′ 분모에 넣지 않고,
@@ -304,6 +309,13 @@ export type ApprovalResultPayload = {
 export type NotesAckRequiredPayload = {
   taskId: string;
   noteIds: string[];
+};
+
+// 제출을 반려하고 질문 결정 확인을 요구했다(NOTES_ACK_REQUIRED와 같은 성격 — 정책 거부가 아니고 재시도 횟수도 올리지 않는다).
+// decisionIds는 "<questionId>:<질문 인덱스>".
+export type DecisionsAckRequiredPayload = {
+  taskId: string;
+  decisionIds: string[];
 };
 
 // 읽기는 기록하지 않는다. read_notes까지 이벤트로 남기면 events가 조회 로그가 된다.
@@ -635,6 +647,7 @@ export type EventPayloadMap = {
   MEMBER_AGENT_ATTACHED: MemberAgentAttachedPayload;
   PROJECT_STARTED: ProjectStartedPayload;
   NOTES_ACK_REQUIRED: NotesAckRequiredPayload;
+  DECISIONS_ACK_REQUIRED: DecisionsAckRequiredPayload;
   APPROVAL_REQUESTED: ApprovalRequestedPayload;
   APPROVAL_RESULT: ApprovalResultPayload;
   QUESTION_ASKED: QuestionAskedPayload;

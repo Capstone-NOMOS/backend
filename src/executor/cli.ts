@@ -76,6 +76,8 @@ type Briefing = {
   notes: { id: string }[];
   lastRejection: { reason: string; commitSha: string | null } | null;
   answeredQuestions?: { question: string; answer: string; source: string }[];
+  // 다른 태스크의 질문으로 정해진 결정(서버 0.1.15 대응, 옛 서버면 없다).
+  decisions?: { id: string; question: string; answer: string | null; askerRole: string; targetRole: string; decidedByName: string | null; answeredAt: string | null }[];
   humanMessages?: { text: string; fromNickname: string | null; fromRepresentative: boolean; ts: string }[];
   questionRelay?: boolean;
   notesBlock: string;
@@ -211,8 +213,8 @@ async function handleTask(client: NomosClient, projectId: string, task: TaskSumm
   });
   log(`작업공간 ${workspace.dir} (브랜치 ${workspace.branch})`);
   activeWorkspaces.set(task.id, { dir: workspace.dir, repo: briefing.repo.fullName });
-  // 프롬프트에 넣는 노트 = 제출 때 "받은 노트"로 함께 보낼 노트. MCP 서버(submit_artifact)가 읽는다.
-  writeBriefingNotes(workspace.dir, task.id, (briefing.notes ?? []).map((n) => n.id));
+  // 프롬프트에 넣는 노트·결정 = 제출 때 "받은 것"으로 함께 보낼 노트·결정. MCP 서버(submit_artifact)가 읽는다.
+  writeBriefingNotes(workspace.dir, task.id, (briefing.notes ?? []).map((n) => n.id), (briefing.decisions ?? []).map((d) => d.id));
 
   if (workspace.createdBranch) {
     await client.reportBranch(task.id, workspace.branch);

@@ -301,6 +301,7 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     await call('GET', `/projects/${projectId}/questions`, rep);
     await call('GET', '/me/questions', rep);
     await call('POST', `/questions/${questionId}/answer`, rep, { answers: { [question]: '{ members: [...] }' } });
+    await call('GET', `/projects/${projectId}/decisions?status=all`, rep);
     // 라우팅 평가(026) — 정답 담당자 붙이기와 보고서
     await call('POST', `/questions/${questionId}/gold`, rep, { target: 'BACKEND', note: '응답 형식은 서버가 정한다' });
     await drainRoutingRecords();

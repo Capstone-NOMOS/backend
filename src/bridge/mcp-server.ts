@@ -7,7 +7,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { readCredentials, updateAccessToken } from './credentials.js';
 import { NomosClient, PolicyStaleLoopError } from './nomos-client.js';
-import { mergeAcknowledged, readBriefingNoteIds, readBriefingTaskId } from './briefing-notes.js';
+import { buildSubmitBody, readBriefingTaskId } from './briefing-notes.js';
 import { PERMISSION_TOOL } from './claude-args.js';
 import { DENY_OTHER, denyUnanswered, handleAskUserQuestion, isHandled, type PermissionResult } from './permission.js';
 import { pushTaskBranch } from './push.js';
@@ -95,7 +95,7 @@ server.registerTool(
   {
     title: 'Submit an artifact',
     description:
-      'Submit finished work for a task you have claimed. Commit your work on the task branch first, then provide the latest commit sha and every path changed on the task branch (including commits from earlier attempts on this branch). This tool pushes the task branch before submitting; if the push is refused (wrong branch, commit not on the task branch, remote has diverged) nothing is submitted and you get the reason. The server re-checks the paths against the ownership rules, so listing paths you did not change (or omitting ones you did) will be rejected or will fail verification later. If handover notes related to your task were published after you started, the submission is rejected with NOTES_UNACKNOWLEDGED and the notes are returned: read them, change and commit your work if they affect it, then submit again with their ids in acknowledged_note_ids. Notes that were already in your instructions are acknowledged automatically.',
+      'Submit finished work for a task you have claimed. Commit your work on the task branch first, then provide the latest commit sha and every path changed on the task branch (including commits from earlier attempts on this branch). This tool pushes the task branch before submitting; if the push is refused (wrong branch, commit not on the task branch, remote has diverged) nothing is submitted and you get the reason. The server re-checks the paths against the ownership rules, so listing paths you did not change (or omitting ones you did) will be rejected or will fail verification later. If handover notes related to your task were published after you started, the submission is rejected with NOTES_UNACKNOWLEDGED and the notes are returned: read them, change and commit your work if they affect it, then submit again with their ids in acknowledged_note_ids. Notes that were already in your instructions are acknowledged automatically. Likewise, if decisions were made by answering other tasks\' questions after you started, the submission is rejected with DECISIONS_UNACKNOWLEDGED and the decisions are returned (with any new related notes): follow them, change and commit your work if it differs, then submit again with their ids in acknowledged_decision_ids (and the notes\' ids in acknowledged_note_ids). Decisions already in your instructions are acknowledged automatically.',
     inputSchema: {
       task_id: z.string().describe('The claimed task id'),
       commit_sha: z.string().describe('Commit sha containing the work'),
@@ -104,9 +104,13 @@ server.registerTool(
         .array(z.string())
         .optional()
         .describe('Ids of handover notes you read after a NOTES_UNACKNOWLEDGED rejection'),
+      acknowledged_decision_ids: z
+        .array(z.string())
+        .optional()
+        .describe('Ids of decisions you read after a DECISIONS_UNACKNOWLEDGED rejection'),
     },
   },
-  async ({ task_id, commit_sha, changed_paths, acknowledged_note_ids }) =>
+  async ({ task_id, commit_sha, changed_paths, acknowledged_note_ids, acknowledged_decision_ids }) =>
     run(async () => {
       // push할 브랜치와 막을 브랜치는 서버가 정한다. 모델이 넘긴 값으로 고르지 않는다.
       const briefing = (await client.getBriefing(task_id)) as unknown as BriefingForPush;
@@ -120,13 +124,18 @@ server.registerTool(
         process.stderr.write('[nomos-mcp] origin 없음 — push 건너뜀(서버가 mirror 모드로 로컬에서 읽는다)\n');
       }
       // push가 실패하면(PushRefused) 여기까지 오지 않는다 — 제출하지 않고 run()이 모델에게 사유를 돌려준다.
-      // 브리핑으로 프롬프트에 들어간 노트는 이미 받은 것이다 — Executor가 작업공간에 남긴 id를 함께 보낸다.
-      const acknowledgedNoteIds = mergeAcknowledged(readBriefingNoteIds(workspaceDir, task_id), acknowledged_note_ids);
-      const artifact = await client.submitArtifact(task_id, {
-        commitSha: commit_sha,
-        changedPaths: changed_paths,
-        ...(acknowledgedNoteIds.length === 0 ? {} : { acknowledgedNoteIds }),
-      });
+      // 브리핑으로 프롬프트에 들어간 노트·결정은 이미 받은 것이다 — Executor가 작업공간에 남긴 id를 함께 보낸다.
+      const artifact = await client.submitArtifact(
+        task_id,
+        buildSubmitBody({
+          workspaceDir,
+          taskId: task_id,
+          commitSha: commit_sha,
+          changedPaths: changed_paths,
+          ...(acknowledged_note_ids === undefined ? {} : { acknowledgedNoteIds: acknowledged_note_ids }),
+          ...(acknowledged_decision_ids === undefined ? {} : { acknowledgedDecisionIds: acknowledged_decision_ids }),
+        }),
+      );
       return { ...artifact, push };
     }, 'submit_artifact'),
 );
