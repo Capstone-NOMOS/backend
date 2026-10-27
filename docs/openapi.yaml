@@ -198,11 +198,12 @@ components:
       description: |
         질문으로 정해진 결정 한 줄 — 질문 행 하나에 질문 문장이 여러 개면 문장마다 한 줄로 펼친다(같은 questionId).
         **확정된 결정** = status `answered`(사람이 정한 답: answerSource human·agent_confirmed·human_override). 이것만 다른 태스크의
-        브리핑(`decisions`)과 제출 확인(409 `DECISIONS_UNACKNOWLEDGED`)으로 전달된다. `agent_answered`는 상담 실행이 코드·명세에서 찾은 답 —
+        브리핑(`decisions`)과 제출 확인(409 `DECISIONS_UNACKNOWLEDGED`)으로 전달된다(PM 대상은 모든 태스크, FE·BE 대상은 같은 명세의 태스크만). `agent_answered`는 상담 실행이 코드·명세에서 찾은 답 —
         이미 코드에 있는 것이라 전달하지 않지만 여기에는 나온다.
-      required: [questionId, taskId, taskTitle, askedAt, askerRole, askedByAgentName, targetRole, routedBy, question, header, options, multiSelect, answer, answerSource, decidedBy, draftAnswer, answeredAt, status, summary]
+      required: [id, questionId, taskId, taskTitle, askedAt, askerRole, askedByAgentName, targetRole, routedBy, question, header, options, multiSelect, answer, answerSource, decidedBy, draftAnswer, answeredAt, status, summary]
       properties:
-        questionId: { type: string, format: uuid, description: '질문 행 id — GET /projects/{projectId}/questions의 id와 같다' }
+        id: { type: string, description: '<questionId>:<질문 인덱스> — 줄마다 유일(화면의 줄 키). 브리핑 decisions·acknowledgedDecisionIds의 id와 같다' }
+        questionId: { type: string, format: uuid, description: '질문 행 id — GET /projects/{projectId}/questions의 id와 같다. 한 행에 질문이 여럿이면 줄끼리 겹친다' }
         taskId: { type: string, format: uuid, description: '질문한 태스크' }
         taskTitle: { type: string }
         askedAt: { type: string, format: date-time }
@@ -1163,8 +1164,10 @@ components:
         decisions:
           type: array
           description: |
-            같은 프로젝트의 **다른 태스크**가 물어 사람이 정한 결정 전부(확정된 결정 — status answered, 역할 무관, 오래된 것부터).
-            이 태스크가 한 질문은 answeredQuestions로 받으므로 빠진다. 상담 실행이 코드에서 찾은 답(agent_answered)도 빠진다.
+            다른 태스크가 물어 사람이 정한 결정(확정된 결정 — status answered) 중 이 태스크에 전달할 것, 오래된 것부터.
+            범위: targetRole PM이면 프로젝트의 모든 태스크(명세 없는 태스크 포함), FRONTEND·BACKEND면 질문한 태스크와 spec_id가 같은 태스크만
+            (둘 다 명세가 있을 때 — 명세 없는 태스크가 FE·BE에게 물은 결정은 전달되지 않는다). 이 태스크가 한 질문은 answeredQuestions로 받으므로 빠진다.
+            상담 실행이 코드에서 찾은 답(agent_answered)도 빠진다.
             Executor가 프롬프트 "# 질문으로 정해진 결정" 절에 넣고 id를 작업공간 파일에 남겨, 제출 때 확인한 것으로 자동으로 보낸다.
           items:
             type: object
@@ -2589,7 +2592,7 @@ paths:
         생겼을 때**다 — 409 `NOTES_UNACKNOWLEDGED`, `details`에 노트 전문. 산출물은 만들지 않고 태스크는 그대로라 고쳐서 다시 낸다.
         재시도 횟수는 오르지 않는다(이벤트 `NOTES_ACK_REQUIRED` — payload `{ taskId, noteIds }`).
 
-        **질문 결정 확인**: 같은 프로젝트의 다른 태스크가 물어 사람이 정한 결정(브리핑 `decisions`와 같은 선택)을 전부 `acknowledgedDecisionIds`에
+        **질문 결정 확인**: 이 태스크에 전달되는 확정된 결정(브리핑 `decisions`와 같은 선택 — PM 대상은 전부, FE·BE 대상은 같은 명세만)을 전부 `acknowledgedDecisionIds`에
         넣어야 받는다. 브리핑으로 받은 결정은 브릿지가 자동으로 넣으므로, 반려되는 건 **브리핑 뒤에 새 결정이 정해졌을 때**다 — 409
         `DECISIONS_UNACKNOWLEDGED`, `details`는 `{ decisions: [결정 전문], notes: [같이 걸린 노트 전문] }`. 노트와 결정이 함께 걸리면 이 코드 하나로
         **한 번에** 알린다(노트만 걸렸을 때는 위의 `NOTES_UNACKNOWLEDGED` 그대로). `TOOL_DENIED`가 아니고 재시도 횟수도 오르지 않는다
@@ -2614,8 +2617,8 @@ paths:
                 acknowledgedDecisionIds:
                   type: array
                   maxItems: 500
-                  items: { type: string, pattern: '^[0-9a-f-]{36}:\d{1,2}$' }
-                  description: '확인한 질문 결정 id("<questionId>:<질문 인덱스>"). 새 CLI는 비어 있어도 항상 보낸다 — 필드가 없으면 옛 CLI로 보고 결정 확인을 건너뛴다'
+                  items: { type: string, maxLength: 100 }
+                  description: '확인한 질문 결정 id("<questionId>:<질문 인덱스>"). 형식은 검사하지 않고 모르는 id는 무시한다(빠진 결정은 409로 다시 온다). 새 CLI는 비어 있어도 항상 보낸다 — 필드가 없으면 옛 CLI로 보고 결정 확인을 건너뛴다'
             examples:
               정상:
                 value: { commitSha: a1b2c3d, changedPaths: [src/participation.ts, tests/participation.test.ts] }
@@ -3409,7 +3412,8 @@ paths:
         에이전트가 AskUserQuestion으로 묻고 사람이 답해 정해진 결정을 **질문 문장 하나당 한 줄**로 본다(사람 전용, 읽기 전용 — 조회는 이벤트를 남기지 않는다).
         볼 수 있는 범위는 태스크와 같다. 기본은 답이 있는 것(`answered`·`agent_answered`), `status=all`이면 대기·만료·자기 소관도.
         `role`은 묻는 쪽 또는 답할 쪽이 그 역할인 결정. 정렬은 답한 시각 최신순(답이 없으면 질문 시각). `limit`은 줄 수.
-        이 중 `answered`(확정된 결정)는 같은 프로젝트의 다른 태스크에 전달된다 — 브리핑 `decisions`, 제출 시 409 `DECISIONS_UNACKNOWLEDGED`.
+        여기에는 범위 제한 없이 전부 나온다. 이 중 `answered`(확정된 결정)는 다른 태스크에 전달된다 — PM 대상은 모든 태스크, FE·BE 대상은 질문한 태스크와
+        명세가 같은 태스크만(브리핑 `decisions`, 제출 시 409 `DECISIONS_UNACKNOWLEDGED`).
         실시간 신호 토픽은 questions(신호를 받으면 다시 읽는다).
       security: [{ userToken: [] }]
       parameters:

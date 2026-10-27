@@ -129,8 +129,8 @@ questionsRouter.get(
     const { projectId } = req.params as { projectId: string };
     const { status, role, taskId, limit } = req.query as unknown as z.infer<typeof decisionsQuery>;
     const decisions = await listProjectDecisions(actorOf(req), projectId, { status, role: role ?? null, taskId: taskId ?? null, limit });
-    // id는 제출 확인용(에이전트) 단위라 화면에는 questionId만 낸다.
-    res.status(200).json({ data: { decisions: decisions.map(({ id: _id, ...rest }) => rest) } });
+    // id(<questionId>:<질문 인덱스>)도 낸다 — 한 질문 행에 질문이 둘이면 questionId가 겹쳐 화면이 줄마다 고유 키를 못 쓴다.
+    res.status(200).json({ data: { decisions } });
   },
 );
 

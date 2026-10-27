@@ -3,13 +3,14 @@ import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
 import { buildSubmitBody, writeBriefingNotes } from '../src/bridge/briefing-notes.js';
 import { NomosApiError, NomosClient } from '../src/bridge/nomos-client.js';
 import { pool } from '../src/config/db.js';
 import { connectAgent, refreshAgentToken } from '../src/domain/agent/service.js';
-import { createTask } from '../src/domain/authoring/service.js';
+import { createSpec, createTask } from '../src/domain/authoring/service.js';
+import { setQuestionRouter } from '../src/domain/question/router-registry.js';
 import { login, signup } from '../src/domain/auth/service.js';
 import { acceptInvite, createInvite } from '../src/domain/invite/service.js';
 import { createOrganization } from '../src/domain/org/service.js';
@@ -49,7 +50,8 @@ async function account(loginId: string) {
   return { userId, connectKey, token: async () => (await login({ loginId, password: PASSWORD })).accessToken };
 }
 
-// 대표, FE 담당, BE 담당. FE 태스크(T-1)와 BE 태스크(T-2)를 각 에이전트가 잡은 상태까지(questions.test.ts의 world와 같은 모양).
+// 대표, FE 담당, BE 담당. 같은 명세 F-1의 FE 태스크(T-1)와 BE 태스크(T-2)를 각 에이전트가 잡은 상태까지(questions.test.ts의 world와 같은 모양).
+// 전달 범위를 보려고 잡지 않은 태스크를 더 둔다: 다른 명세(F-2)의 BE 태스크, 명세 없는 BE·FE 태스크.
 async function world() {
   const rep = await account('rep');
   const fe = await account('fe');
@@ -71,8 +73,13 @@ async function world() {
   const beAgent = await connectAgent({ connectKey: be.connectKey, agentName: 'be-mbp', harness: 'test', skills: [], maxConcurrent: 1 });
   await assignMember(repActor, project.id, feAgent.agentId, 'FRONTEND');
   await assignMember(repActor, project.id, beAgent.agentId, 'BACKEND');
-  const task = await createTask(rep.userId, project.id, { title: 'T-1 스터디 목록 화면', teamRole: 'FRONTEND', kind: 'INTEGRATION', repoId: web!.id, specId: null, dependsOn: [] });
-  const beTask = await createTask(rep.userId, project.id, { title: 'T-2 스터디 목록 API', teamRole: 'BACKEND', kind: 'INTEGRATION', repoId: api!.id, specId: null, dependsOn: [] });
+  const list = await createSpec(rep.userId, project.id, { featureKey: 'F-1', title: '스터디 목록', content: '스터디 목록을 보여 준다.', tests: [] });
+  const join = await createSpec(rep.userId, project.id, { featureKey: 'F-2', title: '스터디 참여', content: '스터디에 참여한다.', tests: [] });
+  const task = await createTask(rep.userId, project.id, { title: 'T-1 스터디 목록 화면', teamRole: 'FRONTEND', kind: 'IMPLEMENT', repoId: web!.id, specId: list.id, dependsOn: [] });
+  const beTask = await createTask(rep.userId, project.id, { title: 'T-2 스터디 목록 API', teamRole: 'BACKEND', kind: 'IMPLEMENT', repoId: api!.id, specId: list.id, dependsOn: [] });
+  const otherSpecBeTask = await createTask(rep.userId, project.id, { title: 'T-3 스터디 참여 API', teamRole: 'BACKEND', kind: 'IMPLEMENT', repoId: api!.id, specId: join.id, dependsOn: [] });
+  const noSpecBeTask = await createTask(rep.userId, project.id, { title: 'T-4 공통 오류 형식', teamRole: 'BACKEND', kind: 'INTEGRATION', repoId: api!.id, specId: null, dependsOn: [] });
+  const noSpecFeTask = await createTask(rep.userId, project.id, { title: 'T-5 공통 레이아웃', teamRole: 'FRONTEND', kind: 'INTEGRATION', repoId: web!.id, specId: null, dependsOn: [] });
   await startProject(repActor, project.id);
 
   const agentClient = async (refreshToken: string) =>
@@ -81,7 +88,21 @@ async function world() {
   await feClient.claimTask(task.id);
   const beClient = await agentClient(beAgent.refreshToken);
   await beClient.claimTask(beTask.id);
-  return { orgId, projectId: project.id, taskId: task.id, beTaskId: beTask.id, rep, fe, be, feClient, beClient, beAgentId: beAgent.agentId };
+  return {
+    orgId,
+    projectId: project.id,
+    taskId: task.id,
+    beTaskId: beTask.id,
+    otherSpecBeTaskId: otherSpecBeTask.id,
+    noSpecBeTaskId: noSpecBeTask.id,
+    noSpecFeTaskId: noSpecFeTask.id,
+    rep,
+    fe,
+    be,
+    feClient,
+    beClient,
+    beAgentId: beAgent.agentId,
+  };
 }
 type World = Awaited<ReturnType<typeof world>>;
 
@@ -117,7 +138,7 @@ async function feAsksAgentFinds(w: World, q: { question: string }, answer: strin
   return asked.id;
 }
 
-type Decision = Record<string, unknown> & { questionId: string; question: string; answer: string | null; summary: string };
+type Decision = Record<string, unknown> & { id: string; questionId: string; question: string; answer: string | null; summary: string };
 const decisionsOf = (res: { json: Json }) => (res.json.data as { decisions: Decision[] }).decisions;
 const eventCount = async () => (await pool.query(`SELECT count(*)::int AS n FROM events`)).rows[0].n as number;
 
@@ -172,10 +193,12 @@ describe('GET /projects/:projectId/decisions', () => {
     const w = await world();
     const id = await feAsksBeDecides(w, [PAGE, SORT], { [PAGE.question]: '20개', [SORT.question]: '최신순' });
     const list = decisionsOf(await http('GET', `/projects/${w.projectId}/decisions`, await w.rep.token()));
-    expect(list.map((d) => [d.questionId, d.question, d.answer])).toEqual([
-      [id, PAGE.question, '20개'],
-      [id, SORT.question, '최신순'],
+    expect(list.map((d) => [d.id, d.questionId, d.question, d.answer])).toEqual([
+      [`${id}:0`, id, PAGE.question, '20개'],
+      [`${id}:1`, id, SORT.question, '최신순'],
     ]);
+    // questionId는 겹치지만 id는 줄마다 유일하다 — 화면의 줄 키.
+    expect(new Set(list.map((d) => d.id)).size).toBe(2);
   });
 
   it('기본은 답이 있는 것만, status=all이면 대기 중인 질문도 — 답은 null', async () => {
@@ -340,5 +363,68 @@ describe('제출 시 결정 확인', () => {
     // 결정만 확인하면 노트가 남아 예전 모양(NOTES_UNACKNOWLEDGED)으로 반려된다.
     expect((await rejection(submit(w, { acknowledgedDecisionIds: [`${id}:0`] }))).code).toBe('NOTES_UNACKNOWLEDGED');
     await expect(submit(w, { acknowledgedDecisionIds: [`${id}:0`], acknowledgedNoteIds: [noteId] })).resolves.toMatchObject({ taskId: w.beTaskId });
+  });
+
+  it('결정 id 형식이 틀려도 400으로 막지 않는다 — 모르는 id는 무시하고, 필요한 id가 다 있으면 받고 빠졌으면 409', async () => {
+    const w = await world();
+    const id = await feAsksBeDecides(w, [PAGE], { [PAGE.question]: '20개' });
+    const err = await rejection(submit(w, { acknowledgedDecisionIds: ['garbage', 'not-a-uuid:x', `${id}:7`] }));
+    expect(err).toMatchObject({ status: 409, code: 'DECISIONS_UNACKNOWLEDGED' });
+    await expect(submit(w, { acknowledgedDecisionIds: ['garbage', `${id}:0`] })).resolves.toMatchObject({ taskId: w.beTaskId });
+  });
+});
+
+describe('전달 범위 — PM 대상은 전부, FE·BE 대상은 같은 명세만', () => {
+  afterEach(() => {
+    setQuestionRouter(null);
+  });
+  const ids = async (client: NomosClient, taskId: string) => (await briefingDecisions(client, taskId)).map((d) => d.id);
+
+  it('BE 대상 결정은 같은 명세의 다른 태스크에만 간다 — 다른 명세·명세 없는 태스크에는 브리핑에도 없고 제출도 409 없이 받는다', async () => {
+    const w = await world();
+    const id = await feAsksBeDecides(w, [PAGE], { [PAGE.question]: '20개' });
+
+    expect(await ids(w.beClient, w.beTaskId)).toEqual([`${id}:0`]);
+    expect(await ids(w.beClient, w.otherSpecBeTaskId)).toEqual([]);
+    expect(await ids(w.beClient, w.noSpecBeTaskId)).toEqual([]);
+
+    // 같은 명세(T-2)는 제출 때 확인을 요구받고, 다른 명세(T-3)는 받지 않는다.
+    const sameSpec = await w.beClient.submitArtifact(w.beTaskId, { commitSha: 'abc1234', changedPaths: ['src/studies.ts'], acknowledgedDecisionIds: [] }).then(
+      () => null,
+      (e: unknown) => e as NomosApiError,
+    );
+    expect(sameSpec?.code).toBe('DECISIONS_UNACKNOWLEDGED');
+    await w.beClient.claimTask(w.otherSpecBeTaskId);
+    await expect(
+      w.beClient.submitArtifact(w.otherSpecBeTaskId, { commitSha: 'abc1234', changedPaths: ['src/join.ts'], acknowledgedDecisionIds: [] }),
+    ).resolves.toMatchObject({ taskId: w.otherSpecBeTaskId });
+  });
+
+  it('PM 대상 결정은 다른 명세·명세 없는 태스크에도 간다 — 질문한 태스크 자신만 빠진다', async () => {
+    const w = await world();
+    setQuestionRouter({ name: 'test:pm', route: async () => ({ target: 'PM', confidence: null, reason: '정책', routedBy: 'test:pm' }) });
+    const asked = await w.feClient.askQuestions(w.taskId, [SORT]);
+    expect(asked.targetRole).toBe('PM');
+    expect((await http('POST', `/questions/${asked.id}/answer`, await w.rep.token(), { answers: { [SORT.question]: '최신순' } })).status).toBe(200);
+
+    for (const taskId of [w.beTaskId, w.otherSpecBeTaskId, w.noSpecBeTaskId]) expect(await ids(w.beClient, taskId)).toEqual([`${asked.id}:0`]);
+    expect(await ids(w.feClient, w.noSpecFeTaskId)).toEqual([`${asked.id}:0`]);
+    expect(await ids(w.feClient, w.taskId)).toEqual([]);
+  });
+
+  it('명세 없는 태스크가 BE에게 물은 결정은 어느 태스크에도 전달되지 않는다 — 조회 API에는 전부 나온다', async () => {
+    const w = await world();
+    await w.feClient.claimTask(w.noSpecFeTaskId);
+    const asked = await w.feClient.askQuestions(w.noSpecFeTaskId, [FIELD]);
+    expect((await http('POST', `/questions/${asked.id}/answer`, await w.be.token(), { answers: { [FIELD.question]: 'joinedAt' } })).status).toBe(200);
+    const sameSpec = await feAsksBeDecides(w, [PAGE], { [PAGE.question]: '20개' });
+
+    for (const taskId of [w.beTaskId, w.otherSpecBeTaskId, w.noSpecBeTaskId]) {
+      expect(await ids(w.beClient, taskId)).not.toContain(`${asked.id}:0`);
+    }
+    expect(await ids(w.feClient, w.taskId)).toEqual([]);
+    // 사람은 범위 제한 없이 전부 본다.
+    const all = decisionsOf(await http('GET', `/projects/${w.projectId}/decisions`, await w.rep.token())).map((d) => d.id);
+    expect(all.sort()).toEqual([`${asked.id}:0`, `${sameSpec}:0`].sort());
   });
 });

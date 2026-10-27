@@ -281,7 +281,7 @@ export async function submitArtifact(
       const acknowledged = new Set(input.acknowledgedNoteIds ?? []);
       const unacknowledged = (await notesRequiringAck(tx, task.id, ctx.agentId)).filter((n) => !acknowledged.has(n.id));
 
-      // 질문 결정 확인 — 노트와 같은 방식이다. 같은 프로젝트의 다른 태스크가 물어 사람이 정한 결정(브리핑 decisions와 같은 선택)을
+      // 질문 결정 확인 — 노트와 같은 방식이다. 이 태스크에 전달되는 확정된 결정(브리핑 decisions와 같은 선택 — 범위는 selectDecisionsForTask)을
       // 전부 확인했어야 받는다. 옛 CLI 호환: 0.1.14 이하는 이 필드를 모르고 결정을 브리핑에서 읽지도 않으므로, 확인을 요구하면
       // 모델이 id를 알 수 없어 같은 제출을 반복하다 멈춘다. 그래서 필드 자체가 없으면 확인을 건너뛰고 ARTIFACT_SUBMITTED에
       // decisionAck: 'skipped_legacy_client'를 남긴다(지표에서 가른다). 새 CLI는 빈 배열이라도 항상 보낸다.
@@ -473,7 +473,8 @@ export type TaskBriefing = {
   // 직전 제출이 대표에게 반려됐으면 그 사유. 반려되면 태스크가 READY로 돌아오고, 같은 태스크 브랜치에서 이어서 고친다.
   lastRejection: { approvalId: string; reason: string; decidedAt: string; artifactId: string | null; commitSha: string | null } | null;
   answeredQuestions: { question: string; answer: string; source: string }[];
-  // 같은 프로젝트의 다른 태스크가 물어 사람이 정한 결정 전부(오래된 것부터). 이 태스크가 한 질문은 answeredQuestions로 받으므로 뺀다.
+  // 다른 태스크가 물어 사람이 정한 결정 중 이 태스크에 전달할 것(오래된 것부터) — PM 대상은 전부, FE·BE 대상은 같은 명세만(selectDecisionsForTask).
+  // 이 태스크가 한 질문은 answeredQuestions로 받으므로 뺀다.
   // 제출 때 이 id들을 확인한 것으로 보낸다(DECISIONS_UNACKNOWLEDGED) — 브릿지가 작업공간 파일에서 읽어 자동으로 넣는다.
   decisions: BriefingDecision[];
   // 그 역할 담당·대표가 룸에서 보낸 메시지 중 아직 전달되지 않은 것(마지막 실행 시작 이후). 실행 중에 끼워 넣지 않고 여기로 온다.

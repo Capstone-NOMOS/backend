@@ -257,7 +257,8 @@ export async function listDecisionRows(
     statuses: readonly QuestionStatus[];
     role: QuestionTarget | null;
     taskId: string | null;
-    excludeTaskId: string | null;
+    // 이 태스크에 전달할 결정만(브리핑·제출 확인). null이면 범위를 좁히지 않는다(조회 API).
+    deliverToTaskId: string | null;
     order: 'oldest' | 'newest';
     limit: number | null;
   },
@@ -275,10 +276,15 @@ export async function listDecisionRows(
         AND q.status = ANY($2::text[])
         AND ($3::text IS NULL OR q.asker_role = $3 OR q.target_role = $3)
         AND ($4::uuid IS NULL OR q.task_id = $4)
-        AND ($5::uuid IS NULL OR q.task_id <> $5)
+        -- 전달 범위(decisions.ts의 selectDecisionsForTask): 질문한 태스크 자신은 빼고, PM 대상은 전부,
+        -- FE·BE 대상은 질문한 태스크와 받는 태스크의 명세가 같을 때만(둘 다 NOT NULL — NULL = NULL은 일치가 아니다).
+        AND ($5::uuid IS NULL OR (
+              q.task_id <> $5
+              AND (q.target_role = 'PM'
+                   OR (t.spec_id IS NOT NULL AND t.spec_id = (SELECT r.spec_id FROM tasks r WHERE r.id = $5)))))
       ORDER BY COALESCE(q.answered_at, q.created_at) ${direction}, q.id ${direction}
       LIMIT $6`,
-    [input.projectId, [...input.statuses], input.role, input.taskId, input.excludeTaskId, input.limit],
+    [input.projectId, [...input.statuses], input.role, input.taskId, input.deliverToTaskId, input.limit],
   );
   return rows.map((r) => ({
     question: toQuestion(r),
