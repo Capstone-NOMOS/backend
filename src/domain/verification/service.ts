@@ -58,8 +58,9 @@ export type VerificationSummary = {
   outcome: string;
   taskState: TaskState;
   retryCount: number;
-  // AWAITING_APPROVAL로 갔으면 그 승인 카드(대표가 승인·반려한다).
+  // AWAITING_APPROVAL로 갔으면 그 승인 카드와 단계(role_review면 역할 담당이 먼저, final이면 대표가 승인·반려한다).
   approvalId?: string;
+  approvalStage?: 'role_review' | 'final';
 };
 
 type Plan = {
@@ -233,7 +234,7 @@ async function settle(tx: PoolClient, ctx: EventContext, artifact: Artifact, tas
     outcome: string,
     taskState: TaskState,
     retryCount: number,
-    approvalId?: string,
+    approval?: { id: string; stage: 'role_review' | 'final' },
   ): VerificationSummary => ({
     artifactId: artifact.id,
     attempt: artifact.attempt,
@@ -241,7 +242,7 @@ async function settle(tx: PoolClient, ctx: EventContext, artifact: Artifact, tas
     outcome,
     taskState,
     retryCount,
-    ...(approvalId === undefined ? {} : { approvalId }),
+    ...(approval === undefined ? {} : { approvalId: approval.id, approvalStage: approval.stage }),
   });
 
   // 이미 결론이 난 뒤 늦게 도착한 보고는 상태를 건드리지 않는다.
@@ -266,9 +267,9 @@ async function settle(tx: PoolClient, ctx: EventContext, artifact: Artifact, tas
   await markTaskState(tx, task.id, next);
   if (next === 'DONE') return summary(next, next, task.retryCount);
 
-  // 승인 카드를 같은 트랜잭션에서 만든다 — 대기 상태인데 카드가 없는 순간이 생기지 않게. 대표가 승인(DONE)·반려(READY)한다.
-  const approvalId = await requestActionApproval(tx, ctx, { task, artifact, stages });
-  return summary(next, next, task.retryCount, approvalId);
+  // 승인 카드를 같은 트랜잭션에서 만든다 — 대기 상태인데 카드가 없는 순간이 생기지 않게. 역할 담당 1차 검토 → 대표 최종 승인(DONE)·반려(READY)다(030).
+  const approval = await requestActionApproval(tx, ctx, { task, artifact, stages });
+  return summary(next, next, task.retryCount, approval);
 }
 
 type EventContext = {
@@ -300,7 +301,7 @@ async function recordSummary(
       outcome: summary.outcome,
       taskState: summary.taskState,
       retryCount: summary.retryCount,
-      ...(summary.approvalId === undefined ? {} : { approvalId: summary.approvalId }),
+      ...(summary.approvalId === undefined ? {} : { approvalId: summary.approvalId, approvalStage: summary.approvalStage }),
       // 재시도 원인 — 반려(APPROVAL_RESULT의 REJECTED)와 retry_count를 같이 쓰므로 지표를 가를 수 있게 남긴다.
       ...(summary.outcome === 'RETRY' || summary.outcome === 'ESCALATED' ? { retryCause: 'VERIFICATION_FAILED' as const } : {}),
     },

@@ -20,7 +20,9 @@ import { onActivityRecorded } from '../domain/room/activity-hub.js';
 // - 신호에는 **무엇을 다시 읽을지(토픽)만** 싣는다. 데이터는 기존 API로 다시 읽는다 — 권한·응답 모양이 API 한 곳에서 정해지고,
 //   신호를 놓치거나 겹쳐도 다시 읽은 결과가 맞다. 그래서 순서·재전송을 관리하지 않는다.
 // - 신호원은 커밋된 이벤트(016 트리거 → NOTIFY)와 에이전트 접속 상태 변화다. 서비스가 따로 알림을 부를 필요가 없다.
-// - 범위: org 토픽은 같은 조직의 모든 연결(approvals는 대표만), project 토픽은 그 프로젝트를 **구독한** 연결만.
+// - 범위: org 토픽은 같은 조직의 모든 연결, project 토픽은 그 프로젝트를 **구독한** 연결만.
+//   approvals도 조직 전부에 간다(030) — 팀원의 "검토 요청"(GET /me/approvals) 배지가 그 프로젝트 화면을 열지 않아도 갱신돼야 한다.
+//   신호에는 데이터가 없고, 팀원은 자기 몫(/me/approvals)만 다시 읽는다(조직 대기열 API는 여전히 대표 전용).
 //   구독할 때 assertProjectVisibleToUser로 확인한다(HTTP와 같은 정의). 배정이 해제되면 다시 확인해 구독을 끊는다.
 // - 인증은 연결 뒤 첫 메시지 { type: 'auth', token }(사람 JWT) — URL에 실으면 프록시 로그에 남는다. 역할은 연결할 때 읽는다.
 //
@@ -129,9 +131,8 @@ export function attachUserStream(server: Server, options: UserStreamOptions): Us
     const { project, org } = topicsFor(event.type, event.projectId !== null);
     const list = [...conns];
     for (const conn of list) {
-      const orgTopics = conn.ctx.orgRole === 'REPRESENTATIVE' ? org : org.filter((t) => t !== 'approvals');
       // org 토픽은 그 이벤트의 프로젝트를 함께 알려 준다(대시보드가 어느 프로젝트의 카드인지 안다). 화면은 조직 단위로 다시 읽는다.
-      if (orgTopics.length > 0) queue(conn, null, orgTopics, event.id);
+      if (org.length > 0) queue(conn, null, org, event.id);
       if (event.projectId && conn.projects.has(event.projectId)) queue(conn, event.projectId, project, event.id);
     }
     if (event.type === 'ORG_MEMBER_REMOVED') {

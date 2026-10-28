@@ -358,9 +358,13 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
       const v = await call('POST', `/artifacts/${a.data.id as string}/verifications`, agent, { stage: 'V4', result: 'PASS' });
       approvalIds.push(v.data.approvalId as string);
     }
-    await call('GET', `/orgs/${orgId}/approvals`, rep);
-    await call('POST', `/approvals/${approvalIds[0]!}/approve`, rep);
-    await call('POST', `/approvals/${approvalIds[1]!}/reject`, rep, { reason: 'down 마이그레이션이 없다' });
+    // 두 단계(030) — BE 담당이 1차 검토(내 검토 요청) → 대표가 최종 승인. 반려는 1차 검토에서.
+    await call('GET', '/me/approvals', be);
+    await call('POST', `/approvals/${approvalIds[0]!}/approve`, be, { note: 'down까지 확인했다' });
+    const finals = await call('GET', `/orgs/${orgId}/approvals?stage=final`, rep);
+    const finalId = (finals.data.approvals as { id: string }[])[0]!.id;
+    await call('POST', `/approvals/${finalId}/approve`, rep);
+    await call('POST', `/approvals/${approvalIds[1]!}/reject`, be, { reason: 'down 마이그레이션이 없다' });
     await call('GET', `/projects/${projectId}/approvals?status=all`, rep);
 
     // 인계 노트

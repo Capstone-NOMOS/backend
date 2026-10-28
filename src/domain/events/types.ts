@@ -222,6 +222,13 @@ export type ApprovalRequestedPayload = {
   artifactId: string;
   gateMode: string;
   triggeredActions: string[];
+  // 030: role_review(역할 담당 1차 검토)·final(대표 최종). 030 이전 이벤트에는 없다(= final).
+  stage?: 'role_review' | 'final';
+  reviewerUserId?: string | null;
+  // 역할 담당 검토를 건너뛰고 바로 final인 이유.
+  roleReviewSkipped?: 'no_owner' | 'owner_is_representative';
+  // 1차 검토를 통과해 생긴 final 카드면 그 role_review 카드.
+  roleReviewApprovalId?: string;
 };
 
 // 실행 중인 에이전트가 다른 역할 소관의 결정을 물었다(AskUserQuestion → 브릿지 → 서버). 질문 문장은 행에 있다.
@@ -301,11 +308,20 @@ export type ApprovalResultPayload = {
   decision: 'APPROVE' | 'REJECT';
   reason: string | null;
   gateMode: string | null;
-  reviewer: 'human' | 'human_fallback';
+  // role_owner = 1차 검토(역할 담당 또는 대표가 대신), human = 대표 최종, human_fallback = PM_REVIEW 카드를 대표가 대신.
+  reviewer: 'human' | 'human_fallback' | 'role_owner';
   selfApproval: boolean;
   taskState: string;
   retryCount?: number;
   retryCause?: 'REJECTED';
+  // 030. 옛 이벤트에는 없다(= final).
+  stage?: 'role_review' | 'final';
+  teamRole?: string | null;
+  deciderNickname?: string | null;
+  // 1차 검토를 대표가 대신 처리했다.
+  decidedByRepresentative?: boolean;
+  // 1차 검토 승인으로 생긴 final 카드.
+  nextApprovalId?: string;
 };
 
 export type NotesAckRequiredPayload = {
@@ -556,6 +572,9 @@ export type VerificationCompletedPayload = {
   outcome: string;
   taskState: string;
   retryCount: number;
+  approvalId?: string;
+  // 030: AWAITING_APPROVAL로 갔으면 카드의 단계(role_review면 역할 담당 검토를 기다린다).
+  approvalStage?: 'role_review' | 'final';
 };
 
 // 레포 설정(github_repo_id·clone_url) 변경. clone_url은 자격 증명을 넣을 수 없게 검증하므로 그대로 남겨도 된다.

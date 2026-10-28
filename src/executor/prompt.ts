@@ -9,7 +9,8 @@ export type PromptBriefing = {
   // 확정한 API 계약(서버 023). 옛 서버면 필드가 없다.
   contract?: { featureKey: string; summary: string; schemaYaml: string } | null;
   notesBlock: string;
-  lastRejection?: { reason: string; commitSha: string | null } | null;
+  // rejectedBy(서버 030): 1차 검토에서 역할 담당이(role_owner) 또는 대표가 반려했다. 옛 서버에는 없다(대표로 본다).
+  lastRejection?: { reason: string; commitSha: string | null; rejectedBy?: 'role_owner' | 'representative' } | null;
   answeredQuestions?: { question: string; answer: string; source: string }[];
   // 다른 태스크의 질문으로 정해진 결정(서버가 확정된 것만 준다, 오래된 것부터). 옛 서버면 필드가 없다.
   decisions?: { question: string; answer: string | null; askerRole: string; targetRole: string; decidedByName: string | null }[];
@@ -65,7 +66,7 @@ export function buildTaskPrompt(briefing: PromptBriefing, branch: string, enviro
   if (briefing.lastRejection) {
     sections.push(
       [
-        '# 직전 제출이 대표에게 반려됐다',
+        `# 직전 제출이 ${briefing.lastRejection.rejectedBy === 'role_owner' ? '역할 담당(검토자)' : '대표'}에게 반려됐다`,
         `사유: ${briefing.lastRejection.reason}`,
         `반려된 커밋: ${briefing.lastRejection.commitSha ?? '(알 수 없음)'} — 이 브랜치에 이전 작업이 남아 있다. 처음부터 다시 만들지 말고 사유에 맞게 고친 뒤 다시 제출한다.`,
       ].join('\n'),
