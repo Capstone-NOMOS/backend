@@ -27,6 +27,8 @@ export type StreamDeps = {
   refresh: () => Promise<void>;
   fallback: () => Promise<TaskSummary[]>;
   log: (line: string) => void;
+  // 서버가 이 에이전트의 연결 해제로 스트림을 닫았다(4401, reason AGENT_DISCONNECTED). 재발급해도 같은 답이라 시도하지 않는다.
+  onAgentDisconnected?: () => void;
   WebSocketImpl?: new (url: string) => WebSocketLike;
   // 테스트용
   backoff?: { initialMs: number; maxMs: number };
@@ -117,6 +119,12 @@ export function streamTaskSource(deps: StreamDeps): TaskSource & { readonly conn
       if (closed) return;
       if (ev.code === 4403) {
         deps.log('이 에이전트는 프로젝트 멤버가 아니다 — 푸시를 멈춘다(폴링으로 계속 확인한다)');
+        wake();
+        return;
+      }
+      if (ev.code === 4401 && ev.reason === 'AGENT_DISCONNECTED') {
+        deps.log('서버가 이 에이전트의 연결 해제로 푸시를 닫았다');
+        deps.onAgentDisconnected?.();
         wake();
         return;
       }

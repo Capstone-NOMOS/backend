@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { buildClaudeArgs } from '../bridge/claude-args.js';
+import { killOnAbort } from './stop.js';
 
 export const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 // 모델 출력(stream-json)이 이만큼 없으면 응답이 끊긴 것으로 보고 끊는다. 30분을 다 기다리지 않고, 사유도 "오래 일함"과 구분된다.
@@ -9,7 +10,8 @@ export const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 // 정상적인 무출력 구간보다 길어야 한다 — 질문 답 대기(실행 안 3분)·시험 실행(Bash 기본 2분, 최대 10분)·긴 생각.
 export const DEFAULT_IDLE_MS = 15 * 60 * 1000;
 
-export type RunOutcome = 'completed' | 'timeout' | 'stalled' | 'failed';
+// aborted: 에이전트 연결이 해제돼 Executor가 멈췄다(stop.ts) — 서버가 이미 실행을 닫았으므로 종료 보고를 보내지 않는다.
+export type RunOutcome = 'completed' | 'timeout' | 'stalled' | 'failed' | 'aborted';
 
 // Executor가 띄우는 claude에 넘기지 않는 환경변수 — 띄운 쪽 Claude Code 세션과 묶는 값들이다.
 // Claude Code 안에서(예: "nomos connect 실행해 줘") CLI를 띄우면 이 값이 그대로 넘어가 태스크 실행이 그 대화 세션의
@@ -86,6 +88,8 @@ export type RunInput = {
   onStdoutLine?: (line: string) => void;
   // PATH 앞에 붙일 폴더(작업공간의 파이썬 가상환경) — 모델의 `python -m pytest`가 미리 설치한 의존성을 쓰게.
   pathPrepend?: string | null;
+  // 멈추면 claude를 트리째 끝낸다(연결 해제 — stop.ts). 결과는 outcome 'aborted'.
+  signal?: AbortSignal;
   // 테스트용 — claude 대신 띄울 명령
   command?: { command: string; commandArgs: string[] };
 };
@@ -149,14 +153,21 @@ export async function runClaude(input: RunInput): Promise<RunResult> {
       }
     }, Math.min(30_000, Math.max(50, Math.floor(idleMs / 4))));
 
+    const unwatch = killOnAbort(child, input.signal);
+
     child.on('close', (code) => {
       clearTimeout(timer);
       clearInterval(idleCheck);
-      writeFileSync(logPath, stalled ? `${chunks.join('')}
-[executor] ${Math.round(idleMs / 60_000)}분 동안 모델 출력이 없어 실행을 끊었다
-` : chunks.join(''));
+      unwatch();
+      const aborted = input.signal?.aborted === true;
+      const note = aborted
+        ? '\n[executor] 에이전트 연결이 해제돼 실행을 멈췄다\n'
+        : stalled
+          ? `\n[executor] ${Math.round(idleMs / 60_000)}분 동안 모델 출력이 없어 실행을 끊었다\n`
+          : '';
+      writeFileSync(logPath, `${chunks.join('')}${note}`);
       resolve({
-        outcome: stalled ? 'stalled' : timedOut ? 'timeout' : code === 0 ? 'completed' : 'failed',
+        outcome: aborted ? 'aborted' : stalled ? 'stalled' : timedOut ? 'timeout' : code === 0 ? 'completed' : 'failed',
         exitCode: code,
         durationMs: Date.now() - startedAt,
         logPath,
@@ -166,6 +177,7 @@ export async function runClaude(input: RunInput): Promise<RunResult> {
     child.on('error', (err) => {
       clearTimeout(timer);
       clearInterval(idleCheck);
+      unwatch();
       writeFileSync(logPath, `${chunks.join('')}\n[executor] spawn 실패: ${err.message}\n`);
       resolve({ outcome: 'failed', exitCode: null, durationMs: Date.now() - startedAt, logPath });
     });

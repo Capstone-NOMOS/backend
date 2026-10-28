@@ -38,6 +38,11 @@ export function isAlive(pid: number): boolean {
   }
 }
 
+// 이 프로세스가 백그라운드 connect 자신이면 daemon.json을 지운다 — 연결 해제로 스스로 끝날 때(cli.ts) status가 바로 "돌고 있지 않음"을 보이게.
+export function clearDaemonIfSelf(): void {
+  if (readDaemon()?.pid === process.pid) rmSync(daemonFile(), { force: true });
+}
+
 // 살아 있는 백그라운드 connect. 죽었는데 파일만 남았으면 지우고 null.
 export function runningDaemon(): DaemonInfo | null {
   const info = readDaemon();

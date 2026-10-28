@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { killOnAbort } from './stop.js';
 import { claudeEnv, resolveClaudeCommand } from './runner.js';
 
 // 상담 실행 — 다른 역할 에이전트가 이 역할 소관을 물으면, 이 노트북의 Claude Code(본인 구독)로 레포를 **읽기만** 해서 답 초안을 만든다.
@@ -84,7 +85,8 @@ export function consultArgs(prompt: string, emptyMcpPath: string): string[] {
 }
 
 // 읽기 전용 Claude를 한 번 돌려 구조화 출력을 돌려준다(없으면 result 문자열).
-export async function runReadOnlyClaude(input: { dir: string; prompt: string; schema: Record<string, unknown>; timeoutMs: number; label: string }): Promise<unknown> {
+// signal이 멈추면(연결 해제 — stop.ts) claude를 트리째 끝내고 그 사유로 실패한다.
+export async function runReadOnlyClaude(input: { dir: string; prompt: string; schema: Record<string, unknown>; timeoutMs: number; label: string; signal?: AbortSignal }): Promise<unknown> {
   const scratch = path.join(tmpdir(), 'nomos-consult');
   mkdirSync(scratch, { recursive: true });
   const emptyMcp = path.join(scratch, 'mcp.json');
@@ -97,14 +99,18 @@ export async function runReadOnlyClaude(input: { dir: string; prompt: string; sc
       child.kill();
       reject(new Error(`${input.label} 시간 초과`));
     }, input.timeoutMs);
+    const unwatch = killOnAbort(child, input.signal);
     child.stdout.on('data', (d) => (stdout += d));
     child.once('error', (err) => {
       clearTimeout(timer);
+      unwatch();
       reject(err);
     });
     child.on('close', () => {
       clearTimeout(timer);
-      resolve(stdout);
+      unwatch();
+      if (input.signal?.aborted) reject(input.signal.reason instanceof Error ? input.signal.reason : new Error(`${input.label} 중단`));
+      else resolve(stdout);
     });
     child.stdin.end(input.prompt);
   });
@@ -139,13 +145,14 @@ export function parseConsultDraft(output: unknown, questions: string[]): Consult
   return { answers, decided, basis };
 }
 
-export async function runConsult(input: { dir: string; role: string; repoName: string; question: ConsultQuestion; timeoutMs?: number }): Promise<ConsultDraft> {
+export async function runConsult(input: { dir: string; role: string; repoName: string; question: ConsultQuestion; timeoutMs?: number; signal?: AbortSignal }): Promise<ConsultDraft> {
   const output = await runReadOnlyClaude({
     dir: input.dir,
     prompt: buildConsultPrompt(input),
     schema: CONSULT_JSON_SCHEMA,
     timeoutMs: input.timeoutMs ?? 5 * 60_000,
     label: '상담 실행',
+    ...(input.signal ? { signal: input.signal } : {}),
   });
   return parseConsultDraft(output, input.question.questions.map((q) => q.question));
 }

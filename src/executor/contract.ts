@@ -110,6 +110,7 @@ export async function runContractDraft(input: {
   approved: ApprovedContract[];
   problems?: string[];
   timeoutMs?: number;
+  signal?: AbortSignal;
 }): Promise<ContractDraft> {
   const output = await runReadOnlyClaude({
     dir: input.dir,
@@ -118,6 +119,7 @@ export async function runContractDraft(input: {
     // 계약은 레포를 넓게 읽는다(라우트·에러 형식·인증) — 상담(5분)보다 길게 둔다.
     timeoutMs: input.timeoutMs ?? 10 * 60_000,
     label: '계약 작성',
+    ...(input.signal ? { signal: input.signal } : {}),
   });
   return parseContractDraft(output);
 }
@@ -213,6 +215,7 @@ export async function runContractBatch(input: {
   jobs: ContractJob[];
   approved: ApprovedContract[];
   timeoutMs?: number;
+  signal?: AbortSignal;
 }): Promise<Map<string, ContractDraft>> {
   const output = await runReadOnlyClaude({
     dir: input.dir,
@@ -221,6 +224,7 @@ export async function runContractBatch(input: {
     // 레포는 한 번 읽지만 쓸 양은 기능 수만큼 는다. 기본 10분 + 기능당 2분, 최대 30분.
     timeoutMs: input.timeoutMs ?? Math.min(30, 10 + 2 * input.jobs.length) * 60_000,
     label: '계약 묶음 작성',
+    ...(input.signal ? { signal: input.signal } : {}),
   });
   return parseContractBatch(output, input.jobs);
 }
