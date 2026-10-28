@@ -64,7 +64,7 @@ export async function insertApproval(
 
 export async function findApprovalForUpdate(db: Queryable, approvalId: string): Promise<(ApprovalRow & { orgId: string }) | null> {
   const { rows } = await db.query(
-    `SELECT a.*, p.org_id FROM approvals a JOIN projects p ON p.id = a.project_id WHERE a.id = $1 FOR UPDATE OF a`,
+    `SELECT a.*, p.org_id FROM approvals a JOIN projects p ON p.id = a.project_id WHERE a.id = $1 AND p.deleted_at IS NULL FOR UPDATE OF a`,
     [approvalId],
   );
   const row = rows[0];
@@ -116,6 +116,7 @@ export async function listApprovals(
        LEFT JOIN tasks t ON t.id = a.subject_id
       WHERE ($1::uuid IS NULL OR p.org_id = $1)
         AND ($2::uuid IS NULL OR a.project_id = $2)
+        AND p.deleted_at IS NULL
         AND ($3 = 'all' OR ($3 = 'pending' AND a.decision IS NULL AND p.status <> 'aborted') OR ($3 = 'decided' AND a.decision IS NOT NULL))
       ORDER BY a.requested_at DESC, a.id
       LIMIT $4`,

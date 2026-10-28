@@ -7,6 +7,8 @@ export type EventType =
   | 'CONTRACT_FAILED'
   | 'GITHUB_COLLABORATORS_REMOVED'
   | 'PROJECT_ABORTED'
+  | 'PROJECT_DELETED'
+  | 'ORG_DISSOLVED'
   | 'ORG_MEMBER_REMOVED'
   | 'REPO_DISCONNECTED'
   | 'INVITE_REVOKED'
@@ -375,7 +377,8 @@ export type MemberAgentAttachedPayload = { agentId: string; teamRole: string; us
 
 // 021 해제·삭제. 행은 지우지 않고 표시만 한다(되살릴 수 있고, 기록이 가리킨다).
 export type AgentDisconnectedPayload = { agentId: string; userId: string; name: string; byOwner: boolean; unassignedFrom: string | null };
-export type OrgMemberRemovedPayload = { userId: string; self: boolean; agentIds: string[]; unassignedFrom: string[] };
+// cause: 조직 해산(029)으로 빠졌으면 'org_dissolved'. 없으면 내보내기·탈퇴다.
+export type OrgMemberRemovedPayload = { userId: string; self: boolean; agentIds: string[]; unassignedFrom: string[]; cause?: 'org_dissolved' };
 export type RepoDisconnectedPayload = { repoId: string; fullName: string };
 export type InviteRevokedPayload = { inviteId: string };
 
@@ -403,6 +406,12 @@ export type ContractFailedPayload = { contractId: string; featureKey: string; at
 
 // 프로젝트 중단(021). 지우지 않고 aborted로 닫는다 — 이벤트·태스크·노트가 가리킨다.
 export type ProjectAbortedPayload = { previousStatus: string; reason: string | null; openTaskCount: number; expiredQuestionIds: string[] };
+
+// 프로젝트 삭제(029, 대표 명의). 행은 남고 deleted_at만 찍힌다. 진행 중이었으면 같은 트랜잭션에서 PROJECT_ABORTED가 먼저 남는다(abortedNow).
+export type ProjectDeletedPayload = { name: string; previousStatus: string; abortedNow: boolean };
+
+// 조직 해산(029, 대표 명의, orgId는 그 조직). 같은 트랜잭션에서 PROJECT_ABORTED·INVITE_REVOKED·REPO_DISCONNECTED·ORG_MEMBER_REMOVED(cause org_dissolved)가 먼저 남는다.
+export type OrgDissolvedPayload = { name: string; memberCount: number; abortedProjectIds: string[] };
 
 // 역할 배정(또는 재초대) 때 에이전트 주인을 프로젝트의 GitHub 레포에 협업자로 초대한 결과. 레포마다 한 줄.
 // 실패해도 배정은 그대로다 — GitHub 사정이 우리 기능을 멈추지 않는다. 토큰은 넣지 않는다.
@@ -663,6 +672,8 @@ export type EventPayloadMap = {
   INVITE_REVOKED: InviteRevokedPayload;
   GITHUB_COLLABORATORS_REMOVED: GithubCollaboratorsRemovedPayload;
   PROJECT_ABORTED: ProjectAbortedPayload;
+  PROJECT_DELETED: ProjectDeletedPayload;
+  ORG_DISSOLVED: OrgDissolvedPayload;
   CONTRACT_REQUESTED: ContractRequestedPayload;
   CONTRACT_DRAFTED: ContractDraftedPayload;
   CONTRACT_REVISION_REQUESTED: ContractRevisionRequestedPayload;

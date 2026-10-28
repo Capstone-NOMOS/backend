@@ -1,3 +1,4 @@
+import type { PoolClient } from 'pg';
 import { randomUUID } from 'node:crypto';
 import { pool, withTransaction } from '../../config/db.js';
 import { AppError } from '../../errors.js';
@@ -11,7 +12,9 @@ import {
 import { agentRevoked } from '../dispatch/agent-revoked.js';
 import { tasksChanged } from '../dispatch/tasks-changed.js';
 import type { GithubRevokeResult } from '../events/types.js';
-import { detachAgentFromActiveProject, removeAgentlessMembershipsInTx, revokeGithubAccess } from '../project/service.js';
+import { abortOrgProjectsInTx, detachAgentFromActiveProject, removeAgentlessMembershipsInTx, revokeGithubAccess } from '../project/service.js';
+import { revokeAllInvitesInTx } from '../invite/service.js';
+import { disconnectRepoInTx } from '../repo/service.js';
 import { appendEvent } from '../events/append.js';
 import { logger } from '../../config/logger.js';
 import { githubRepApi, type GithubRepoInfo } from '../github/rep-api.js';
@@ -23,6 +26,7 @@ import {
   findUserById,
   insertOrganization,
   listUsersByOrg,
+  markOrganizationDissolved,
   removeUserFromOrg,
 } from './repository.js';
 
@@ -155,6 +159,41 @@ export async function getMe(userId: string): Promise<MeView> {
 // 조직에서 멤버를 뺀다(021). 대표가 다른 멤버를 내보내거나, 멤버 본인이 나간다. 대표는 나갈 수 없다(조직에 대표가 없어진다).
 // - 계정은 남고 조직만 비운다(대표 결정) — 다른 조직의 초대를 받을 수 있다. 지난 기록(이벤트·노트·제출)은 그대로 남는다.
 // - 그 사람의 에이전트는 맡은 진행 중 프로젝트에서 빠지고 연결이 해제된다. 진행 중 태스크를 붙잡고 있으면 409 ACTIVE_TASKS_HELD.
+// 조직에서 한 사람을 빼는 한 벌 — 내보내기·탈퇴와 조직 해산(029)이 같이 쓴다. 대표 금지 검사는 호출부(removeOrgMember)에 있다 —
+// 해산만 대표를 뺄 수 있다. 커밋 뒤의 tasksChanged·agentRevoked는 호출부 몫이다.
+async function removeOrgMemberInTx(
+  tx: PoolClient,
+  actorUserId: string,
+  orgId: string,
+  userId: string,
+  options: { self: boolean; cause?: 'org_dissolved' },
+): Promise<{ userId: string; agentIds: string[]; unassignedFrom: string[] }> {
+  const agents = await listConnectedAgentsOfUser(tx, userId);
+  const unassignedFrom: string[] = [];
+  for (const agent of agents) {
+    const projectId = await detachAgentFromActiveProject(tx, agent.id, actorUserId, 'org_member_removed');
+    if (projectId) unassignedFrom.push(projectId);
+    await markAgentDisconnected(tx, agent.id);
+    await revokeAgentTokens(tx, agent.id);
+  }
+  // 에이전트를 떼고 담당만 남아 있던 줄도 뺀다(028) — 조직을 떠난 사람은 어느 역할의 담당도 아니다.
+  for (const projectId of await removeAgentlessMembershipsInTx(tx, userId, actorUserId)) {
+    if (!unassignedFrom.includes(projectId)) unassignedFrom.push(projectId);
+  }
+  await detachUserAgentsFromOrg(tx, userId);
+  if (!(await removeUserFromOrg(tx, userId, orgId))) {
+    throw new AppError('ORG_MEMBER_NOT_FOUND', `user ${userId} is not a member of this organization`);
+  }
+  const agentIds = agents.map((a) => a.id as string);
+  await appendEvent(tx, {
+    orgId,
+    type: 'ORG_MEMBER_REMOVED',
+    onBehalfOf: actorUserId,
+    payload: { userId, self: options.self, agentIds, unassignedFrom, ...(options.cause ? { cause: options.cause } : {}) },
+  });
+  return { userId, agentIds, unassignedFrom };
+}
+
 export async function removeOrgMember(
   actor: { userId: string; orgId: string; orgRole: string },
   orgId: string,
@@ -170,32 +209,7 @@ export async function removeOrgMember(
     throw new AppError('REPRESENTATIVE_CANNOT_LEAVE', 'the representative cannot leave or be removed from the organization');
   }
 
-  const result = await withTransaction(async (tx) => {
-    const agents = await listConnectedAgentsOfUser(tx, userId);
-    const unassignedFrom: string[] = [];
-    for (const agent of agents) {
-      const projectId = await detachAgentFromActiveProject(tx, agent.id, actor.userId, 'org_member_removed');
-      if (projectId) unassignedFrom.push(projectId);
-      await markAgentDisconnected(tx, agent.id);
-      await revokeAgentTokens(tx, agent.id);
-    }
-    // 에이전트를 떼고 담당만 남아 있던 줄도 뺀다(028) — 조직을 떠난 사람은 어느 역할의 담당도 아니다.
-    for (const projectId of await removeAgentlessMembershipsInTx(tx, userId, actor.userId)) {
-      if (!unassignedFrom.includes(projectId)) unassignedFrom.push(projectId);
-    }
-    await detachUserAgentsFromOrg(tx, userId);
-    if (!(await removeUserFromOrg(tx, userId, orgId))) {
-      throw new AppError('ORG_MEMBER_NOT_FOUND', `user ${userId} is not a member of this organization`);
-    }
-    const agentIds = agents.map((a) => a.id as string);
-    await appendEvent(tx, {
-      orgId,
-      type: 'ORG_MEMBER_REMOVED',
-      onBehalfOf: actor.userId,
-      payload: { userId, self, agentIds, unassignedFrom },
-    });
-    return { userId, agentIds, unassignedFrom };
-  });
+  const result = await withTransaction((tx) => removeOrgMemberInTx(tx, actor.userId, orgId, userId, { self }));
   for (const projectId of result.unassignedFrom) tasksChanged(projectId);
   for (const agentId of result.agentIds) agentRevoked(agentId);
   // 조직의 GitHub 레포 전부에서 접근을 회수한다(커밋 뒤 — 실패해도 탈퇴는 그대로).
@@ -209,4 +223,46 @@ export async function removeOrgMember(
     trigger: 'org_member_removed',
   });
   return { ...result, githubRevocations };
+}
+
+// ── 조직 해산(029) ───────────────────────────────────────────────────────
+
+// 조직을 해산한다(대표). 대표가 조직을 떠나는 길은 이것 하나다 — 대표 넘기기는 만들지 않는다(대표 결정), 대표 단독 탈퇴는 여전히 409.
+// 행은 지우지 않는다(events·프로젝트가 가리킨다, P5). 한 트랜잭션에서 차례로:
+//   ① 조직 행에 dissolved_at(잠금 — 동시에 두 번 해산되지 않게) ② 진행 중 태스크를 잡은 에이전트가 있으면 409 ACTIVE_TASKS_HELD(전부 롤백)
+//   ③ 진행 중 프로젝트 전부 중단(abortProjectInTx — 삭제는 하지 않는다) ④ 대기 초대 전부 취소 ⑤ 레포 연결 전부 해제
+//   ⑥ 멤버 전원(대표 포함) 조직에서 빼기(removeOrgMemberInTx) ⑦ ORG_DISSOLVED
+// 해산 뒤 그 조직 id로 오는 API는 404(findOrganizationById·requireSameOrg)이고, 전 멤버는 조직 없음 — 새 조직을 만들거나 다른 초대를 받는다.
+// GitHub 접근은 회수하지 않는다(레포·코드는 팀의 것 — 프로젝트 중단과 같은 이유). 대표의 oauth_sessions도 그대로다(계정에 붙은 것).
+export async function dissolveOrganization(
+  actor: { userId: string; orgId: string; orgRole: string },
+  orgId: string,
+): Promise<{ orgId: string; memberCount: number; abortedProjectIds: string[] }> {
+  if (actor.orgRole !== 'REPRESENTATIVE') throw new AppError('NOT_REPRESENTATIVE', 'only the representative can dissolve the organization');
+  const result = await withTransaction(async (tx) => {
+    const org = await markOrganizationDissolved(tx, orgId);
+    if (!org) throw new AppError('ORG_NOT_FOUND', `organization ${orgId} not found`);
+    const abortedProjectIds = await abortOrgProjectsInTx(tx, actor);
+    await revokeAllInvitesInTx(tx, orgId, actor.userId);
+    for (const repo of await listReposByOrg(tx, orgId)) await disconnectRepoInTx(tx, orgId, actor.userId, repo);
+    // 대표를 마지막에 뺀다 — 앞선 멤버들의 이벤트도 대표 명의로 남는다.
+    const users = await listUsersByOrg(tx, orgId);
+    const ordered = [...users.filter((u) => u.orgRole !== 'REPRESENTATIVE'), ...users.filter((u) => u.orgRole === 'REPRESENTATIVE')];
+    const removed = [];
+    for (const user of ordered) {
+      removed.push(await removeOrgMemberInTx(tx, actor.userId, orgId, user.id, { self: user.id === actor.userId, cause: 'org_dissolved' }));
+    }
+    await appendEvent(tx, {
+      orgId,
+      type: 'ORG_DISSOLVED',
+      onBehalfOf: actor.userId,
+      payload: { name: org.name, memberCount: users.length, abortedProjectIds },
+    });
+    return { abortedProjectIds, removed, memberCount: users.length };
+  });
+  // 커밋 뒤 — 중단·멤버 해제로 바뀐 프로젝트의 에이전트 스트림을 깨우고, 해제된 에이전트의 스트림을 끊는다.
+  const touched = new Set([...result.abortedProjectIds, ...result.removed.flatMap((r) => r.unassignedFrom)]);
+  for (const projectId of touched) tasksChanged(projectId);
+  for (const agentId of result.removed.flatMap((r) => r.agentIds)) agentRevoked(agentId);
+  return { orgId, memberCount: result.memberCount, abortedProjectIds: result.abortedProjectIds };
 }

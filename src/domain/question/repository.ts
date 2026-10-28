@@ -217,6 +217,7 @@ export async function listQuestionsForAnswerer(
        JOIN projects p ON p.id = q.project_id
        JOIN tasks t ON t.id = q.task_id
       WHERE p.org_id = $1
+        AND p.deleted_at IS NULL
         AND ($2 = 'all' OR q.status = $2)
         AND ($3 OR EXISTS (
               SELECT 1 FROM project_members m

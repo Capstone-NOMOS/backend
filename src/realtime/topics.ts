@@ -48,6 +48,10 @@ export const TOPICS_BY_EVENT: Record<EventType, Mapping> = {
   INVITE_REVOKED: { org: ['members'] },
   GITHUB_COLLABORATORS_REMOVED: { project: ['members'], org: ['members'] },
   PROJECT_ABORTED: { project: ['project', 'tasks', 'members', 'room'], org: ['projects', 'repos', 'agents', 'approvals'] },
+  // 지운 프로젝트는 목록에서 빠진다. 그 프로젝트를 구독 중인 연결은 신호를 받은 뒤 구독이 끊긴다(user-stream의 다시 확인).
+  PROJECT_DELETED: { project: ['project'], org: ['projects', 'approvals', 'questions'] },
+  // 해산 — 연결은 user-stream이 대표까지 다시 확인해 끊는다(4403 NOT_IN_ORG).
+  ORG_DISSOLVED: { org: ['members', 'agents', 'projects', 'repos'] },
   GITHUB_COLLABORATORS_INVITED: { project: ['members'], org: ['members'] },
 
   SPEC_CREATED: { project: ['specs'] },
