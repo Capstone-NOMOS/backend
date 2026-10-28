@@ -534,7 +534,7 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
     대기 카드가 태스크당 하나(`uq_approvals_pending_subject`)인 것은 그대로다 — 닫은 뒤 만든다.
   - 반려는 어느 단계든 같은 재시도 경로다(아래). 1차에서 반려하면 대표 대기열에 오지 않고, 브리핑 `lastRejection.rejectedBy`(`role_owner`·`representative`)로 누가 반려했는지 간다.
   - 조회: 팀원의 "검토 요청"은 `GET /me/approvals`(내가 지금 그 역할 담당인 대기 role_review), 대표 대기열(`GET /orgs/:orgId/approvals`)은 1차 검토 대기도 보이고 `stage`로 거른다.
-    화면 신호는 이벤트 트리거가 내는 프로젝트 토픽 `approvals`다(조직 토픽 `approvals`는 대표만).
+    화면 신호는 이벤트 트리거가 내는 프로젝트 토픽 `approvals`다(조직 토픽 `approvals`도 조직 전부에 간다 — 팀원 배지 `/me/approvals`).
   - 결정한 사람이 제출한 에이전트의 주인이면 `APPROVAL_RESULT.payload.selfApproval: true`(1차 검토는 거의 늘 그렇다 — 그래서 최종이 따로 있다).
 - **PM_REVIEW 카드의 최종도 대표가 처리한다**(PM 리뷰 미구현). `reviewer: 'human_fallback'`으로 구분한다(1차 검토는 `role_owner`) — PM 리뷰가 생기면 지표를 나눠 센다.
 - 카드는 settle의 트랜잭션 안에서 만들고 payload는 **그 순간의 스냅샷**(커밋·경로·행동·단계 결과)이다. 대기 중 카드는 태스크당 하나(`uq_approvals_pending_subject`).
@@ -680,7 +680,7 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
     모든 상태 변화는 events에 남으므로 빠지는 경로가 없고, NOTIFY는 커밋할 때만 전달돼 롤백된 변화는 알리지 않는다.
     에이전트용 `tasksChanged`는 그대로 둔다(스냅샷 계산 시점을 서비스가 정한다). LISTEN이 끊겼다 붙으면 `resync`를 보내 화면이 전부 다시 읽게 한다.
   - 이벤트 타입 → 토픽은 `realtime/topics.ts`의 `TOPICS_BY_EVENT`(`Record<EventType, …>`) 한 곳이다. 이벤트 타입을 추가하면 컴파일이 여기를 채우라고 한다.
-  - 범위: 조직 토픽은 같은 조직 전부(`approvals`는 대표만 — 조직 대기열 API가 대표 전용), 프로젝트 토픽은 **구독한** 연결만.
+  - 범위: 조직 토픽은 같은 조직 전부(`approvals`도 — 030부터 팀원의 검토 요청 배지가 프로젝트 화면 밖에서 갱신돼야 한다. 신호에 데이터가 없고 조직 대기열 API는 여전히 대표 전용이라 새는 것이 없다), 프로젝트 토픽은 **구독한** 연결만.
     구독은 `assertProjectVisibleToUser`로 확인하고, `MEMBER_UNASSIGNED`가 오면 다시 확인해 끊는다. 역할은 연결할 때 읽는다.
   - 인증은 첫 메시지(사람 JWT, `resolveUserToken` — HTTP `authenticate`와 한 벌). Origin은 CORS 허용 목록 + 서버 자신만 받는다(Origin 없음 = 브라우저 아님 → 통과).
   - 에이전트 접속 상태(`presence.ts`)는 이벤트가 아니라서 `onPresenceChanged`로 따로 받는다. 바뀐 순간에만 알리고, 60초가 지나 offline이 되는 것은 10초마다 훑는다.

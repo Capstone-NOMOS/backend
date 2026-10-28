@@ -258,7 +258,7 @@ describe('프로젝트 구독과 신호', () => {
 });
 
 describe('조직 신호', () => {
-  it('승인 요청은 대표에게 조직 신호로 간다 — 팀원에게는 approvals 조직 신호가 가지 않는다', async () => {
+  it('승인 요청은 대표·팀원 모두에게 조직 신호로 간다 — 팀원의 검토 요청 배지(/me/approvals)가 프로젝트 화면 밖에서도 갱신된다(030)', async () => {
     const w = await world();
     const rep = await connectAs(w.rep.token);
     const be = await connectAs(w.be.token);
@@ -267,8 +267,7 @@ describe('조직 신호', () => {
       appendEvent(tx, { orgId: w.orgId, projectId: w.projectId, type: 'APPROVAL_REQUESTED', onBehalfOf: w.rep.userId, payload: {} as never }),
     );
     expect((await rep.waitFor(changed(null))).topics).toEqual(['approvals']);
-    await quiet();
-    expect(be.messages.some(changed(null))).toBe(false);
+    expect((await be.waitFor(changed(null))).topics).toEqual(['approvals']);
     rep.close();
     be.close();
   });
