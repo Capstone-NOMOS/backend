@@ -372,8 +372,9 @@ export type MemberUnassignedPayload = {
 };
 
 // 028 — 역할 담당(사람)은 남고 에이전트만 떨어지거나 붙었다. 사람의 접근은 그대로다(MEMBER_UNASSIGNED와 다르다).
-export type MemberAgentDetachedPayload = { agentId: string; teamRole: string; userId: string; cause: 'agent_disconnected' };
-export type MemberAgentAttachedPayload = { agentId: string; teamRole: string; userId: string; cause: 'reconnected' | 'assigned' };
+// agentName: 룸 줄("에이전트 <이름>의 연결이 해제됐습니다")에 쓴다. 옛 이벤트에는 없다.
+export type MemberAgentDetachedPayload = { agentId: string; agentName?: string; teamRole: string; userId: string; cause: 'agent_disconnected' };
+export type MemberAgentAttachedPayload = { agentId: string; agentName?: string; teamRole: string; userId: string; cause: 'reconnected' | 'assigned' };
 
 // 021 해제·삭제. 행은 지우지 않고 표시만 한다(되살릴 수 있고, 기록이 가리킨다).
 export type AgentDisconnectedPayload = { agentId: string; userId: string; name: string; byOwner: boolean; unassignedFrom: string | null };
@@ -527,7 +528,8 @@ export type TaskResumedPayload = {
 export type AgentRunEndedPayload = {
   taskId: string;
   attempt: number;
-  outcome: 'completed' | 'timeout' | 'failed';
+  // disconnected: 에이전트 연결이 해제(연결 해제·조직 탈퇴·해산)되어 서버가 대신 닫았다 — Executor의 종료 보고는 막힌 토큰 때문에 오지 않는다.
+  outcome: 'completed' | 'timeout' | 'failed' | 'disconnected';
   committed: boolean;
   submitted: boolean;
   durationMs: number;

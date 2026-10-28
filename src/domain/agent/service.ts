@@ -6,6 +6,7 @@ import type { Queryable } from '../../config/db.js';
 import type { PoolClient } from 'pg';
 import { generateSecret, hashSecret, signJwt } from '../../utils/tokens.js';
 import { findAgentMembership, findProjectAuthRow } from '../policy/repository.js';
+import { closeOpenRunsOfAgentInTx } from '../room/runs.js';
 import { appendEvent } from '../events/append.js';
 import { findOrganizationById, findUserByConnectKeyHash, findUserById } from '../org/repository.js';
 import { agentRevoked } from '../dispatch/agent-revoked.js';
@@ -228,6 +229,8 @@ export async function disconnectAgent(
   }
   const result = await withTransaction(async (tx) => {
     const unassignedFrom = await detachAgentFromActiveProject(tx, agentId, actor.userId, 'agent_disconnected');
+    // 열린 실행(시작했지만 아직 태스크를 잡기 전 등)을 닫는다 — 해제 뒤 Executor의 종료 보고는 401이라 오지 않는다(room/runs.ts).
+    await closeOpenRunsOfAgentInTx(tx, agentId, actor.userId);
     const marked = await markAgentDisconnected(tx, agentId);
     if (!marked) throw new AppError('AGENT_NOT_FOUND', `agent ${agentId} not found`);
     await revokeAgentTokens(tx, agentId);

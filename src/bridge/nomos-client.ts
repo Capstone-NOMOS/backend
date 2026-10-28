@@ -33,6 +33,8 @@ export type NomosClientOptions = {
   fetchImpl?: typeof fetch;
   // 재발급된 access token을 저장하고 싶을 때 (브릿지는 ~/.nomos/credentials에 쓴다).
   onTokensChanged?: (tokens: Tokens) => void;
+  // 서버가 에러로 답할 때마다 부른다(던지기 전에). Executor가 AGENT_DISCONNECTED를 어느 요청에서 받든 알아채 실행을 멈춘다(executor/stop.ts).
+  onApiError?: (err: NomosApiError) => void;
 };
 
 // 재발급 직후에도 정책이 또 바뀐 경우. 사용자에게 알리고 멈춰야 하는 신호다.
@@ -65,6 +67,7 @@ export class NomosClient {
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly onTokensChanged: ((tokens: Tokens) => void) | undefined;
+  private readonly onApiError: ((err: NomosApiError) => void) | undefined;
   private current: Tokens;
   // 진단용. 통합 테스트가 "정확히 한 번만 재발급했는가"를 확인한다.
   refreshCount = 0;
@@ -73,6 +76,7 @@ export class NomosClient {
     this.baseUrl = options.baseUrl.replace(/\/$/, '');
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.onTokensChanged = options.onTokensChanged;
+    this.onApiError = options.onApiError;
     this.current = options.tokens;
   }
 
@@ -265,6 +269,21 @@ export class NomosClient {
   }
 
   private async request(method: 'GET' | 'POST' | 'PATCH', path: string, body?: unknown): Promise<unknown> {
+    try {
+      return await this.requestOnce(method, path, body);
+    } catch (err) {
+      if (err instanceof NomosApiError) {
+        try {
+          this.onApiError?.(err);
+        } catch {
+          // 알림이 실패해도 원래 에러를 그대로 던진다.
+        }
+      }
+      throw err;
+    }
+  }
+
+  private async requestOnce(method: 'GET' | 'POST' | 'PATCH', path: string, body?: unknown): Promise<unknown> {
     const first = await this.send(method, path, body);
     if (!needsRefresh(first)) return unwrap(first);
 
