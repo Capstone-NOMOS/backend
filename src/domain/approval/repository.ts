@@ -6,6 +6,9 @@ import type { Queryable } from '../../config/db.js';
 export type ApprovalGate = 'G1' | 'G2' | 'G3' | 'ACTION';
 export type ApprovalDecision = 'APPROVE' | 'REJECT';
 export type ApprovalStatusFilter = 'pending' | 'decided' | 'all';
+// 030: ACTION 카드는 역할 담당의 1차 검토(role_review) → 대표 최종(final) 두 단계다. G1·G2·G3와 그 이전 카드는 final뿐이다.
+export type ApprovalStage = 'role_review' | 'final';
+export type ApprovalStageFilter = ApprovalStage | 'all';
 
 export type ApprovalRow = {
   id: string;
@@ -20,10 +23,19 @@ export type ApprovalRow = {
   reason: string | null;
   requestedAt: string;
   decidedAt: string | null;
+  stage: ApprovalStage;
+  reviewerUserId: string | null;
 };
 
+// 1차 검토를 통과한 final 카드의 payload.roleReview — 누가 언제 통과시켰나.
+export type RoleReviewRecord = { by: string; nickname: string | null; at: string; decidedByRepresentative: boolean; note?: string };
+
 // 목록용 — 지금 상태(태스크 제목·상태, 프로젝트 이름)를 함께 붙인다. 카드의 스냅샷은 payload에 따로 있다.
-export type ApprovalView = Omit<ApprovalRow, 'subjectId'> & {
+export type ApprovalView = Omit<ApprovalRow, 'subjectId' | 'reviewerUserId'> & {
+  // role_review 카드를 볼 역할 담당. final은 null(대표가 본다).
+  reviewer: { userId: string; nickname: string | null } | null;
+  // final 카드가 1차 검토를 거쳤으면 그 결과(payload.roleReview). 거치지 않았으면 null — 이유는 payload.roleReviewSkipped.
+  roleReview: RoleReviewRecord | null;
   projectName: string;
   // ACTION은 그 태스크, G3(통합 확인·완료)는 프로젝트 전체라 null.
   taskId: string | null;
@@ -47,17 +59,28 @@ function toApproval(row: QueryResultRow): ApprovalRow {
     reason: row.reason ?? null,
     requestedAt: toIso(row.requested_at)!,
     decidedAt: toIso(row.decided_at),
+    stage: row.stage,
+    reviewerUserId: row.reviewer_user_id ?? null,
   };
 }
 
 export async function insertApproval(
   db: Queryable,
-  input: { projectId: string; gate: ApprovalGate; subjectId: string; artifactId: string | null; gateMode: string | null; payload: Record<string, unknown> },
+  input: {
+    projectId: string;
+    gate: ApprovalGate;
+    subjectId: string;
+    artifactId: string | null;
+    gateMode: string | null;
+    payload: Record<string, unknown>;
+    stage: ApprovalStage;
+    reviewerUserId: string | null;
+  },
 ): Promise<ApprovalRow> {
   const { rows } = await db.query(
-    `INSERT INTO approvals (project_id, gate, subject_id, artifact_id, gate_mode, payload)
-     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-    [input.projectId, input.gate, input.subjectId, input.artifactId, input.gateMode, input.payload],
+    `INSERT INTO approvals (project_id, gate, subject_id, artifact_id, gate_mode, payload, stage, reviewer_user_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+    [input.projectId, input.gate, input.subjectId, input.artifactId, input.gateMode, input.payload, input.stage, input.reviewerUserId],
   );
   return toApproval(rows[0]!);
 }
@@ -87,13 +110,37 @@ export async function decideApproval(
   return rowCount === 1;
 }
 
+// 그 역할의 담당(사람, 028)과 그 사람이 대표인지. 역할 제한이 없는 태스크(teamRole null)나 비어 있는 역할이면 null.
+export async function findRoleOwner(
+  db: Queryable,
+  projectId: string,
+  teamRole: string | null,
+): Promise<{ userId: string; nickname: string | null; isRepresentative: boolean } | null> {
+  if (teamRole === null) return null;
+  const { rows } = await db.query(
+    `SELECT m.user_id, u.nickname, u.org_role
+       FROM project_members m JOIN users u ON u.id = m.user_id
+      WHERE m.project_id = $1 AND m.team_role = $2`,
+    [projectId, teamRole],
+  );
+  const row = rows[0];
+  return row
+    ? { userId: row.user_id as string, nickname: (row.nickname as string | null) ?? null, isRepresentative: row.org_role === 'REPRESENTATIVE' }
+    : null;
+}
+
+export async function findUserNickname(db: Queryable, userId: string): Promise<string | null> {
+  const { rows } = await db.query(`SELECT nickname FROM users WHERE id = $1`, [userId]);
+  return (rows[0]?.nickname as string | null | undefined) ?? null;
+}
+
 // 승인·반려 직전에 태스크 행을 잠그고 상태와 담당 에이전트의 주인을 읽는다.
 export async function lockApprovalTask(
   db: Queryable,
   taskId: string,
-): Promise<{ state: string; assigneeAgentId: string | null; assigneeOwnerId: string | null } | null> {
+): Promise<{ state: string; teamRole: string | null; assigneeAgentId: string | null; assigneeOwnerId: string | null } | null> {
   const { rows } = await db.query(
-    `SELECT t.state, t.assignee_agent_id, a.user_id AS owner_id
+    `SELECT t.state, t.team_role, t.assignee_agent_id, a.user_id AS owner_id
        FROM tasks t LEFT JOIN agents a ON a.id = t.assignee_agent_id
       WHERE t.id = $1
       FOR UPDATE OF t`,
@@ -101,32 +148,51 @@ export async function lockApprovalTask(
   );
   const row = rows[0];
   return row
-    ? { state: row.state as string, assigneeAgentId: (row.assignee_agent_id as string | null) ?? null, assigneeOwnerId: (row.owner_id as string | null) ?? null }
+    ? {
+        state: row.state as string,
+        teamRole: (row.team_role as string | null) ?? null,
+        assigneeAgentId: (row.assignee_agent_id as string | null) ?? null, assigneeOwnerId: (row.owner_id as string | null) ?? null,
+      }
     : null;
 }
 
 export async function listApprovals(
   db: Queryable,
-  filter: { orgId?: string; projectId?: string; status: ApprovalStatusFilter; limit: number },
+  filter: {
+    orgId?: string;
+    projectId?: string;
+    status: ApprovalStatusFilter;
+    stage?: ApprovalStageFilter;
+    // 이 사람이 지금 그 역할 담당인 role_review 카드만(GET /me/approvals). 역할에서 빠졌으면 대표만 결정할 수 있어 보이지 않는다.
+    reviewerUserId?: string;
+    limit: number;
+  },
 ): Promise<ApprovalView[]> {
   const { rows } = await db.query(
-    `SELECT a.*, p.name AS project_name, t.title AS task_title, t.state AS task_state
+    `SELECT a.*, p.name AS project_name, t.title AS task_title, t.state AS task_state, ru.nickname AS reviewer_nickname
        FROM approvals a
        JOIN projects p ON p.id = a.project_id
        LEFT JOIN tasks t ON t.id = a.subject_id
+       LEFT JOIN users ru ON ru.id = a.reviewer_user_id
       WHERE ($1::uuid IS NULL OR p.org_id = $1)
         AND ($2::uuid IS NULL OR a.project_id = $2)
         AND p.deleted_at IS NULL
         AND ($3 = 'all' OR ($3 = 'pending' AND a.decision IS NULL AND p.status <> 'aborted') OR ($3 = 'decided' AND a.decision IS NOT NULL))
+        AND ($5 = 'all' OR a.stage = $5)
+        AND ($6::uuid IS NULL OR (a.reviewer_user_id = $6 AND EXISTS (
+              SELECT 1 FROM project_members m WHERE m.project_id = a.project_id AND m.user_id = $6 AND m.team_role = t.team_role)))
       ORDER BY a.requested_at DESC, a.id
       LIMIT $4`,
-    [filter.orgId ?? null, filter.projectId ?? null, filter.status, filter.limit],
+    [filter.orgId ?? null, filter.projectId ?? null, filter.status, filter.limit, filter.stage ?? 'all', filter.reviewerUserId ?? null],
   );
   return rows.map((row) => {
     // subject_id는 ACTION 게이트에서 태스크 id, G3에서는 프로젝트 id다 — 응답에는 태스크일 때만 taskId로 낸다.
-    const { subjectId: _subject, ...approval } = toApproval(row);
+    const { subjectId: _subject, reviewerUserId, ...approval } = toApproval(row);
+    const roleReview = approval.payload.roleReview;
     return {
     ...approval,
+    reviewer: reviewerUserId === null ? null : { userId: reviewerUserId, nickname: (row.reviewer_nickname as string | null) ?? null },
+    roleReview: typeof roleReview === 'object' && roleReview !== null ? (roleReview as RoleReviewRecord) : null,
     projectName: row.project_name as string,
     taskId: approval.gate === 'ACTION' ? (row.subject_id as string) : null,
     taskTitle: (row.task_title as string | null) ?? null,
@@ -139,9 +205,18 @@ export async function listApprovals(
 export async function findLatestRejection(
   db: Queryable,
   taskId: string,
-): Promise<{ approvalId: string; reason: string; decidedAt: string; artifactId: string | null; commitSha: string | null } | null> {
+): Promise<{
+  approvalId: string;
+  reason: string;
+  decidedAt: string;
+  artifactId: string | null;
+  commitSha: string | null;
+  // 누가 반려했나(030) — 1차 검토에서 역할 담당이(role_owner), 또는 대표가(최종 승인이나 1차 검토를 대신 처리).
+  rejectedBy: 'role_owner' | 'representative';
+} | null> {
   const { rows } = await db.query(
-    `SELECT id, reason, decided_at, artifact_id, payload->>'commitSha' AS commit_sha
+    `SELECT id, reason, decided_at, artifact_id, payload->>'commitSha' AS commit_sha,
+            (stage = 'role_review' AND decided_by = reviewer_user_id) AS by_role_owner
        FROM approvals
       WHERE subject_id = $1 AND decision = 'REJECT'
       ORDER BY decided_at DESC
@@ -156,6 +231,7 @@ export async function findLatestRejection(
         decidedAt: toIso(row.decided_at)!,
         artifactId: (row.artifact_id as string | null) ?? null,
         commitSha: (row.commit_sha as string | null) ?? null,
+        rejectedBy: row.by_role_owner === true ? 'role_owner' : 'representative',
       }
     : null;
 }

@@ -100,7 +100,7 @@ type Briefing = {
   // 확정한 API 계약(서버 023). 옛 서버면 없다.
   contract?: { featureKey: string; summary: string; schemaYaml: string } | null;
   notes: { id: string }[];
-  lastRejection: { reason: string; commitSha: string | null } | null;
+  lastRejection: { reason: string; commitSha: string | null; rejectedBy?: 'role_owner' | 'representative' } | null;
   answeredQuestions?: { question: string; answer: string; source: string }[];
   // 다른 태스크의 질문으로 정해진 결정(서버 0.1.15 대응, 옛 서버면 없다).
   decisions?: { id: string; question: string; answer: string | null; askerRole: string; targetRole: string; decidedByName: string | null; answeredAt: string | null }[];
