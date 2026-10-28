@@ -11,11 +11,11 @@ import type { AgentContext } from '../task/service.js';
 import { tasksChanged } from '../dispatch/tasks-changed.js';
 import { blockStoppedTaskInTx } from '../task/stall.js';
 import { activityRecorded } from './activity-hub.js';
+import { buildRunEndedPayload } from './runs.js';
 import { parseCursor, renderFeedRow, type RoomMessage } from './render.js';
 import {
   findOpenRun,
   findRoomMessageRow,
-  findRunOutcome,
   insertActivity,
   latestRoomMessageId,
   listActiveRoleTasks,
@@ -93,10 +93,21 @@ export async function endRun(
     const task = await taskInProject(ctx, taskId, tx);
     const open = await findOpenRun(tx, taskId, ctx.agentId);
     if (open === null) throw new AppError('RUN_NOT_OPEN', `no open run for task ${taskId}`);
+    // payload 조립은 서버가 대신 닫는 경우(연결 해제 — runs.ts)와 한 벌이다.
+    const payload = await buildRunEndedPayload(tx, {
+      taskId,
+      agentId: ctx.agentId,
+      startedEventId: open.startedEventId,
+      attempt: open.attempt,
+      outcome: input.outcome,
+      committed: input.committed,
+      durationMs: input.durationMs,
+      exitCode: input.exitCode,
+      taskState: task.state,
+    });
+    const submitted = payload.submitted;
     // 질문의 답을 기다리느라 내려놓았다(담당도 비었다) — 제출한 것도, 멈춘 것도 아니다. 답이 오면 다시 시작된다.
-    const outcome = await findRunOutcome(tx, taskId, ctx.agentId, open.startedEventId);
-    const submitted = outcome.submitted;
-    const waitingQuestion = !submitted && outcome.detachedForQuestion;
+    const waitingQuestion = payload.waitingQuestion === true;
     await appendEvent(tx, {
       orgId: ctx.orgId,
       projectId: ctx.projectId,
@@ -104,17 +115,7 @@ export async function endRun(
       actorAgentId: ctx.agentId,
       onBehalfOf: ctx.onBehalfOf,
       policyHash: ctx.policyHash,
-      payload: {
-        taskId,
-        attempt: open.attempt,
-        outcome: input.outcome,
-        committed: input.committed,
-        durationMs: input.durationMs,
-        exitCode: input.exitCode,
-        submitted,
-        taskState: task.state,
-        ...(waitingQuestion ? { waitingQuestion: true } : {}),
-      },
+      payload,
     });
     if (submitted || waitingQuestion) return { submitted, taskState: task.state, blocked: false };
     const blocked = await blockStoppedTaskInTx(tx, { orgId: ctx.orgId, projectId: ctx.projectId, onBehalfOf: ctx.onBehalfOf, policyHash: ctx.policyHash }, taskId, {

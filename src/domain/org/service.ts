@@ -15,6 +15,7 @@ import type { GithubRevokeResult } from '../events/types.js';
 import { abortOrgProjectsInTx, detachAgentFromActiveProject, removeAgentlessMembershipsInTx, revokeGithubAccess } from '../project/service.js';
 import { revokeAllInvitesInTx } from '../invite/service.js';
 import { disconnectRepoInTx } from '../repo/service.js';
+import { closeOpenRunsOfAgentInTx } from '../room/runs.js';
 import { appendEvent } from '../events/append.js';
 import { logger } from '../../config/logger.js';
 import { githubRepApi, type GithubRepoInfo } from '../github/rep-api.js';
@@ -173,6 +174,8 @@ async function removeOrgMemberInTx(
   for (const agent of agents) {
     const projectId = await detachAgentFromActiveProject(tx, agent.id, actorUserId, 'org_member_removed');
     if (projectId) unassignedFrom.push(projectId);
+    // 연결 해제와 같은 이유로 열린 실행을 닫는다(탈퇴·내보내기·해산이 모두 여기를 거친다).
+    await closeOpenRunsOfAgentInTx(tx, agent.id, actorUserId);
     await markAgentDisconnected(tx, agent.id);
     await revokeAgentTokens(tx, agent.id);
   }

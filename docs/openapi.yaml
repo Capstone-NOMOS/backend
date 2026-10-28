@@ -565,7 +565,9 @@ components:
           enum: [pm, nomos, agent, human]
           description: |
             - pm: 서버가 지시·판정을 알림(실행해 주세요, 검증 결과, 승인)
-            - nomos: Executor가 보고한 실행 상태(수령, 구현 시작, 제출, 실행 종료)
+            - nomos: Executor가 보고한 실행 상태(수령, 구현 시작, 제출, 실행 종료)와 그 역할 에이전트의 연결 상태 —
+              `MEMBER_AGENT_DETACHED` "에이전트 <이름>의 연결이 해제됐습니다 — 다시 연결하면 이 역할을 이어 받습니다",
+              `MEMBER_AGENT_ATTACHED` "에이전트 <이름>이(가) 다시 연결됐습니다", `AGENT_RUN_ENDED`(outcome disconnected) "에이전트 연결이 해제되어 실행을 멈췄습니다 (N초)"
             - agent: 에이전트가 쓴 도구(읽기·수정·실행) · 인계 노트
             - human: 사람(그 역할 담당·대표)이 룸에서 에이전트에게 보낸 메시지 — type `ROOM_MESSAGE_SENT`, 보낸 사람은 `userId`
         type:
@@ -3609,8 +3611,11 @@ paths:
           - `TASK_RESUMED` — `taskId, note, from('AGENT_STOPPED'|'ESCALATED'), previousRetryCount?`
           - `QUESTION_ASKED` — `questionId, taskId, askerRole, targetRole('FRONTEND'|'BACKEND'|'PM'|'SELF'), routedBy, confidence, latencyMs, fallback, costUsd, questionCount`
           - `QUESTION_GOLD_LABELED` — `questionId, goldTarget('FRONTEND'|'BACKEND'|'PM'|'SELF'), previousGoldTarget`(대표가 정답 담당자를 붙임, 026)
-          - `MEMBER_AGENT_DETACHED` — `agentId, teamRole, userId, cause('agent_disconnected')`(에이전트만 떨어짐 — 사람은 담당으로 남음, 028)
-          - `MEMBER_AGENT_ATTACHED` — `agentId, teamRole, userId, cause('reconnected'|'assigned')`(빈 담당 자리에 에이전트가 다시 붙음, 028)
+          - `MEMBER_AGENT_DETACHED` — `agentId, agentName?, teamRole, userId, cause('agent_disconnected')`(에이전트만 떨어짐 — 사람은 담당으로 남음, 028. 그 역할 룸에 줄로도 나온다)
+          - `MEMBER_AGENT_ATTACHED` — `agentId, agentName?, teamRole, userId, cause('reconnected'|'assigned')`(빈 담당 자리에 에이전트가 다시 붙음, 028. 그 역할 룸에 줄로도 나온다)
+          - `AGENT_RUN_ENDED` — `taskId, attempt, outcome('completed'|'timeout'|'failed'|'disconnected'), committed, submitted, durationMs, exitCode, taskState, waitingQuestion?`.
+            `disconnected`는 에이전트 연결이 해제(연결 해제·조직 탈퇴·해산)되어 서버가 열린 실행을 대신 닫은 것이다(Executor의 종료 보고는 오지 않는다).
+            서버 시작 때도 연결 해제된 에이전트에 남은 열린 실행을 같은 방식으로 닫는다(명의는 그 에이전트의 주인).
           - `MEMBER_UNASSIGNED` — `agentId(없으면 null), teamRole, userId, cause?`(사람이 역할에서 빠짐)
       security: [{ userToken: [] }]
       parameters:
@@ -4782,6 +4787,7 @@ paths:
         제출하지 않은 것이다. 그때는 같은 트랜잭션에서 태스크가 **BLOCKED(AGENT_STOPPED)**로 바뀌고(이벤트 `TASK_BLOCKED`), 룸에
         "멈췄습니다 — 사유 / 거부된 명령 → 대표 확인 후 재개가 필요합니다"가 남는다. 재시도 횟수는 오르지 않는다.
         Executor가 꺼져 이 보고조차 오지 않으면 서버 감시가 45분 동안 응답이 없는 수령을 같은 방식으로 멈춘다.
+        에이전트 연결이 해제되면 서버가 열린 실행을 `outcome: disconnected`로 대신 닫는다 — 그 뒤의 이 보고는 토큰이 막혀 401이다(Executor는 보내지 않는다).
         열린 실행(시작하고 아직 안 끝낸 것)이 없으면 409 `RUN_NOT_OPEN`.
       security: [{ agentToken: [] }]
       parameters: [{ $ref: '#/components/parameters/TaskId' }]

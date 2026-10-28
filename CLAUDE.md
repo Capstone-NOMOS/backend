@@ -619,6 +619,9 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
   사유는 `TASK_BLOCKED`에 — 모델의 마지막 말과 Executor가 실행 기록에서 뽑은 **거부된 쉘 명령**(대표가 무엇을 풀어야 하는지). 대표가 `POST /tasks/:id/resume`으로 재개하면 READY(담당 비움),
   `task_dispatches`의 resumes가 달라져 "다시 실행해 주세요 (재개)"가 다시 나간다. Executor가 꺼져 종료 보고조차 없으면 감시(`startStallWatchdog`, `startServer`에서만)가
   45분 동안 실행 보고·도구 사용이 없는 수령을 같은 방식으로 멈춘다(`system:watchdog`). `tasks.claimed_at`(마지막 수령 시각)이 그 기준이자 화면의 "수령 후 경과"다.
+- **그 역할 에이전트의 연결 해제·재연결도 룸 줄이다**: `MEMBER_AGENT_DETACHED`·`MEMBER_AGENT_ATTACHED`를 `payload.teamRole`로 그 역할 룸에 낸다(speaker nomos,
+  "에이전트 <이름>의 연결이 해제됐습니다 — 다시 연결하면 이 역할을 이어 받습니다" / "에이전트 <이름>이(가) 다시 연결됐습니다", 이름은 `payload.agentName` — 옛 이벤트는 "에이전트").
+  서버가 대신 닫은 실행(`AGENT_RUN_ENDED.outcome = 'disconnected'`)은 "에이전트 연결이 해제되어 실행을 멈췄습니다 (N초)".
 - Executor의 룸 보고(`executor/activity.ts`)는 **실패해도 실행을 멈추지 않는다.** 옛 서버에는 API가 없으니 시작 보고가 실패하면 그 실행의 활동·종료 보고를 건너뛴다.
 - **질문 중계(018, 실험 브랜치)와의 관계**: 답을 기다리느라 태스크를 내려놓은 실행(BLOCKED·`QUESTION`)의 종료는 멈춤(`AGENT_STOPPED`)이 아니다(`waitingQuestion`).
   답이 와서 READY가 되면 "다시 실행해 주세요 (재개)"가 나가도록 `task_dispatches.resumes`에 `TASK_BLOCKED_ON_QUESTION`도 센다.
@@ -686,6 +689,15 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
 - **해제·삭제(021)는 행을 지우지 않는다** — events·태스크·노트가 가리키고(P5), 다시 연결할 수 있어야 한다.
   - 에이전트 연결 해제(`DELETE /agents/:agentId`, 주인·대표): `agents.disconnected_at` + refresh token 폐기 + 진행 중 프로젝트에서 빠짐. 남은 access token은 `agent-auth`가
     401 `AGENT_DISCONNECTED`로 거부하고, 태스크 스트림은 `dispatch/agent-revoked` 신호로 바로 끊는다. 같은 사용자·이름으로 다시 connect하면 `upsertAgent`가 되살린다.
+    **같은 트랜잭션에서 그 에이전트의 열린 실행(AGENT_RUN_STARTED 뒤 ENDED 없음)을 닫는다**(`room/runs.ts`의 `closeOpenRunsOfAgentInTx`, `AGENT_RUN_ENDED.outcome = 'disconnected'`,
+    명의는 해제한 사람) — 해제 뒤 Executor의 종료 보고는 막힌 토큰 때문에 401이라, 닫지 않으면 룸에 "생각 중"이 영원히 올라갔다. 조직 탈퇴·내보내기·해산도
+    `removeOrgMemberInTx`에서 같은 함수를 부른다. 멈춤(AGENT_STOPPED·BLOCKED)은 하지 않는다 — 해제는 진행 중 태스크가 없을 때만 되므로(`assertNoActiveTasks`)
+    남는 것은 "시작했지만 아직 태스크를 잡기 전" 같은 실행뿐이다. payload 조립은 Executor 종료 보고(`endRun`)와 한 벌(`buildRunEndedPayload`)이다.
+    이 수정 전에 남은 고아 실행은 **서버 시작 때 한 번** `closeOrphanedRuns`가 같은 함수로 닫는다(연결 해제된 에이전트만, 명의는 그 주인, 여러 번 돌아도 같다 —
+    `recoverInterruptedPlans`와 같은 이유로 `startServer`에서만). 운영 DB를 손으로 고치지 않고 배포만으로 정리된다.
+    **CLI(0.1.16+)도 해제를 알면 실행 중인 Claude(태스크·상담·계약 초안)를 트리째 멈춘다**(`executor/stop.ts`의 `agentStop` — HTTP 응답은 `NomosClient.onApiError`,
+    스트림은 4401 `AGENT_DISCONNECTED`로 안다). 종료 보고는 보내지 않고(서버가 이미 닫았다) 작업공간은 남긴다. connect·start는 종료 코드 3으로 끝나고,
+    백그라운드로 돌던 것이면 `daemon.json`을 지워 status가 "돌고 있지 않음"을 보인다. Windows는 cli-wrapper를 거친 node 아래에 실제 claude가 있어 `taskkill /T /F`로 끝낸다.
   - 조직에서 내보내기·탈퇴(`DELETE /orgs/:orgId/members/:userId`): 대표가 남을, 멤버는 자기를. 대표는 못 나간다(`REPRESENTATIVE_CANNOT_LEAVE`). 그 사람의 에이전트는 위와 같이 해제된다.
     화면 스트림은 `ORG_MEMBER_REMOVED`를 보고 조직 연결을 다시 확인해 끊는다(4403 `NOT_IN_ORG`).
   - 레포 연결 해제(`DELETE /repos/:repoId`, 대표): 진행 중 프로젝트가 쓰면 409 `REPO_IN_ACTIVE_PROJECT`(`findRepoUsage` 한 벌). `repos.disconnected_at` — 해제된 레포는

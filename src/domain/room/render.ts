@@ -36,6 +36,10 @@ function targetLabel(v: unknown): string {
   return v === 'PM' ? 'PM(대표)' : String(v ?? '');
 }
 
+function agentLabel(name: unknown): string {
+  return typeof name === 'string' && name ? `에이전트 ${name}` : '에이전트';
+}
+
 function nullableNum(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }
@@ -121,9 +125,16 @@ function eventText(row: FeedRow): { speaker: RoomMessage['speaker']; text: strin
     case 'AGENT_RUN_ENDED': {
       // 제출하지 않았으면 바로 뒤의 TASK_BLOCKED 줄이 사유를 말한다 — 여기서는 끝났다는 사실만.
       const seconds = Math.round(num(p.durationMs) / 1000);
+      // 연결이 해제돼 서버가 대신 닫은 실행(room/runs.ts) — Executor의 종료 보고는 오지 않는다.
+      if (p.outcome === 'disconnected') return { speaker: 'nomos', text: `에이전트 연결이 해제되어 실행을 멈췄습니다 (${seconds}초)` };
       if (p.waitingQuestion === true) return { speaker: 'nomos', text: `실행을 멈췄습니다 (${seconds}초) — 질문의 답이 오면 다시 시작합니다` };
       return { speaker: 'nomos', text: p.submitted === true ? `실행을 마쳤습니다 (${seconds}초)` : `실행을 마쳤습니다 (${seconds}초, 제출 없음)` };
     }
+    // 그 역할 에이전트의 연결 해제·재연결(028). 이름은 payload.agentName(옛 이벤트에는 없다).
+    case 'MEMBER_AGENT_DETACHED':
+      return { speaker: 'nomos', text: `${agentLabel(p.agentName)}의 연결이 해제됐습니다 — 다시 연결하면 이 역할을 이어 받습니다` };
+    case 'MEMBER_AGENT_ATTACHED':
+      return { speaker: 'nomos', text: `${agentLabel(p.agentName)}이(가) 다시 연결됐습니다` };
     case 'ARTIFACT_SUBMITTED': {
       const sha = str(p.commitSha).slice(0, 7);
       const files = row.changedPathCount === null ? '' : `, 파일 ${row.changedPathCount}개`;

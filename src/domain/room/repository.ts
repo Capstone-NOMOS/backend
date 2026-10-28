@@ -58,6 +58,44 @@ export async function findOpenRun(db: Queryable, taskId: string, agentId: string
   return rows[0]?.type === 'AGENT_RUN_STARTED' ? { attempt: Number(rows[0].attempt), startedEventId: rows[0].id as string } : null;
 }
 
+// 이 에이전트의 열린 실행 전부 — 태스크마다 이 에이전트의 마지막 실행 이벤트가 STARTED인 것(findOpenRun과 같은 판정을 태스크 전체로).
+// 연결 해제·조직 탈퇴·서버 시작 정리가 이것으로 남은 실행을 닫는다(room/runs.ts).
+export type OpenRun = { taskId: string; projectId: string; orgId: string; attempt: number; startedEventId: string; startedAt: Date; policyHash: string | null };
+
+export async function listOpenRunsOfAgent(db: Queryable, agentId: string): Promise<OpenRun[]> {
+  const { rows } = await db.query(
+    `SELECT * FROM (
+       SELECT DISTINCT ON (payload->>'taskId') id::text AS id, type, org_id, project_id, payload->>'taskId' AS task_id,
+              payload->>'attempt' AS attempt, ts, policy_hash
+         FROM events
+        WHERE type IN ('AGENT_RUN_STARTED', 'AGENT_RUN_ENDED') AND actor_agent_id = $1
+        ORDER BY payload->>'taskId', id DESC
+     ) last WHERE type = 'AGENT_RUN_STARTED'
+     ORDER BY id::bigint`,
+    [agentId],
+  );
+  return rows.map((r) => ({
+    taskId: r.task_id as string,
+    projectId: r.project_id as string,
+    orgId: r.org_id as string,
+    attempt: Number(r.attempt),
+    startedEventId: r.id as string,
+    startedAt: r.ts as Date,
+    policyHash: (r.policy_hash as string | null) ?? null,
+  }));
+}
+
+// 연결 해제된 에이전트 중 열린 실행이 남은 것(서버 시작 정리). 주인(user_id)이 그 정리의 명의다.
+export async function listDisconnectedAgentsWithOpenRuns(db: Queryable): Promise<{ agentId: string; userId: string }[]> {
+  const { rows } = await db.query(
+    `SELECT a.id, a.user_id FROM agents a
+      WHERE a.disconnected_at IS NOT NULL
+        AND EXISTS (SELECT 1 FROM events e WHERE e.type = 'AGENT_RUN_STARTED' AND e.actor_agent_id = a.id)
+      ORDER BY a.id`,
+  );
+  return rows.map((r) => ({ agentId: r.id as string, userId: r.user_id as string }));
+}
+
 // 이 실행(시작 이벤트 이후) 안에서 이 에이전트가 이 태스크를 제출했는가·질문의 답을 기다리느라 내려놓았는가.
 // 종료 순간의 태스크 상태로 짐작하지 않는다 — 실행이 끝난 뒤에도 답·재개·대표의 조치로 상태는 바뀐다(실험 C1: 답이 종료 보고보다
 // 먼저 와 READY였고, 그 실행이 '제출함'으로 세어졌다). 이후 이벤트의 id는 시작 이벤트보다 크다(시작이 커밋된 뒤에야 생긴다).
@@ -227,6 +265,8 @@ export async function listRoomFeed(
               AND (t.team_role IS NULL OR t.team_role = $2 OR (e.type LIKE 'QUESTION\_%' AND e.payload->>'targetRole' = $2)))
             OR e.type = ANY($4::text[])
             OR (e.type = 'ROOM_MESSAGE_SENT' AND e.payload->>'role' = $2)
+            -- 그 역할 에이전트의 연결 해제·재연결(028) — 태스크에 딸리지 않아 역할(payload.teamRole)로 거른다.
+            OR (e.type IN ('MEMBER_AGENT_DETACHED', 'MEMBER_AGENT_ATTACHED') AND e.payload->>'teamRole' = $2)
           )
        UNION ALL
        SELECT 'a'::text, a.id::text, (extract(epoch FROM a.ts) * 1000000)::bigint, a.ts,

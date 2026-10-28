@@ -11,6 +11,7 @@ import { decryptSecret } from '../../utils/secret-box.js';
 import { violatedConstraint } from '../pg-errors.js';
 import { recomputeProjectPolicyHash } from '../policy/policy-hash.js';
 import { findUserById } from '../org/repository.js';
+import { findAgentById } from '../agent/repository.js';
 import { findAgentMembership } from '../policy/repository.js';
 import { listUnconfirmedContractsForOpenTasks } from '../contract/repository.js';
 import type { TeamRole } from '../roles.js';
@@ -148,6 +149,12 @@ async function removeMemberInTx(
   });
 }
 
+// 룸 줄("에이전트 <이름>의 연결이 해제됐습니다")에 쓰는 이름 — MEMBER_AGENT_DETACHED·ATTACHED payload에 싣는다.
+async function agentNameOf(db: Queryable, agentId: string): Promise<{ agentName?: string }> {
+  const agent = await findAgentById(db, agentId);
+  return agent ? { agentName: agent.name } : {};
+}
+
 async function assertNoActiveTasks(tx: PoolClient, projectId: string, agentId: string): Promise<void> {
   const active = await listActiveTasksOfAgent(tx, projectId, agentId);
   if (active.length > 0) {
@@ -183,7 +190,7 @@ export async function detachAgentFromActiveProject(
     actorAgentId: agentId,
     onBehalfOf,
     policyHash: project.policyHash,
-    payload: { agentId, teamRole: detached.teamRole, userId: detached.userId, cause },
+    payload: { agentId, ...(await agentNameOf(tx, agentId)), teamRole: detached.teamRole, userId: detached.userId, cause },
   });
   return project.id;
 }
@@ -221,7 +228,7 @@ export async function reattachAgentInTx(tx: PoolClient, agentId: string, userId:
     actorAgentId: agentId,
     onBehalfOf: userId,
     policyHash: project.policyHash,
-    payload: { agentId, teamRole, userId, cause: 'reconnected' },
+    payload: { agentId, ...(await agentNameOf(tx, agentId)), teamRole, userId, cause: 'reconnected' },
   });
   return projectId;
 }
@@ -375,7 +382,7 @@ export async function assignMember(
         actorAgentId: agentId,
         onBehalfOf: actor.userId,
         policyHash: project.policyHash,
-        payload: { agentId, teamRole, userId: seat.userId, cause: 'assigned' },
+        payload: { agentId, ...(await agentNameOf(tx, agentId)), teamRole, userId: seat.userId, cause: 'assigned' },
       });
       return membersWithInvites(tx, projectId);
     }
