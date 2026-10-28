@@ -363,7 +363,9 @@ export async function answerQuestion(actor: UserContext, questionId: string, ans
   const existing = await findQuestion(pool, questionId);
   if (!existing) throw new AppError('QUESTION_NOT_FOUND', `question ${questionId} not found`);
   const project = await findProjectById(pool, existing.projectId);
-  if (!project || project.orgId !== actor.orgId) throw new AppError('CROSS_ORG_ACCESS', 'cannot access another organization');
+  // 지운 프로젝트(029)의 질문은 없는 것으로 본다.
+  if (!project) throw new AppError('QUESTION_NOT_FOUND', `question ${questionId} not found`);
+  if (project.orgId !== actor.orgId) throw new AppError('CROSS_ORG_ACCESS', 'cannot access another organization');
   const current = await settleExpiry(existing, actor.orgId);
   if (current.status !== 'pending' && current.status !== 'agent_answered') {
     throw new AppError('QUESTION_CLOSED', `question is already ${current.status}`);

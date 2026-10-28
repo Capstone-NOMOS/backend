@@ -27,7 +27,9 @@ async function loadForHuman(actor: UserContext, taskId: string): Promise<{ task:
   const task = await findTaskById(pool, taskId);
   if (!task) throw new AppError('TASK_NOT_FOUND', `task ${taskId} not found`);
   const project = await findProjectById(pool, task.projectId);
-  if (!project || project.orgId !== actor.orgId) throw new AppError('CROSS_ORG_ACCESS', 'cannot access another organization');
+  // 지운 프로젝트(029)의 태스크는 없는 것으로 본다.
+  if (!project) throw new AppError('TASK_NOT_FOUND', `task ${taskId} not found`);
+  if (project.orgId !== actor.orgId) throw new AppError('CROSS_ORG_ACCESS', 'cannot access another organization');
   if (project.status !== 'active' && project.status !== 'planning') {
     throw new AppError('PROJECT_NOT_OPEN', `project is ${project.status}`);
   }

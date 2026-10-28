@@ -86,6 +86,7 @@ export type ErrorCode =
   | 'ACTIVE_TASKS_HELD'
   | 'REPRESENTATIVE_CANNOT_LEAVE'
   | 'ORG_MEMBER_NOT_FOUND'
+  | 'ORG_NOT_FOUND'
   | 'AGENT_NOT_FOUND'
   | 'NOT_AGENT_OWNER'
   | 'AGENT_DISCONNECTED'
@@ -108,6 +109,8 @@ export type ErrorCode =
 
 // 에러 코드 -> HTTP 상태 코드 매핑. 도메인 코드는 이 테이블에 없는 코드를 쓸 수 없다.
 const STATUS_BY_CODE: Record<ErrorCode, number> = {
+  // 404 — 없는 조직이거나 해산한 조직(029). 해산한 조직 id로 오는 조직 API는 전부 이것이다.
+  ORG_NOT_FOUND: 404,
   ACTIVE_TASKS_HELD: 409,
   REPRESENTATIVE_CANNOT_LEAVE: 409,
   ORG_MEMBER_NOT_FOUND: 404,

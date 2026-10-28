@@ -17,7 +17,7 @@ export type LockedProject = { id: string; orgId: string; status: string; policyH
 // 잠근 뒤 status를 읽으므로 "planning·active만 허용" 검사도 상태 변경과 순서가 정해진다.
 export async function lockProjectForAuthoring(db: Queryable, projectId: string): Promise<LockedProject | null> {
   const { rows } = await db.query(
-    `SELECT id, org_id, status, policy_hash FROM projects WHERE id = $1 FOR NO KEY UPDATE`,
+    `SELECT id, org_id, status, policy_hash FROM projects WHERE id = $1 AND deleted_at IS NULL FOR NO KEY UPDATE`,
     [projectId],
   );
   const row = rows[0];

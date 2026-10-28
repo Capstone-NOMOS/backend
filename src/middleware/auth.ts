@@ -2,7 +2,7 @@ import type { NextFunction, Request, Response } from 'express';
 import { pool } from '../config/db.js';
 import { env } from '../config/env.js';
 import type { OrgId, UserId } from '../domain/ids.js';
-import { findUserById, type OrgRole } from '../domain/org/repository.js';
+import { findOrganizationById, findUserById, type OrgRole } from '../domain/org/repository.js';
 import { AppError } from '../errors.js';
 import { verifyJwt } from '../utils/tokens.js';
 
@@ -57,6 +57,10 @@ export function orgIdOf(req: Request): OrgId {
 }
 
 // URL의 :orgId가 요청자 소속 조직과 같은지 검사한다. 조직이 없는 사용자도 CROSS_ORG_ACCESS(403).
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// 다른 조직이면 403 CROSS_ORG_ACCESS. 단 없는 조직·해산한 조직(029)이면 404 ORG_NOT_FOUND — 해산 뒤 전 멤버는 조직이 없어
+// 전부 이 분기로 오는데, 403이면 "아직 있는데 권한이 없다"로 읽힌다. DB는 어긋날 때만 읽는다(평소 경로는 그대로).
 export function requireSameOrg(req: Request, _res: Response, next: NextFunction): void {
   if (!req.user) {
     next(new AppError('UNAUTHENTICATED', 'authentication required'));
@@ -64,7 +68,15 @@ export function requireSameOrg(req: Request, _res: Response, next: NextFunction)
   }
   const paramOrgId = req.params.orgId;
   if (paramOrgId !== undefined && paramOrgId !== req.user.orgId) {
-    next(new AppError('CROSS_ORG_ACCESS', 'cannot access another organization'));
+    // 형식이 uuid가 아니면 DB에 묻지 않는다(라우트의 validate가 먼저 거르지만, 순서에 기대지 않는다).
+    if (typeof paramOrgId !== 'string' || !UUID_RE.test(paramOrgId)) {
+      next(new AppError('CROSS_ORG_ACCESS', 'cannot access another organization'));
+      return;
+    }
+    findOrganizationById(pool, paramOrgId).then(
+      (org) => next(org ? new AppError('CROSS_ORG_ACCESS', 'cannot access another organization') : new AppError('ORG_NOT_FOUND', `organization ${paramOrgId} not found`)),
+      next,
+    );
     return;
   }
   next();
