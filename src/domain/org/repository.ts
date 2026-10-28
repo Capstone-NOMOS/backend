@@ -166,8 +166,9 @@ export async function assignUserToOrg(
   return row ? toUser(row) : null;
 }
 
+// 해산한 조직(029, dissolved_at)은 없는 것으로 본다 — 초대 미리보기·수락, 조직 API(requireSameOrg의 404)가 이 함수를 거친다.
 export async function findOrganizationById(db: Queryable, orgId: string): Promise<Organization | null> {
-  const { rows } = await db.query(`SELECT * FROM organizations WHERE id = $1`, [orgId]);
+  const { rows } = await db.query(`SELECT * FROM organizations WHERE id = $1 AND dissolved_at IS NULL`, [orgId]);
   const row = rows[0];
   return row ? toOrganization(row) : null;
 }
@@ -177,6 +178,16 @@ export async function listUsersByOrg(db: Queryable, orgId: string): Promise<User
     orgId,
   ]);
   return rows.map(toUser);
+}
+
+// 조직을 해산한다(029) — 행은 지우지 않고 dissolved_at만 남긴다(events·프로젝트가 가리킨다). 이미 해산했으면 null.
+// 해산 트랜잭션의 첫 문장이다: 조직 행을 잠가 동시에 두 번 해산되지 않게 한다.
+export async function markOrganizationDissolved(db: Queryable, orgId: string): Promise<{ name: string } | null> {
+  const { rows } = await db.query(
+    `UPDATE organizations SET dissolved_at = now() WHERE id = $1 AND dissolved_at IS NULL RETURNING name`,
+    [orgId],
+  );
+  return rows[0] ? { name: rows[0].name as string } : null;
 }
 
 // 조직에서 빠진다(021) — 계정은 남고 조직만 비운다(대표 결정). 다른 조직의 초대를 받으면 assignUserToOrg가 다시 채운다.

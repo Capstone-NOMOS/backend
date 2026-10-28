@@ -218,7 +218,7 @@ export type ProjectForPm = { id: string; orgId: string; name: string; deadline: 
 export async function findProjectForPm(db: Queryable, projectId: string): Promise<ProjectForPm | null> {
   const { rows } = await db.query(
     `SELECT id, org_id, name, to_char(deadline, 'YYYY-MM-DD') AS deadline, pm_budget_usd::float8 AS pm_budget_usd, policy_hash
-       FROM projects WHERE id = $1`,
+       FROM projects WHERE id = $1 AND deleted_at IS NULL`,
     [projectId],
   );
   const r = rows[0];

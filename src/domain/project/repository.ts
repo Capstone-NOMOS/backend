@@ -103,6 +103,7 @@ export async function listProjectsByOrg(
   const { rows } = await db.query(
     `SELECT p.* FROM projects p
       WHERE p.org_id = $1
+        AND p.deleted_at IS NULL
         AND ($2::uuid IS NULL OR EXISTS (
               SELECT 1 FROM project_members m WHERE m.project_id = p.id AND m.user_id = $2))
       ORDER BY p.created_at DESC`,
@@ -130,13 +131,15 @@ export async function findOtherActiveAssignment(
 
 // lock: 'share'는 멤버 변경(시작과 겹치면 시작이 끝날 때까지 기다린 뒤 started_at을 본다),
 // 'update'는 시작(FOR NO KEY UPDATE — 외래 키 검사의 FOR KEY SHARE와 충돌하지 않아 다른 INSERT를 막지 않는다).
+// **지운 프로젝트(029, deleted_at)는 없는 것으로 본다** — 상세·하위 API·가시성 판정(visibility.ts)이 모두 이 함수를 거치므로
+// "지운 프로젝트를 숨긴다"가 여기 한 곳에서 정해진다. 지운 프로젝트를 읽어야 하는 경로를 만들면 이 함수를 느슨하게 하지 말고 따로 둔다.
 export async function findProjectById(
   db: Queryable,
   projectId: string,
   options: { lock?: 'share' | 'update' } = {},
 ): Promise<Project | null> {
   const lock = options.lock === 'update' ? ' FOR NO KEY UPDATE' : options.lock === 'share' ? ' FOR SHARE' : '';
-  const { rows } = await db.query(`SELECT * FROM projects WHERE id = $1${lock}`, [projectId]);
+  const { rows } = await db.query(`SELECT * FROM projects WHERE id = $1 AND deleted_at IS NULL${lock}`, [projectId]);
   const row = rows[0];
   return row ? toProject(row) : null;
 }
@@ -526,6 +529,37 @@ export async function markProjectAborted(db: Queryable, projectId: string): Prom
     [projectId],
   );
   return rows[0] ? toProject(rows[0]) : null;
+}
+
+// 프로젝트를 지운다(029) — 끝난 프로젝트만(진행 중이면 호출부가 같은 트랜잭션에서 먼저 중단한다, projects_deleted_closed_chk).
+export async function markProjectDeleted(db: Queryable, projectId: string): Promise<boolean> {
+  const { rowCount } = await db.query(
+    `UPDATE projects SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL AND status IN ('completed', 'aborted')`,
+    [projectId],
+  );
+  return rowCount === 1;
+}
+
+// 조직의 진행 중 프로젝트(해산할 때 중단할 것). 잠근다 — 시작·배정과 같은 잠금(FOR NO KEY UPDATE).
+export async function listOngoingProjectIdsForUpdate(db: Queryable, orgId: string): Promise<string[]> {
+  const { rows } = await db.query(
+    `SELECT id FROM projects WHERE org_id = $1 AND deleted_at IS NULL AND status IN ('planning', 'active', 'halted')
+      ORDER BY created_at FOR NO KEY UPDATE`,
+    [orgId],
+  );
+  return rows.map((r) => r.id as string);
+}
+
+// 조직 안에서 에이전트가 붙잡고 있는 진행 중 태스크(해산 전 확인 — 멤버 탈퇴의 ACTIVE_TASKS_HELD와 같은 규칙).
+export async function listActiveTasksInOrg(db: Queryable, orgId: string): Promise<{ taskId: string; title: string; state: string; agentId: string }[]> {
+  const { rows } = await db.query(
+    `SELECT t.id, t.title, t.state, t.assignee_agent_id FROM tasks t JOIN projects p ON p.id = t.project_id
+      WHERE p.org_id = $1 AND p.deleted_at IS NULL AND p.status IN ('planning', 'active', 'halted')
+        AND t.assignee_agent_id IS NOT NULL AND t.state IN ('CLAIMED', 'IN_PROGRESS', 'VERIFYING')
+      ORDER BY t.created_at`,
+    [orgId],
+  );
+  return rows.map((r) => ({ taskId: r.id as string, title: r.title as string, state: r.state as string, agentId: r.assignee_agent_id as string }));
 }
 
 export async function countOpenTasks(db: Queryable, projectId: string): Promise<number> {

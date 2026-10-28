@@ -1,3 +1,4 @@
+import type { PoolClient } from 'pg';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { pool, withTransaction } from '../../config/db.js';
 import { env } from '../../config/env.js';
@@ -85,7 +86,8 @@ export type AcceptInviteResult = { userId: string; orgId: string };
 export async function acceptInvite(token: string, userId: string): Promise<AcceptInviteResult> {
   return withTransaction(async (tx) => {
     const invite = await findInviteByToken(tx, token);
-    if (!invite) {
+    // 해산한 조직(029)의 초대는 없는 것으로 본다 — 해산이 대기 초대를 전부 취소하지만, 쓰인·만료된 링크도 같은 답을 낸다.
+    if (!invite || !(await findOrganizationById(tx, invite.orgId))) {
       throw new AppError('INVITE_NOT_FOUND', 'invite token not found');
     }
 
@@ -157,10 +159,25 @@ export async function listInvites(orgId: string): Promise<PendingInviteView[]> {
 // 초대 취소(대표, 021). 쓰인 초대·이미 취소한 초대·다른 조직 초대는 404 — 가입을 되돌리는 건 멤버 내보내기다.
 export async function revokeInvite(orgId: string, actorUserId: string, inviteId: string): Promise<{ inviteId: string }> {
   return withTransaction(async (tx) => {
-    if (!(await revokePendingInvite(tx, orgId, inviteId))) {
+    if (!(await revokeInviteInTx(tx, orgId, actorUserId, inviteId))) {
       throw new AppError('INVITE_NOT_FOUND', `no pending invite ${inviteId}`);
     }
-    await appendEvent(tx, { orgId, type: 'INVITE_REVOKED', onBehalfOf: actorUserId, payload: { inviteId } });
     return { inviteId };
   });
+}
+
+// 초대 취소 한 벌 — 직접 취소와 조직 해산(029)이 같이 쓴다. 대기 중인 초대가 아니면 false.
+export async function revokeInviteInTx(tx: PoolClient, orgId: string, actorUserId: string, inviteId: string): Promise<boolean> {
+  if (!(await revokePendingInvite(tx, orgId, inviteId))) return false;
+  await appendEvent(tx, { orgId, type: 'INVITE_REVOKED', onBehalfOf: actorUserId, payload: { inviteId } });
+  return true;
+}
+
+// 조직 해산(029) — 대기 중인 초대를 전부 취소한다. 취소한 초대 id.
+export async function revokeAllInvitesInTx(tx: PoolClient, orgId: string, actorUserId: string): Promise<string[]> {
+  const revoked: string[] = [];
+  for (const invite of await listPendingInvites(tx, orgId)) {
+    if (await revokeInviteInTx(tx, orgId, actorUserId, invite.id)) revoked.push(invite.id);
+  }
+  return revoked;
 }

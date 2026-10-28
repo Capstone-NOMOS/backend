@@ -696,6 +696,20 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
     결과는 응답 `githubRevocations`·이벤트 `GITHUB_COLLABORATORS_REMOVED`). 대표 본인은 회수하지 않고, 같은 사람의 다른 에이전트가 그 프로젝트에 남아 있으면 건너뛴다.
   - **프로젝트 중단**(`POST /projects/:id/abort`, 대표): 지우지 않고 `aborted`. 에이전트·레포가 풀리고(진행 중 정의에서 빠진다), 대기 질문은 만료로 닫고(`PROJECT_ABORTED.payload.expiredQuestionIds`),
     대기 승인 카드는 대기열에서 빠지며 결정할 수 없다(409). GitHub 권한은 회수하지 않는다(레포·코드는 팀의 것). 실행 중인 CLI는 `NOT_PROJECT_MEMBER`를 보고 다시 배정을 기다린다.
+  - **프로젝트 삭제**(`DELETE /projects/:id`, 대표, 029): 행은 지우지 않고 `projects.deleted_at`만 찍는다(events·태스크·노트가 가리킨다, P5).
+    진행 중이면 **같은 트랜잭션에서 먼저 중단**한다(`abortProjectInTx` — 직접 중단과 한 벌이라 태스크를 잡은 에이전트가 있어도 막지 않는다). 그래서 지운 프로젝트는
+    끝난 상태뿐이다(`projects_deleted_closed_chk`). 숨기는 곳은 **`findProjectById` 한 곳**이다 — 지운 프로젝트를 없는 것으로 보므로 상세·하위 API·가시성 판정
+    (`assertProjectVisibleToUser`)이 모두 404가 된다. 이 함수를 거치지 않고 `projects`를 읽는 목록 쿼리(프로젝트 목록·`GET /me/questions`·승인 대기열·PM·작성 잠금)는
+    `deleted_at IS NULL`을 직접 건다. 테스트가 `:projectId`·`:taskId` 라우트를 전부 훑어 새지 않는지 확인한다 — 새 라우트를 만들면 거기서 걸린다.
+    화면 스트림은 `PROJECT_DELETED`를 보고 대표까지 구독을 다시 확인해 끊는다(`unsubscribed`, reason `PROJECT_NOT_FOUND`).
+  - **조직 해산**(`DELETE /orgs/:orgId`, 대표, 029) — **대표가 조직을 떠나는 길은 이것 하나다**(대표 넘기기는 만들지 않는다 — 대표 결정, 대표 단독 탈퇴는 여전히 409 `REPRESENTATIVE_CANNOT_LEAVE`).
+    행은 지우지 않고 `organizations.dissolved_at`. 한 트랜잭션에서 순서대로: 조직 행 표시(잠금) → 진행 중 태스크를 잡은 에이전트가 있으면 409 `ACTIVE_TASKS_HELD`(전부 롤백) →
+    진행 중 프로젝트 전부 중단(`abortProjectInTx`, 삭제는 안 함) → 대기 초대 전부 취소(`revokeInviteInTx`) → 레포 연결 전부 해제(`disconnectRepoInTx`) →
+    멤버 전원을 대표를 마지막으로 빼기(`removeOrgMemberInTx`, `ORG_MEMBER_REMOVED.payload.cause = 'org_dissolved'` — 대표 금지 검사는 해산 경로에서만 건너뛴다) → `ORG_DISSOLVED`.
+    **확인을 중단보다 먼저 한다** — 중단하고 나면 에이전트가 "진행 중 프로젝트"에서 풀려 탈퇴 경로의 확인이 아무것도 보지 못한다.
+    해산한 조직은 `findOrganizationById`가 없는 것으로 보고, `requireSameOrg`는 어긋난 조직이 없거나 해산했으면 403이 아니라 404 `ORG_NOT_FOUND`를 낸다(그때만 DB를 읽는다).
+    초대 수락도 404 `INVITE_NOT_FOUND`. 전 멤버는 조직 없음이라 새 조직을 만들거나 다른 초대를 받는다. 화면 스트림은 `ORG_DISSOLVED`를 보고 대표까지 4403 `NOT_IN_ORG`로 끊는다.
+    GitHub 접근은 회수하지 않고(중단과 같은 이유) 대표의 `oauth_sessions`도 그대로다(계정에 붙은 것).
 - **멤버 배정 뒤 그 에이전트는 토큰을 재발급해야 한다.** 배정 전 토큰에는 `project_id`가 없다.
   배정 응답의 `notice`와 openapi 설명에 그 안내가 들어 있다.
 - 허용 레벨 어휘 위반은 zod(400)가 아니라 서비스가 **422**로 답한다 — 무엇이 허용되는지 함께 알려주기 위해서다.

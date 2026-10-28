@@ -77,7 +77,9 @@ export async function labelGold(actor: UserContext, questionId: string, target: 
   const question = await findQuestion(pool, questionId);
   if (!question) throw new AppError('QUESTION_NOT_FOUND', `question ${questionId} not found`);
   const project = await findProjectById(pool, question.projectId);
-  if (!project || project.orgId !== actor.orgId) throw new AppError('CROSS_ORG_ACCESS', 'cannot access another organization');
+  // 지운 프로젝트(029)의 질문은 없는 것으로 본다.
+  if (!project) throw new AppError('QUESTION_NOT_FOUND', `question ${questionId} not found`);
+  if (project.orgId !== actor.orgId) throw new AppError('CROSS_ORG_ACCESS', 'cannot access another organization');
   await withTransaction(async (tx) => {
     const done = await setGoldTarget(tx, { questionId, target, userId: actor.userId, note });
     if (!done) throw new AppError('QUESTION_NOT_FOUND', `question ${questionId} not found`);

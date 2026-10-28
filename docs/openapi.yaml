@@ -1954,6 +1954,57 @@ paths:
               example:
                 error: { code: CROSS_ORG_ACCESS, message: cannot access another organization }
 
+  /orgs/{orgId}:
+    delete:
+      tags: [조직]
+      summary: 조직 해산 (대표 전용)
+      description: |
+        조직을 해산한다(029). **대표가 조직을 떠나는 길은 이것 하나다** — 대표 넘기기는 없고, 대표 단독 탈퇴(`DELETE /orgs/{orgId}/members/{나}`)는 여전히 409 `REPRESENTATIVE_CANNOT_LEAVE`.
+        행은 지우지 않는다(`dissolved_at` 표시). 한 트랜잭션에서 차례로:
+        1. 진행 중 태스크(CLAIMED·IN_PROGRESS·VERIFYING)를 잡은 에이전트가 있으면 409 `ACTIVE_TASKS_HELD`(`details`에 태스크) — **아무것도 바뀌지 않는다**.
+        2. 진행 중 프로젝트(planning·active·halted) 전부 중단(`PROJECT_ABORTED` — 삭제는 하지 않는다).
+        3. 대기 초대 전부 취소(`INVITE_REVOKED`), 레포 연결 전부 해제(`REPO_DISCONNECTED`).
+        4. 멤버 전원(대표 포함)을 조직에서 뺀다(`ORG_MEMBER_REMOVED`, `cause: org_dissolved`) — 에이전트 연결도 해제된다. 계정은 남는다.
+        5. `ORG_DISSOLVED { name, memberCount, abortedProjectIds }`(대표 명의).
+
+        해산 뒤: 이 조직 id로 오는 조직 API는 404 `ORG_NOT_FOUND`, 이 조직의 초대 링크는 수락할 수 없다(404 `INVITE_NOT_FOUND`).
+        전 멤버는 모두 조직 없음 상태라 새 조직을 만들거나 다른 조직의 초대를 수락할 수 있다. 화면 스트림은 4403 `NOT_IN_ORG`로 끊긴다(대표 포함).
+        GitHub 접근은 회수하지 않는다(레포·코드는 팀의 것). 대표의 GitHub 연결(oauth)은 계정에 붙은 것이라 그대로다.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/OrgId' }]
+      responses:
+        '200':
+          description: 해산됨
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    additionalProperties: false
+                    required: [orgId, memberCount, abortedProjectIds]
+                    properties:
+                      orgId: { type: string, format: uuid }
+                      memberCount: { type: integer, description: '조직에서 뺀 사람 수(대표 포함)' }
+                      abortedProjectIds: { type: array, items: { type: string, format: uuid }, description: '이번에 중단한 진행 중 프로젝트' }
+        '403':
+          description: 대표가 아님 · 다른 조직
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '404':
+          description: 없는 조직이거나 이미 해산한 조직
+          content:
+            application/json:
+              example:
+                error: { code: ORG_NOT_FOUND, message: organization not found }
+        '409':
+          description: 진행 중 태스크를 잡은 에이전트가 있다 — 아무것도 바뀌지 않았다
+          content:
+            application/json:
+              example:
+                error: { code: ACTIVE_TASKS_HELD, message: 1 task(s) are still held by agents; finish or stop them first, details: [{ taskId: 11111111-1111-1111-1111-111111111111, title: T-1, state: CLAIMED, agentId: 22222222-2222-2222-2222-222222222222 }] }
+
   /orgs/{orgId}/members/{userId}:
     delete:
       tags: [조직]
@@ -1961,7 +2012,7 @@ paths:
       description: |
         대표가 다른 멤버를 내보내거나, `userId`가 나 자신이면 탈퇴다(021). **계정은 남고 조직만 빠진다** — 다른 조직의 초대를 받을 수 있고, 지난 기록(이벤트·노트·제출)은 그대로 남는다.
         그 사람의 에이전트는 맡은 진행 중 프로젝트에서 빠지고 연결이 해제된다. 진행 중 태스크를 붙잡고 있으면 409 `ACTIVE_TASKS_HELD`.
-        대표는 나갈 수도 내보낼 수도 없다(409 `REPRESENTATIVE_CANNOT_LEAVE`). 대표가 아닌 사람이 남을 내보내면 403 `NOT_REPRESENTATIVE`.
+        대표는 나갈 수도 내보낼 수도 없다(409 `REPRESENTATIVE_CANNOT_LEAVE`) — 대표가 떠나는 길은 조직 해산(`DELETE /orgs/{orgId}`)뿐이다. 대표가 아닌 사람이 남을 내보내면 403 `NOT_REPRESENTATIVE`.
         빠진 사람의 화면 스트림(`/api/stream`)은 4403 `NOT_IN_ORG`로 끊긴다.
       security: [{ userToken: [] }]
       parameters:
@@ -3013,6 +3064,44 @@ paths:
               example:
                 error: { code: PROJECT_NOT_FOUND, message: project not found }
 
+    delete:
+      tags: [프로젝트]
+      summary: 프로젝트 삭제 (대표 전용)
+      description: |
+        프로젝트를 지운다(029). **행은 지우지 않고 표시(`deleted_at`)만 남긴다** — 이벤트·태스크·노트가 가리킨다(P5).
+        그 뒤로 이 프로젝트는 어디서도 보이지 않는다: 프로젝트 목록에서 빠지고, 상세와 하위 API(태스크·명세·노트·질문·결정·계약·룸·승인·라우팅 보고서 등)는 404 `PROJECT_NOT_FOUND`,
+        `GET /me/questions`·조직 승인 대기열에서도 빠진다. 화면 스트림(`/api/stream`)에서 이 프로젝트를 구독 중이면 `{ type: 'unsubscribed', projectId, reason: 'PROJECT_NOT_FOUND' }`가 온다.
+        - 진행 중(planning·active·halted)이면 **같은 트랜잭션에서 먼저 중단**한다(`abortedNow: true`, `PROJECT_ABORTED`가 먼저 남는다) — 중단과 같은 규칙이라
+          에이전트가 태스크를 잡고 있어도 막지 않는다. 실행 중인 CLI는 배정이 풀린 것을 보고(`NOT_PROJECT_MEMBER`) 다시 배정을 기다린다. 에이전트·레포가 풀린다.
+        - 이벤트 `PROJECT_DELETED { name, previousStatus, abortedNow }`(대표 명의). GitHub 권한은 회수하지 않는다(레포·코드는 팀의 것).
+        - 이미 지운 프로젝트를 다시 지우면 404 `PROJECT_NOT_FOUND`.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/ProjectId' }]
+      responses:
+        '200':
+          description: 지움
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    additionalProperties: false
+                    required: [projectId, abortedNow]
+                    properties:
+                      projectId: { type: string, format: uuid }
+                      abortedNow: { type: boolean, description: '진행 중이라 이번에 함께 중단했는가' }
+        '403':
+          description: 대표가 아님
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '404':
+          description: 없는 프로젝트이거나 이미 지운 프로젝트
+          content:
+            application/json:
+              example:
+                error: { code: PROJECT_NOT_FOUND, message: project not found }
   /projects/{projectId}/settings:
     patch:
       tags: [프로젝트]

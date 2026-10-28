@@ -1,8 +1,8 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { authenticate, requireSameOrg } from '../middleware/auth.js';
+import { authenticate, requireRepresentative, requireSameOrg } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
-import { createOrganization, listAvailableGithubRepos, listMembers, removeOrgMember } from '../domain/org/service.js';
+import { createOrganization, dissolveOrganization, listAvailableGithubRepos, listMembers, removeOrgMember } from '../domain/org/service.js';
 
 export const orgsRouter = Router();
 
@@ -61,5 +61,21 @@ orgsRouter.delete(
     const { orgId, userId } = req.params as z.infer<typeof memberParamsSchema>;
     const user = req.user!;
     res.status(200).json({ data: await removeOrgMember({ userId: user.id, orgId, orgRole: user.orgRole }, orgId, userId) });
+  },
+);
+
+// DELETE /api/orgs/:orgId — 조직 해산(대표 전용, 029). 대표가 조직을 떠나는 길은 이것 하나다(대표 단독 탈퇴는 409 REPRESENTATIVE_CANNOT_LEAVE).
+// 진행 중 프로젝트 중단·초대 취소·레포 해제·멤버 전원(대표 포함) 빼기를 한 트랜잭션에서 한다. 행은 지우지 않는다.
+// 진행 중 태스크를 잡은 에이전트가 있으면 409 ACTIVE_TASKS_HELD(아무것도 바뀌지 않는다). 해산 뒤 이 조직 id로 오는 API는 404 ORG_NOT_FOUND.
+orgsRouter.delete(
+  '/orgs/:orgId',
+  validate({ params: orgIdParamsSchema }),
+  authenticate,
+  requireSameOrg,
+  requireRepresentative,
+  async (req, res) => {
+    const { orgId } = req.params as z.infer<typeof orgIdParamsSchema>;
+    const user = req.user!;
+    res.status(200).json({ data: await dissolveOrganization({ userId: user.id, orgId, orgRole: user.orgRole }, orgId) });
   },
 );

@@ -98,22 +98,25 @@ export function attachUserStream(server: Server, options: UserStreamOptions): Us
   };
 
   // 배정이 해제된 팀원은 그 프로젝트를 더 볼 수 없다 — 구독을 다시 확인한다.
-  const recheck = async (projectId: string, conns: Connection[]) => {
+  // 프로젝트를 지웠으면(029) 대표도 더 볼 수 없다 — includeRepresentative로 대표 연결까지 다시 확인한다(지운 프로젝트는 가시성 판정이 404다).
+  const recheck = async (projectId: string, conns: Connection[], includeRepresentative = false) => {
     for (const conn of conns) {
-      if (conn.ctx.orgRole === 'REPRESENTATIVE' || !conn.projects.has(projectId)) continue;
+      if ((!includeRepresentative && conn.ctx.orgRole === 'REPRESENTATIVE') || !conn.projects.has(projectId)) continue;
       try {
         await assertProjectVisibleToUser(pool, conn.ctx, projectId);
-      } catch {
+      } catch (err: unknown) {
         conn.projects.delete(projectId);
-        send(conn.ws, { type: 'unsubscribed', projectId, reason: 'NOT_PROJECT_MEMBER' });
+        const reason = err instanceof AppError ? err.code : 'NOT_PROJECT_MEMBER';
+        send(conn.ws, { type: 'unsubscribed', projectId, reason });
       }
     }
   };
 
   // 조직에서 빠진 사람(021)의 연결은 끊는다 — 남겨 두면 그 조직의 신호를 계속 받는다. 이벤트에는 누가 빠졌는지가 없어 연결마다 다시 읽는다.
-  const recheckOrg = async (orgId: string, conns: Connection[]) => {
+  // 해산(029)이면 대표도 빠진다 — includeRepresentative로 대표 연결까지 다시 확인한다.
+  const recheckOrg = async (orgId: string, conns: Connection[], includeRepresentative = false) => {
     for (const conn of conns) {
-      if (conn.ctx.orgRole === 'REPRESENTATIVE') continue;
+      if (!includeRepresentative && conn.ctx.orgRole === 'REPRESENTATIVE') continue;
       const user = await findUserById(pool, conn.ctx.userId);
       if (!user || user.orgId !== orgId) closeWith(conn.ws, 4403, 'NOT_IN_ORG', 'you are no longer a member of this organization');
     }
@@ -136,6 +139,12 @@ export function attachUserStream(server: Server, options: UserStreamOptions): Us
     }
     if (event.type === 'MEMBER_UNASSIGNED' && event.projectId) {
       void recheck(event.projectId, list).catch((err: unknown) => logger.warn('user stream recheck failed', { error: String(err) }));
+    }
+    if (event.type === 'ORG_DISSOLVED') {
+      void recheckOrg(event.orgId, list, true).catch((err: unknown) => logger.warn('user stream org recheck failed', { error: String(err) }));
+    }
+    if (event.type === 'PROJECT_DELETED' && event.projectId) {
+      void recheck(event.projectId, list, true).catch((err: unknown) => logger.warn('user stream recheck failed', { error: String(err) }));
     }
   };
 

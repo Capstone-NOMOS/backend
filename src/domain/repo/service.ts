@@ -438,13 +438,20 @@ export async function disconnectRepo(orgId: string, actorUserId: string, repoId:
     if (usage.length > 0) {
       throw new AppError('REPO_IN_ACTIVE_PROJECT', `${repo.fullName} is used by an active project; finish or abort it first`, usage);
     }
-    if (!(await markRepoDisconnected(tx, repo.id))) throw new AppError('REPO_NOT_FOUND', `repo ${repoId} not found`);
-    await appendEvent(tx, {
-      orgId,
-      type: 'REPO_DISCONNECTED',
-      onBehalfOf: actorUserId,
-      payload: { repoId: repo.id, fullName: repo.fullName },
-    });
+    if (!(await disconnectRepoInTx(tx, orgId, actorUserId, repo))) throw new AppError('REPO_NOT_FOUND', `repo ${repoId} not found`);
     return { repoId: repo.id, fullName: repo.fullName };
   });
+}
+
+// 레포 연결 해제 한 벌 — 직접 해제와 조직 해산(029)이 같이 쓴다. 진행 중 프로젝트 확인(findRepoUsage)은 호출부 몫이다
+// (해산은 같은 트랜잭션에서 프로젝트를 먼저 중단한다). 이미 해제됐으면 false.
+export async function disconnectRepoInTx(tx: PoolClient, orgId: string, actorUserId: string, repo: { id: string; fullName: string }): Promise<boolean> {
+  if (!(await markRepoDisconnected(tx, repo.id))) return false;
+  await appendEvent(tx, {
+    orgId,
+    type: 'REPO_DISCONNECTED',
+    onBehalfOf: actorUserId,
+    payload: { repoId: repo.id, fullName: repo.fullName },
+  });
+  return true;
 }

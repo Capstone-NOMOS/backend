@@ -15,6 +15,7 @@ Table organizations {
   constitution  jsonb       [not null, default: `'{}'`, note: '★ 011에서 실제 추가. 기술스택·코딩규칙. 최신본 — 과거 판정 근거는 projects.constitution']
   created_by    uuid        [note: '★ FK는 DEFERRABLE INITIALLY DEFERRED — 커밋 시점 검사 (users와 순환)']
   created_at    timestamptz [not null, default: `now()`]
+  dissolved_at  timestamptz [note: '★ 029: 해산(대표). 멤버 전원(대표 포함)이 빠지고 그 조직 id로 오는 API는 404. 행은 지우지 않는다']
 }
 
 Table users {
@@ -199,11 +200,13 @@ Table projects {
   created_by        uuid            [not null]
   started_at        timestamptz     [note: 'G1 승인 시각. NOT NULL이면 정책·헌법 변경 불가']
   created_at        timestamptz     [not null, default: `now()`]
+  deleted_at        timestamptz     [note: '★ 029: 삭제(대표). 목록·상세·하위 API에서 없는 것으로 본다. 행은 지우지 않는다']
 
   Note: '''
   status='halted'면 권한 검증 0단계에서 모든 도구 호출 거부
   멈춤은 명령이 아니라 상태 — 브릿지가 오프라인이어도 산출물이 못 들어옴
   CHECK (status <> 'halted' OR halt_reason IS NOT NULL)
+  CHECK projects_deleted_closed_chk (deleted_at IS NULL OR status IN ('completed', 'aborted')) — 029: 진행 중이면 같은 트랜잭션에서 먼저 중단한다
   '''
 }
 

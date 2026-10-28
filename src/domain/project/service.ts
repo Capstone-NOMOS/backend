@@ -44,6 +44,9 @@ import {
   listLatestInvites,
   listOrgGithubRepos,
   markProjectAborted,
+  markProjectDeleted,
+  listOngoingProjectIdsForUpdate,
+  listActiveTasksInOrg,
   userStillInProject,
   listProjectGithubRepos,
   listProjectMembers,
@@ -669,23 +672,74 @@ export async function unassignMemberWithRevocations(
 // - 에이전트 배정은 그대로 기록으로 남지만 "진행 중 프로젝트"가 아니게 되어 에이전트가 풀린다(토큰 재발급 뒤 다른 프로젝트에 배정 가능).
 // - 레포는 다른 프로젝트에 쓸 수 있게 된다(findRepoUsage가 aborted를 세지 않는다). 대기 질문은 만료로 닫는다. 대기 승인 카드는 결정할 수 없다(PROJECT_NOT_OPEN).
 // - GitHub 협업자 권한은 회수하지 않는다 — 레포와 코드는 팀의 것으로 남는다.
+// - 에이전트가 진행 중 태스크를 잡고 있어도 막지 않는다 — 실행 중인 CLI는 다음 요청에서 NOT_PROJECT_MEMBER를 받고 배정을 기다린다.
 export async function abortProject(actor: Actor, projectId: string, reason: string | null): Promise<Project> {
   const aborted = await withTransaction(async (tx) => {
     const project = await assertProjectInOrg(tx, actor.orgId, projectId, 'update');
-    const updated = await markProjectAborted(tx, projectId);
-    if (!updated) throw new AppError('PROJECT_NOT_OPEN', `project is ${project.status}; only an ongoing project can be aborted`);
-    const expiredQuestionIds = await expirePendingQuestions(tx, projectId);
-    await appendEvent(tx, {
-      orgId: actor.orgId,
-      projectId,
-      type: 'PROJECT_ABORTED',
-      onBehalfOf: actor.userId,
-      policyHash: project.policyHash,
-      payload: { previousStatus: project.status, reason, openTaskCount: await countOpenTasks(tx, projectId), expiredQuestionIds },
-    });
-    return updated;
+    return abortProjectInTx(tx, actor, project, reason);
   });
   // 커밋 뒤 — 에이전트 스트림은 다음 스냅샷에서 NOT_PROJECT_MEMBER로 닫힌다.
   tasksChanged(projectId);
   return aborted;
+}
+
+// 중단 한 벌 — 직접 중단·프로젝트 삭제·조직 해산(029)이 같이 쓴다. 호출부가 프로젝트 행을 FOR NO KEY UPDATE로 잠근 뒤 부른다.
+// 커밋 뒤의 tasksChanged는 호출부 몫이다.
+export async function abortProjectInTx(tx: PoolClient, actor: Actor, project: Project, reason: string | null): Promise<Project> {
+  const updated = await markProjectAborted(tx, project.id);
+  if (!updated) throw new AppError('PROJECT_NOT_OPEN', `project is ${project.status}; only an ongoing project can be aborted`);
+  const expiredQuestionIds = await expirePendingQuestions(tx, project.id);
+  await appendEvent(tx, {
+    orgId: project.orgId,
+    projectId: project.id,
+    type: 'PROJECT_ABORTED',
+    onBehalfOf: actor.userId,
+    policyHash: project.policyHash,
+    payload: { previousStatus: project.status, reason, openTaskCount: await countOpenTasks(tx, project.id), expiredQuestionIds },
+  });
+  return updated;
+}
+
+const ONGOING_STATUSES: readonly string[] = ['planning', 'active', 'halted'];
+
+// ── 프로젝트 삭제(029) ───────────────────────────────────────────────────
+
+// 프로젝트를 지운다(대표). 행은 지우지 않고 deleted_at만 남긴다 — events·태스크·노트가 가리킨다(P5).
+// 지운 프로젝트는 findProjectById가 없는 것으로 보므로 목록·상세·하위 API·가시성 판정이 모두 404다(한 곳에서 정해진다).
+// 진행 중이면 같은 트랜잭션에서 먼저 중단한다(abortProjectInTx — 중단과 같은 규칙: 진행 중 태스크가 있어도 막지 않는다).
+// 다시 지우면 이미 없는 프로젝트라 404 PROJECT_NOT_FOUND.
+export async function deleteProject(actor: Actor, projectId: string): Promise<{ projectId: string; abortedNow: boolean }> {
+  const result = await withTransaction(async (tx) => {
+    const project = await assertProjectInOrg(tx, actor.orgId, projectId, 'update');
+    const abortedNow = ONGOING_STATUSES.includes(project.status);
+    if (abortedNow) await abortProjectInTx(tx, actor, project, 'project deleted');
+    if (!(await markProjectDeleted(tx, projectId))) throw new AppError('PROJECT_NOT_FOUND', `project ${projectId} not found`);
+    await appendEvent(tx, {
+      orgId: project.orgId,
+      projectId,
+      type: 'PROJECT_DELETED',
+      onBehalfOf: actor.userId,
+      policyHash: project.policyHash,
+      payload: { name: project.name, previousStatus: project.status, abortedNow },
+    });
+    return { projectId, abortedNow };
+  });
+  // 중단했으면 에이전트 스트림이 다음 스냅샷에서 NOT_PROJECT_MEMBER로 닫힌다.
+  if (result.abortedNow) tasksChanged(projectId);
+  return result;
+}
+
+// 조직 해산(029)의 앞부분 — 진행 중 태스크를 잡은 에이전트가 있으면 409 ACTIVE_TASKS_HELD(멤버 탈퇴와 같은 규칙), 없으면 진행 중 프로젝트를 전부 중단한다.
+// 확인을 중단보다 먼저 한다: 중단하고 나면 에이전트가 "진행 중 프로젝트"에서 풀려 탈퇴 경로의 확인이 아무것도 보지 못한다.
+export async function abortOrgProjectsInTx(tx: PoolClient, actor: Actor): Promise<string[]> {
+  const projectIds = await listOngoingProjectIdsForUpdate(tx, actor.orgId);
+  const active = await listActiveTasksInOrg(tx, actor.orgId);
+  if (active.length > 0) {
+    throw new AppError('ACTIVE_TASKS_HELD', `${active.length} task(s) are still held by agents; finish or stop them first`, active);
+  }
+  for (const projectId of projectIds) {
+    const project = (await findProjectById(tx, projectId))!;
+    await abortProjectInTx(tx, actor, project, 'organization dissolved');
+  }
+  return projectIds;
 }

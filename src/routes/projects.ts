@@ -10,6 +10,7 @@ import {
   listProjects,
   unassignMemberWithRevocations,
   abortProject,
+  deleteProject,
   type Actor,
 } from '../domain/project/service.js';
 import { listProjectEventsForUser } from '../domain/events/query.js';
@@ -178,6 +179,19 @@ projectsRouter.get(
   async (req, res) => {
     const { projectId } = req.params as z.infer<typeof projectIdParamsSchema>;
     res.status(200).json({ data: await getProject(actorOf(req), projectId) });
+  },
+);
+
+// DELETE /api/projects/:projectId — 프로젝트 삭제(대표 전용, 029). 행은 지우지 않고 표시만 남긴다 — 그 뒤로 목록·상세·하위 API에서 404.
+// 진행 중이면 같은 트랜잭션에서 먼저 중단한다(abortedNow). 이미 지운 프로젝트는 404 PROJECT_NOT_FOUND.
+projectsRouter.delete(
+  '/projects/:projectId',
+  validate({ params: projectIdParamsSchema }),
+  authenticate,
+  requireRepresentative,
+  async (req, res) => {
+    const { projectId } = req.params as z.infer<typeof projectIdParamsSchema>;
+    res.status(200).json({ data: await deleteProject(actorOf(req), projectId) });
   },
 );
 
