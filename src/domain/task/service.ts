@@ -471,7 +471,14 @@ export type TaskBriefing = {
   specTests: SpecTest[];
   policyHash: string;
   // 직전 제출이 대표에게 반려됐으면 그 사유. 반려되면 태스크가 READY로 돌아오고, 같은 태스크 브랜치에서 이어서 고친다.
-  lastRejection: { approvalId: string; reason: string; decidedAt: string; artifactId: string | null; commitSha: string | null } | null;
+  lastRejection: {
+    approvalId: string;
+    reason: string;
+    decidedAt: string;
+    artifactId: string | null;
+    commitSha: string | null;
+    rejectedBy: 'role_owner' | 'representative';
+  } | null;
   answeredQuestions: { question: string; answer: string; source: string }[];
   // 다른 태스크가 물어 사람이 정한 결정 중 이 태스크에 전달할 것(오래된 것부터) — PM 대상은 전부, FE·BE 대상은 같은 명세만(selectDecisionsForTask).
   // 이 태스크가 한 질문은 answeredQuestions로 받으므로 뺀다.

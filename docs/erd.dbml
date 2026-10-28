@@ -683,6 +683,8 @@ Table approvals {
   reason       text
   requested_at timestamptz [not null, default: `now()`]
   decided_at   timestamptz
+  stage            text    [not null, default: 'final', note: '★ 030: role_review(역할 담당 1차 검토) | final(대표 최종). G1·G2·G3와 030 이전 카드는 final']
+  reviewer_user_id uuid    [note: '★ 030: role_review 카드를 볼 역할 담당(project_members.user_id). final은 NULL']
 
   indexes {
     (project_id, decision, requested_at)
@@ -697,6 +699,12 @@ Table approvals {
     approvals_reject_reason_chk decision IS DISTINCT FROM 'REJECT' OR reason 1~2000자
     approvals_action_chk        gate <> 'ACTION' OR (artifact_id IS NOT NULL AND gate_mode IN ('HUMAN','PM_REVIEW'))
     uq_approvals_pending_subject UNIQUE (subject_id) WHERE decision IS NULL   -- 대상당 대기 1개
+  ★ 030 두 단계 ACTION 승인: 역할 담당이 1차 검토(role_review) → 승인하면 그 카드를 닫고 같은 트랜잭션에서 final 카드를 새로 만든다.
+    역할 담당이 없거나 대표 본인이면 처음부터 final(payload.roleReviewSkipped). role_review는 검토자 또는 대표가, final은 대표만 결정한다.
+    approvals_stage_chk            stage IN ('role_review','final')
+    approvals_reviewer_chk         (stage = 'role_review') = (reviewer_user_id IS NOT NULL)
+    approvals_role_review_gate_chk stage = 'final' OR gate = 'ACTION'
+    idx_approvals_pending_reviewer (reviewer_user_id) WHERE decision IS NULL   -- GET /me/approvals
   백필: 015 이전부터 AWAITING_APPROVAL인 태스크는 최신 산출물로 카드를 만들고 payload.backfilled = true
   PM_REVIEW도 여기 — PM의 결정은 decided_by NULL, decision은 REJECT만 가능
   PM이 반려하지 않으면 통과 여부는 AUTO 검증이 결정 (PM이 APPROVE로 게이트를 열 수 없음)
@@ -870,6 +878,7 @@ Ref: agent_activity.agent_id > agents.id
 
 Ref: approvals.project_id > projects.id [delete: cascade]
 Ref: approvals.decided_by > users.id
+Ref: approvals.reviewer_user_id > users.id
 Ref: approvals.artifact_id > artifacts.id
 Ref: approvals.action_key > action_catalog.action_key
 

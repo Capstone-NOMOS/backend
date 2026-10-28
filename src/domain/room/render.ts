@@ -36,6 +36,13 @@ function targetLabel(v: unknown): string {
   return v === 'PM' ? 'PM(대표)' : String(v ?? '');
 }
 
+// 역할 담당(사람)을 부를 때 — "BE 담당 민수".
+function ownerLabel(teamRole: unknown, nickname: unknown): string {
+  const role = teamRole === 'BACKEND' ? 'BE' : teamRole === 'FRONTEND' ? 'FE' : '';
+  const name = typeof nickname === 'string' && nickname ? ` ${nickname}` : '';
+  return `${role ? `${role} ` : ''}담당${name}`;
+}
+
 function agentLabel(name: unknown): string {
   return typeof name === 'string' && name ? `에이전트 ${name}` : '에이전트';
 }
@@ -146,7 +153,10 @@ function eventText(row: FeedRow): { speaker: RoomMessage['speaker']; text: strin
         case 'DONE':
           return { speaker: 'pm', text: `검증 완료 — ${stages} → 완료되었습니다` };
         case 'AWAITING_APPROVAL':
-          return { speaker: 'pm', text: `검증 완료 — ${stages} → 대표 승인을 기다립니다` };
+          // 030: 역할 담당의 1차 검토가 먼저인 카드(옛 이벤트에는 approvalStage가 없다 = 대표).
+          return p.approvalStage === 'role_review'
+            ? { speaker: 'pm', text: `검증 완료 — ${stages} → 담당 검토를 기다립니다` }
+            : { speaker: 'pm', text: `검증 완료 — ${stages} → 대표 승인을 기다립니다` };
         case 'READY':
           return { speaker: 'pm', text: `검증 실패 — ${stages} → 다시 시도합니다 (${num(p.retryCount)}/${MAX_RETRIES})` };
         case 'ESCALATED':
@@ -187,6 +197,13 @@ function eventText(row: FeedRow): { speaker: RoomMessage['speaker']; text: strin
     case 'TASK_RESUMED':
       return { speaker: 'pm', text: `대표가 재개했습니다${p.note ? `: ${str(p.note)}` : ''}` };
     case 'APPROVAL_RESULT':
+      // 030: 1차 검토(역할 담당). 대표가 대신 처리했으면 그렇게 적는다.
+      if (p.stage === 'role_review') {
+        const who = p.decidedByRepresentative === true ? `대표가 ${ownerLabel(p.teamRole, null)} 검토를 대신해` : ownerLabel(p.teamRole, p.deciderNickname) + '이';
+        return p.decision === 'APPROVE'
+          ? { speaker: 'pm', text: `${who} 1차 승인 — 대표 승인을 기다립니다` }
+          : { speaker: 'pm', text: `${who} 반려 — ${str(p.reason).slice(0, 100)}` };
+      }
       return p.decision === 'APPROVE'
         ? { speaker: 'pm', text: '대표가 승인했습니다 → 완료되었습니다' }
         : { speaker: 'pm', text: `대표가 반려했습니다${p.reason ? `: ${str(p.reason)}` : ''}` };

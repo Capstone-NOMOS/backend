@@ -11,6 +11,8 @@ import type { StageOutcome } from '../verification/service.js';
 import {
   decideApproval,
   findApprovalForUpdate,
+  findRoleOwner,
+  findUserNickname,
   insertApproval,
   insertReleaseApproval,
   isProjectReadyForRelease,
@@ -20,17 +22,23 @@ import {
   lockApprovalTask,
   markProjectCompleted,
   type ApprovalDecision,
+  type ApprovalRow,
+  type ApprovalStage,
+  type ApprovalStageFilter,
   type ApprovalStatusFilter,
   type ApprovalView,
+  type RoleReviewRecord,
 } from './repository.js';
 
 // 승인 대기열 — 지금 범위는 ACTION 게이트(검증은 통과했지만 정책 판정이 HUMAN·PM_REVIEW인 산출물)뿐이다.
 //
 // - 요청: 검증이 끝나 AWAITING_APPROVAL로 가는 **같은 트랜잭션**에서 카드를 만든다(verification/service.ts의 settle).
 //   카드 내용은 그 순간의 스냅샷이다 — 나중에 무엇이 바뀌어도 "무엇을 승인했나"가 남는다.
-// - 결정: **대표만** 한다. "해당 역할의 사람"은 곧 제출한 에이전트의 주인이라 자기 승인이 되기 때문이다.
-//   대표가 자기 에이전트의 산출물을 승인하는 경우는 지금은 허용하되(다른 승인자가 없다) selfApproval: true로 남긴다 —
-//   나중에 "다른 멤버 승인" 규칙을 만들 때의 근거다.
+// - 결정은 두 단계다(030, 대표 결정 2026-10-28). 먼저 **역할 담당**(project_members.user_id)이 1차 검토(role_review)하고,
+//   통과하면 **대표**가 최종 승인(final)한다. 역할 담당은 자기 에이전트의 결과를 가장 잘 알지만 자기 승인이라 그것만으로 DONE이 되지 않는다.
+//   역할 담당이 없거나(역할 제한 없는 태스크·빈 역할) 대표 본인이면 처음부터 final이다(payload.roleReviewSkipped).
+//   1차 검토는 검토자 또는 대표가(대신 처리 — decidedByRepresentative), final·G3는 대표만 결정한다. 반려는 어느 단계든 같은 재시도 경로다.
+//   대표가 자기 에이전트의 산출물을 최종 승인하는 경우는 허용하되 selfApproval: true로 남긴다.
 // - 승인 → DONE. 반려 → **READY**(담당 비움, retry_count +1, 3회째 ESCALATED) — 설계 문서의 IN_PROGRESS가 아니다:
 //   제출 뒤 에이전트 실행은 끝나 있어 IN_PROGRESS를 이어받을 주체가 없다. 반려 사유는 다음 시도의 브리핑(lastRejection)으로 간다.
 // - PM_REVIEW 카드도 대표가 처리한다(PM 리뷰 미구현). 그 결정은 reviewer: 'human_fallback'으로 구분해 남긴다 — PM 리뷰가 생기면 지표를 나눠 센다.
@@ -39,15 +47,28 @@ export type ActionApprovalInput = { task: Task; artifact: Artifact; stages: Stag
 
 type EventContext = { orgId: string; projectId: string; onBehalfOf: string; policyHash: string; agentId?: string };
 
-// settle 안에서 부른다 — 트랜잭션은 호출부 것이다.
-export async function requestActionApproval(tx: PoolClient, ctx: EventContext, input: ActionApprovalInput): Promise<string> {
+export type RoleReviewSkipped = 'no_owner' | 'owner_is_representative';
+
+// settle 안에서 부른다 — 트랜잭션은 호출부 것이다. 카드를 만드는 곳은 여기 한 곳이다(1차 검토 뒤 final 카드도 같은 스냅샷을 옮긴다).
+export async function requestActionApproval(
+  tx: PoolClient,
+  ctx: EventContext,
+  input: ActionApprovalInput,
+): Promise<{ id: string; stage: ApprovalStage }> {
   const { task, artifact } = input;
+  // 역할 담당(사람)이 있고 대표가 아니면 그 사람이 먼저 본다 — 에이전트 연결이 끊겨 있어도(agent_id NULL) 담당은 사람이라 그대로 간다.
+  const owner = await findRoleOwner(tx, task.projectId, task.teamRole);
+  const skipped: RoleReviewSkipped | null = owner === null ? 'no_owner' : owner.isRepresentative ? 'owner_is_representative' : null;
+  const stage: ApprovalStage = skipped === null ? 'role_review' : 'final';
+  const reviewerUserId = skipped === null ? owner!.userId : null;
   const approval = await insertApproval(tx, {
     projectId: task.projectId,
     gate: 'ACTION',
     subjectId: task.id,
     artifactId: artifact.id,
     gateMode: artifact.gateMode,
+    stage,
+    reviewerUserId,
     payload: {
       taskTitle: task.title,
       artifactId: artifact.id,
@@ -58,6 +79,8 @@ export async function requestActionApproval(tx: PoolClient, ctx: EventContext, i
       gateMode: artifact.gateMode,
       stages: input.stages,
       submittedByAgentId: task.assigneeAgentId,
+      teamRole: task.teamRole,
+      ...(skipped === null ? {} : { roleReviewSkipped: skipped }),
     },
   });
   await appendEvent(tx, {
@@ -74,9 +97,12 @@ export async function requestActionApproval(tx: PoolClient, ctx: EventContext, i
       artifactId: artifact.id,
       gateMode: artifact.gateMode,
       triggeredActions: artifact.triggeredActions,
+      stage,
+      reviewerUserId,
+      ...(skipped === null ? {} : { roleReviewSkipped: skipped }),
     },
   });
-  return approval.id;
+  return { id: approval.id, stage };
 }
 
 // ── G3: 통합 확인·완료 승인 ───────────────────────────────────────────────
@@ -102,8 +128,19 @@ export async function requestReleaseIfComplete(tx: PoolClient, ctx: { orgId: str
 }
 
 // 조직 전체의 대기열(대시보드 "승인 · 결정 대기", 받은 편지함) — 대표 전용(라우트가 막는다).
-export async function listOrgApprovals(orgId: string, status: ApprovalStatusFilter, limit: number): Promise<ApprovalView[]> {
-  return listApprovals(pool, { orgId, status, limit });
+// 대표는 1차 검토 대기(role_review)도 본다 — 역할 담당이 응답하지 않으면 대신 처리한다. stage로 단계를 거른다.
+export async function listOrgApprovals(
+  orgId: string,
+  status: ApprovalStatusFilter,
+  stage: ApprovalStageFilter,
+  limit: number,
+): Promise<ApprovalView[]> {
+  return listApprovals(pool, { orgId, status, stage, limit });
+}
+
+// 팀원의 "검토 요청" — 내가 그 역할 담당인 1차 검토 대기 카드(조직 전체). 결정되면 빠진다.
+export async function listMyApprovals(actor: UserContext, limit: number): Promise<ApprovalView[]> {
+  return listApprovals(pool, { orgId: actor.orgId, status: 'pending', stage: 'role_review', reviewerUserId: actor.userId, limit });
 }
 
 // 프로젝트의 승인 이력 — 볼 수 있는 범위는 태스크·노트와 같다.
@@ -111,27 +148,45 @@ export async function listProjectApprovals(
   actor: UserContext,
   projectId: string,
   status: ApprovalStatusFilter,
+  stage: ApprovalStageFilter,
   limit: number,
 ): Promise<ApprovalView[]> {
   await withTransaction((tx) => assertProjectVisibleToUser(tx, actor, projectId));
-  return listApprovals(pool, { projectId, status, limit });
+  return listApprovals(pool, { projectId, status, stage, limit });
 }
 
+// 결정할 자격 — 1차 검토는 검토자(지금도 그 역할 담당일 때) 또는 대표, final·G3는 대표만.
+// 검토자가 역할에서 빠졌으면(해제·탈퇴) 대표만 남는다 — 카드의 reviewer_user_id는 만든 순간의 값이다.
+async function assertCanDecide(tx: PoolClient, actor: UserContext, approval: ApprovalRow, teamRole: string | null): Promise<void> {
+  if (actor.orgRole === 'REPRESENTATIVE') return;
+  if (approval.stage === 'role_review' && approval.reviewerUserId === actor.userId) {
+    const owner = await findRoleOwner(tx, approval.projectId, teamRole);
+    if (owner?.userId === actor.userId) return;
+  }
+  throw new AppError(
+    'NOT_APPROVAL_REVIEWER',
+    approval.stage === 'role_review'
+      ? 'only the role owner under review or the organization representative can decide this approval'
+      : 'only the organization representative can make the final decision',
+  );
+}
+
+// reason: 반려 사유(필수), 승인이면 선택 메모(1차 검토 결과에 남는다).
 export async function decide(
   actor: UserContext,
   approvalId: string,
   decision: ApprovalDecision,
   reason: string | null,
 ): Promise<ApprovalView> {
-  if (actor.orgRole !== 'REPRESENTATIVE') {
-    throw new AppError('NOT_REPRESENTATIVE', 'only the organization representative can decide approvals');
-  }
   if (decision === 'REJECT' && !reason) throw new AppError('VALIDATION_ERROR', 'a rejection needs a reason');
 
-  const projectId = await withTransaction(async (tx) => {
+  const { projectId, changedTasks } = await withTransaction(async (tx) => {
     const approval = await findApprovalForUpdate(tx, approvalId);
     if (!approval) throw new AppError('APPROVAL_NOT_FOUND', `approval ${approvalId} not found`);
     if (approval.orgId !== actor.orgId) throw new AppError('CROSS_ORG_ACCESS', 'cannot access another organization');
+    // 태스크 행을 잠가 역할을 읽는다(ACTION). G3는 대상이 프로젝트라 태스크가 없다.
+    const task = approval.gate === 'ACTION' ? await lockApprovalTask(tx, approval.subjectId) : null;
+    await assertCanDecide(tx, actor, approval, task?.teamRole ?? null);
     if (approval.decision !== null) {
       throw new AppError('APPROVAL_ALREADY_DECIDED', `approval was already decided (${approval.decision})`);
     }
@@ -152,20 +207,90 @@ export async function decide(
         onBehalfOf: actor.userId,
         payload: { approvalId: approval.id, decision, reason, projectStatus: released.status },
       });
-      return approval.projectId;
+      return { projectId: approval.projectId, changedTasks: true };
     }
     if (approval.gate !== 'ACTION') {
       throw new AppError('APPROVAL_NOT_FOUND', `approval ${approvalId} is not an action approval`);
     }
 
     // 결정 순간에도 태스크가 승인 대기여야 한다(정지·수동 변경 등으로 바뀌었으면 결정을 받지 않는다).
-    const task = await lockApprovalTask(tx, approval.subjectId);
     if (!task || task.state !== 'AWAITING_APPROVAL') {
       throw new AppError('APPROVAL_STALE', `the task is no longer awaiting approval (${task?.state ?? 'gone'})`);
     }
 
     if (!(await decideApproval(tx, approval.id, decision, actor.userId, reason))) {
       throw new AppError('APPROVAL_ALREADY_DECIDED', 'approval was decided concurrently');
+    }
+
+    const project = (await findProjectById(tx, approval.projectId))!;
+    const isRoleReview = approval.stage === 'role_review';
+    const decidedByRepresentative = isRoleReview && actor.orgRole === 'REPRESENTATIVE';
+    const deciderNickname = await findUserNickname(tx, actor.userId);
+
+    // 1차 검토 승인 — 태스크는 AWAITING_APPROVAL 그대로, 같은 스냅샷으로 대표의 final 카드를 만든다.
+    if (isRoleReview && decision === 'APPROVE') {
+      const roleReview: RoleReviewRecord = {
+        by: actor.userId,
+        nickname: deciderNickname,
+        at: new Date().toISOString(),
+        decidedByRepresentative,
+        ...(reason ? { note: reason } : {}),
+      };
+      const { roleReviewSkipped: _skipped, ...snapshot } = approval.payload;
+      const final = await insertApproval(tx, {
+        projectId: approval.projectId,
+        gate: 'ACTION',
+        subjectId: approval.subjectId,
+        artifactId: approval.artifactId,
+        gateMode: approval.gateMode,
+        stage: 'final',
+        reviewerUserId: null,
+        payload: { ...snapshot, roleReview, roleReviewApprovalId: approval.id },
+      });
+      await appendEvent(tx, {
+        orgId: actor.orgId,
+        projectId: approval.projectId,
+        type: 'APPROVAL_RESULT',
+        onBehalfOf: actor.userId,
+        policyHash: project.policyHash,
+        payload: {
+          approvalId: approval.id,
+          gate: approval.gate,
+          taskId: approval.subjectId,
+          artifactId: approval.artifactId,
+          decision,
+          reason,
+          gateMode: approval.gateMode,
+          reviewer: 'role_owner',
+          selfApproval: task.assigneeOwnerId !== null && task.assigneeOwnerId === actor.userId,
+          taskState: 'AWAITING_APPROVAL',
+          stage: 'role_review',
+          teamRole: task.teamRole,
+          deciderNickname,
+          decidedByRepresentative,
+          nextApprovalId: final.id,
+        },
+      });
+      await appendEvent(tx, {
+        orgId: actor.orgId,
+        projectId: approval.projectId,
+        type: 'APPROVAL_REQUESTED',
+        onBehalfOf: actor.userId,
+        policyHash: project.policyHash,
+        payload: {
+          approvalId: final.id,
+          gate: 'ACTION',
+          taskId: approval.subjectId,
+          artifactId: approval.artifactId!,
+          gateMode: approval.gateMode!,
+          triggeredActions: (approval.payload.triggeredActions as string[] | undefined) ?? [],
+          stage: 'final',
+          reviewerUserId: null,
+          roleReviewApprovalId: approval.id,
+        },
+      });
+      // 태스크 상태는 그대로다 — 에이전트에게 알릴 변화가 없다(화면은 events 트리거로 approvals 토픽을 받는다).
+      return { projectId: approval.projectId, changedTasks: false };
     }
 
     let taskState: string;
@@ -179,7 +304,6 @@ export async function decide(
       retryCount = next.retryCount;
     }
 
-    const project = (await findProjectById(tx, approval.projectId))!;
     await appendEvent(tx, {
       orgId: actor.orgId,
       projectId: approval.projectId,
@@ -194,21 +318,26 @@ export async function decide(
         decision,
         reason,
         gateMode: approval.gateMode,
-        // PM 리뷰가 생길 때까지 PM_REVIEW 카드도 대표가 대신 본다 — 지표를 나눠 셀 수 있게 표시한다.
-        reviewer: approval.gateMode === 'PM_REVIEW' ? 'human_fallback' : 'human',
-        // 승인자가 제출한 에이전트의 주인이다(대표가 자기 에이전트를 돌린 경우).
+        // 1차 검토는 역할 담당의 결정이다. 최종은 대표 — PM 리뷰가 생길 때까지 PM_REVIEW 카드도 대표가 대신 본다(지표를 나눠 셀 수 있게 표시한다).
+        reviewer: isRoleReview ? 'role_owner' : approval.gateMode === 'PM_REVIEW' ? 'human_fallback' : 'human',
+        // 결정한 사람이 제출한 에이전트의 주인이다(대표·역할 담당이 자기 에이전트의 결과를 본 경우).
         selfApproval: task.assigneeOwnerId !== null && task.assigneeOwnerId === actor.userId,
         taskState,
+        stage: approval.stage,
+        teamRole: task.teamRole,
+        deciderNickname,
+        ...(isRoleReview ? { decidedByRepresentative } : {}),
         ...(retryCount === null ? {} : { retryCount, retryCause: 'REJECTED' as const }),
       },
     });
     // 이 승인으로 마지막 태스크가 DONE이 됐으면 통합 확인(G3)을 요청한다.
     if (decision === 'APPROVE') await requestReleaseIfComplete(tx, { orgId: actor.orgId, projectId: approval.projectId });
-    return approval.projectId;
+    return { projectId: approval.projectId, changedTasks: true };
   });
 
-  // 커밋 뒤 — 승인이면 뒤 태스크가 풀리고, 반려면 이 태스크가 다시 READY다.
-  tasksChanged(projectId);
+  // 커밋 뒤 — 승인이면 뒤 태스크가 풀리고, 반려면 이 태스크가 다시 READY다. 1차 검토 승인은 태스크가 그대로라 부르지 않는다.
+  if (changedTasks) tasksChanged(projectId);
+  // 응답은 결정한 카드다. 1차 검토 승인이면 새로 생긴 final 카드가 아니라 방금 닫은 role_review 카드를 돌려준다(FE가 버튼을 누른 그 카드).
   const [view] = (await listApprovals(pool, { projectId, status: 'all', limit: 200 })).filter((a) => a.id === approvalId);
   return view!;
 }

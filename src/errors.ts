@@ -61,6 +61,7 @@ export type ErrorCode =
   | 'APPROVAL_NOT_FOUND'
   | 'APPROVAL_ALREADY_DECIDED'
   | 'APPROVAL_STALE'
+  | 'NOT_APPROVAL_REVIEWER'
   | 'QUESTION_NOT_FOUND'
   | 'QUESTION_CLOSED'
   | 'QUESTION_INVALID'
@@ -217,6 +218,8 @@ const STATUS_BY_CODE: Record<ErrorCode, number> = {
   APPROVAL_ALREADY_DECIDED: 409,
   // 409 — 결정하려는 순간 태스크가 더 이상 승인 대기가 아니다(정지·수동 변경 등).
   APPROVAL_STALE: 409,
+  // 이 승인 카드를 결정할 자격이 없다 — 1차 검토(role_review)는 그 역할 담당·대표, 최종(final)·G3는 대표만(030).
+  NOT_APPROVAL_REVIEWER: 403,
   QUESTION_NOT_FOUND: 404,
   QUESTION_CLOSED: 409,
   QUESTION_INVALID: 422,

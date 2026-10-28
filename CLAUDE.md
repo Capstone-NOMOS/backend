@@ -512,7 +512,7 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
 
 ### 승인 대기열 (`domain/approval`, 015) — ACTION 게이트 + G3
 
-검증은 통과했지만 정책 판정이 HUMAN·PM_REVIEW라 `AWAITING_APPROVAL`에 멈춘 산출물을 사람이 결정한다(ACTION). G1·G2 카드와 PM 예산 초과 승인은 아직 없다.
+검증은 통과했지만 정책 판정이 HUMAN·PM_REVIEW라 `AWAITING_APPROVAL`에 멈춘 산출물을 역할 담당과 대표가 차례로 결정한다(ACTION). G1·G2 카드와 PM 예산 초과 승인은 아직 없다.
 
 - **G3 = 통합 확인·완료 승인**(운영 테스트 4-3, 대표 결정). 통합 확인은 에이전트가 아니라 대표가 한다 — 에이전트에게는 선행 태스크 코드(main에 머지되지 않는다)·
   상대 역할의 레포·서버 실행 수단이 없어 통합 태스크가 늘 멈췄다. **PM은 INTEGRATION 태스크를 만들지 않고**(`pmOnlyProblems` → 교정) `integrationChecks`를 쓴다.
@@ -522,12 +522,24 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
   승인 → 프로젝트 `completed`, 반려 → 진행 중 그대로(고칠 태스크는 대표가 만든다, 다시 전부 DONE이면 새 카드). `RELEASE_DECIDED`. 응답의 `taskId`는 G3면 null.
   사람이 API로 만드는 INTEGRATION 태스크는 아직 막지 않는다(기존 데이터·테스트가 명세 없는 종류로 쓴다).
 
-- **결정은 대표만 한다.** "해당 역할의 사람"은 곧 제출한 에이전트의 주인이라 자기 승인이 된다. 대표가 자기 에이전트의 산출물을
-  승인하는 것은 지금은 허용하되(다른 승인자가 없다) `APPROVAL_RESULT.payload.selfApproval: true`로 남긴다 — 다른 승인자 규칙을 만들 때의 근거.
-- **PM_REVIEW 카드도 대표가 처리한다**(PM 리뷰 미구현). `reviewer: 'human_fallback'`으로 구분한다 — PM 리뷰가 생기면 지표를 나눠 센다.
+- **ACTION 결정은 두 단계다(030, 대표 결정 2026-10-28): 역할 담당 1차 검토(`stage = role_review`) → 대표 최종(`final`).**
+  역할 담당(`project_members.user_id`)은 자기 에이전트의 결과를 가장 잘 알지만 자기 승인이라 **1차 검토만으로 DONE이 되지 않는다** — 최종은 늘 대표다.
+  - 카드를 만드는 곳은 `requestActionApproval` 한 곳(settle의 트랜잭션). 태스크 역할의 담당이 있고 대표가 아니면 role_review(`reviewer_user_id` = 그 사람 —
+    에이전트 연결이 끊겨 `agent_id`가 NULL이어도 담당은 사람이라 그대로). 담당이 없거나(역할 제한 없는 태스크·빈 역할) 대표 본인이면 처음부터 final이고
+    `payload.roleReviewSkipped`(`no_owner`·`owner_is_representative`)를 남긴다. **이 두 경우 말고는 대표 최종을 건너뛰지 않는다.**
+  - role_review는 **검토자(지금도 그 역할 담당일 때) 또는 대표**(대신 처리 — `decidedByRepresentative: true`), final·G3는 **대표만**(아니면 403 `NOT_APPROVAL_REVIEWER`).
+    판정은 서비스(`assertCanDecide`)가 카드의 단계로 한다 — 라우트에 `requireRepresentative`를 다시 붙이지 말 것. 검토자가 역할에서 빠지면 그 카드는 대표만 결정한다.
+  - 1차 승인: role_review 카드를 닫고 **같은 트랜잭션에서 같은 스냅샷으로 final 카드를 새로 만든다**(`payload.roleReview {by, nickname, at, decidedByRepresentative, note?}`).
+    태스크는 `AWAITING_APPROVAL` 그대로이고 `tasksChanged`를 부르지 않는다. 이벤트 `APPROVAL_RESULT(stage role_review)` + `APPROVAL_REQUESTED(stage final)`.
+    대기 카드가 태스크당 하나(`uq_approvals_pending_subject`)인 것은 그대로다 — 닫은 뒤 만든다.
+  - 반려는 어느 단계든 같은 재시도 경로다(아래). 1차에서 반려하면 대표 대기열에 오지 않고, 브리핑 `lastRejection.rejectedBy`(`role_owner`·`representative`)로 누가 반려했는지 간다.
+  - 조회: 팀원의 "검토 요청"은 `GET /me/approvals`(내가 지금 그 역할 담당인 대기 role_review), 대표 대기열(`GET /orgs/:orgId/approvals`)은 1차 검토 대기도 보이고 `stage`로 거른다.
+    화면 신호는 이벤트 트리거가 내는 프로젝트 토픽 `approvals`다(조직 토픽 `approvals`는 대표만).
+  - 결정한 사람이 제출한 에이전트의 주인이면 `APPROVAL_RESULT.payload.selfApproval: true`(1차 검토는 거의 늘 그렇다 — 그래서 최종이 따로 있다).
+- **PM_REVIEW 카드의 최종도 대표가 처리한다**(PM 리뷰 미구현). `reviewer: 'human_fallback'`으로 구분한다(1차 검토는 `role_owner`) — PM 리뷰가 생기면 지표를 나눠 센다.
 - 카드는 settle의 트랜잭션 안에서 만들고 payload는 **그 순간의 스냅샷**(커밋·경로·행동·단계 결과)이다. 대기 중 카드는 태스크당 하나(`uq_approvals_pending_subject`).
 - 결정 순간에도 태스크가 `AWAITING_APPROVAL`이어야 한다(아니면 409 `APPROVAL_STALE`). 결정은 `WHERE decision IS NULL` 조건부라 동시에 눌려도 한쪽만 이긴다.
-- 승인 → `DONE`. **반려 → `READY`**(담당 비움, 재시도 +1, 3회째 `ESCALATED`, 사유 필수). 설계 초안의 IN_PROGRESS가 아닌 이유: 제출 뒤
+- 최종 승인 → `DONE`. **반려(어느 단계든) → `READY`**(담당 비움, 재시도 +1, 3회째 `ESCALATED`, 사유 필수). 설계 초안의 IN_PROGRESS가 아닌 이유: 제출 뒤
   에이전트 실행은 끝나 있어 이어받을 주체가 없다. 사유는 다음 시도의 브리핑 `lastRejection`으로 가고, 프롬프트가 같은 태스크 브랜치에서
   이어서 고치라고 한다. 다른 노트북이 받으면 Executor가 `origin/<태스크 브랜치>`에서 이어 받는다(`executor/workspace.ts`).
 - 결정 뒤 `tasksChanged` — 승인이면 뒤 태스크가 풀리고 반려면 이 태스크가 다시 READY다.
