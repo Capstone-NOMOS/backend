@@ -366,6 +366,13 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     await call('POST', `/approvals/${finalId}/approve`, rep);
     await call('POST', `/approvals/${approvalIds[1]!}/reject`, be, { reason: 'down 마이그레이션이 없다' });
     await call('GET', `/projects/${projectId}/approvals?status=all`, rep);
+    // 받은 편지함 — 알림(일어난 일)·읽음·처리할 일
+    const notes = await call('GET', '/me/notifications?limit=10', rep);
+    await call('GET', '/me/notifications', be);
+    await call('POST', '/me/notifications/read', rep, { upToEventId: (notes.data.notifications as { id: string }[])[0]?.id ?? '0' });
+    await call('POST', '/me/notifications/read', be);
+    await call('GET', '/me/inbox', rep);
+    await call('GET', '/me/inbox', be);
 
     // 인계 노트
     await call('POST', `/tasks/${taskId}/notes`, agent, {

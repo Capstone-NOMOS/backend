@@ -32,7 +32,7 @@ info:
     2. 프로젝트 화면에서 `{ "type": "subscribe", "projectId" }` → `{ "type": "subscribed", projectId }` (볼 수 없으면 `{ "type": "error", code, projectId }`)
     3. 변화가 커밋되면 `{ "type": "changed", projectId | null, topics: [...], lastEventId }` — topics에 맞는 API를 다시 읽는다
        - projectId가 있으면 프로젝트 토픽: `project` · `tasks` · `specs` · `plans` · `approvals` · `notes` · `members` · `events`
-       - null이면 조직 토픽: `projects` · `approvals`(대표만) · `agents` · `repos` · `members`
+       - null이면 조직 토픽: `projects` · `approvals` · `agents` · `repos` · `members` · `questions` · `contracts` · `inbox`(받은 편지함 — `GET /me/notifications`·`GET /me/inbox`를 다시 읽는다)
     4. `{ "type": "resync" }`이면 서버가 신호를 놓쳤을 수 있다 — 화면 전체를 다시 읽는다. `unsubscribed`(배정 해제)도 온다.
     닫는 코드: 4400 잘못된 첫 메시지 · 4401 인증 실패(다시 로그인) · 4403 조직 없음 · 4408 10초 안에 인증 안 함.
 
@@ -158,6 +158,64 @@ components:
             이 레포를 쓰고 있는 **진행 중 프로젝트**(planning·active·halted — completed·aborted가 아닌 것). null이 아니면 새 프로젝트에 넣을 수 없다
             (프로젝트 생성의 409 REPO_IN_ACTIVE_PROJECT와 같은 판정). halted도 포함한다 — 재개될 수 있어서다.
         activeProjectName: { type: string, nullable: true, description: 'activeProjectId 프로젝트의 이름' }
+    Notification:
+      type: object
+      description: |
+        받은 편지함의 알림 한 줄 — "일어난 일". 따로 저장하지 않고 events에서 계산한다(id = 그 이벤트 id). 최근 30일만.
+        받는 사람: 관련 역할(`role`)의 담당과 대표. 대표는 조직의 모든 프로젝트, 팀원은 지금 자기가 담당인 역할만. 한 이벤트는 한 번이다.
+        질문 내용·답 전체는 싣지 않는다 — `questionId`로 `GET /projects/{projectId}/questions`(또는 `/decisions`)를 읽는다.
+      additionalProperties: false
+      required: [id, type, ts, read, projectId, projectName, taskId, taskTitle, questionId, role, text]
+      properties:
+        id: { type: string, description: '이벤트 id(bigint를 문자열로). 읽음 커서·더 보기(before)에 쓴다' }
+        type:
+          type: string
+          enum: [task_done, question_answered, question_asked]
+          description: |
+            - task_done: 태스크가 완료됐다(최종 승인·검증만으로 완료·직접 완료). 1차 검토 승인은 완료가 아니라 없다. 역할 = 태스크 역할
+            - question_answered: 질문한 역할의 질문에 답이 정해졌다(사람의 답, 또는 상담 초안이 그대로 답이 된 경우). 역할 = 질문한 역할
+            - question_asked: 그 역할에게 질문이 왔다(PM 대상이면 대표만). 역할 = 대상 역할
+        ts: { type: string, format: date-time }
+        read: { type: boolean, description: '이벤트 id ≤ 읽음 커서' }
+        projectId: { type: string, format: uuid }
+        projectName: { type: string }
+        taskId: { type: string, format: uuid, nullable: true }
+        taskTitle: { type: string, nullable: true }
+        questionId: { type: string, format: uuid, nullable: true, description: '질문 종류만 — 누르면 질문 카드를 연다' }
+        role: { type: string, nullable: true, description: '관련 역할(FRONTEND·BACKEND·PM). 역할 제한 없는 태스크면 null' }
+        text: { type: string, description: '서버가 만든 한 줄. 예: "로그인 API — 대표가 승인해 완료됐습니다", "BE 담당 민수가 답했습니다 — 목록 페이지 크기 → 20개"' }
+    InboxItem:
+      type: object
+      description: |
+        받은 편지함의 "처리할 일" 한 줄 — 지금 상태에서 계산한다(처리하면 저절로 빠진다). 진행 중 프로젝트만.
+        누가 받는지는 그 일을 처리하는 API의 권한 판정과 같다(보이는데 누르면 403이 되지 않게).
+      additionalProperties: false
+      required: [kind, createdAt, projectId, projectName, approvalId, questionId, contractId, planId, taskId, agentId, role, title, text]
+      properties:
+        kind:
+          type: string
+          enum: [approval_role_review, approval_final, release, question, contract, plan, stuck_task, agent_needed]
+          description: |
+            - approval_role_review: 내가 검토자인 1차 검토(`GET /me/approvals`와 같다) → `POST /approvals/{approvalId}/approve|reject`
+            - approval_final: 최종 승인 대기(대표만)
+            - release: 통합 확인·완료 승인 G3(대표만)
+            - question: 내가 답할 질문(`GET /me/questions`와 같다) → `POST /questions/{questionId}/answer`
+            - contract: 확정할 API 계약(BE 담당, 없으면 대표) — 초안 확정 대기 또는 작성 실패(다시 요청 필요)
+            - plan: PM 초안 검토 대기·실패(대표만, 종류별 가장 최근 요청)
+            - stuck_task: 멈춘(BLOCKED·AGENT_STOPPED)·재시도 소진(ESCALATED) 태스크 → `POST /tasks/{taskId}/resume`(대표만)
+            - agent_needed: 내가 담당인 진행 중 프로젝트 역할에 에이전트가 없다 — CLI 연결
+        createdAt: { type: string, format: date-time, description: '그 일이 생긴 시각(카드 요청·질문·계약 갱신·계획 요청·태스크 갱신). agent_needed는 프로젝트 생성 시각' }
+        projectId: { type: string, format: uuid }
+        projectName: { type: string }
+        approvalId: { type: string, format: uuid, nullable: true }
+        questionId: { type: string, format: uuid, nullable: true }
+        contractId: { type: string, format: uuid, nullable: true }
+        planId: { type: string, format: uuid, nullable: true }
+        taskId: { type: string, format: uuid, nullable: true }
+        agentId: { type: string, format: uuid, nullable: true, description: 'stuck_task면 마지막으로 맡았던 에이전트' }
+        role: { type: string, nullable: true }
+        title: { type: string }
+        text: { type: string, description: '서버가 만든 한 줄' }
     Approval:
       type: object
       required: [id, projectId, projectName, gate, stage, reviewer, roleReview, taskId, taskTitle, taskState, artifactId, gateMode, payload, decision, decidedBy, reason, requestedAt, decidedAt]
@@ -1339,6 +1397,8 @@ tags:
   - name: 태스크·노트
   - name: 검증
   - name: 승인
+  - name: 받은 편지함
+    description: 알림(일어난 일, events에서 계산)과 처리할 일(지금 상태에서 계산). 실시간은 조직 토픽 inbox
   - name: 질문
   - name: 룸
     description: 프로젝트 × 역할. 서버(PM)의 지시·판정, Executor 실행 상태, 에이전트 도구 사용을 한 줄씩
@@ -3266,6 +3326,104 @@ paths:
                       reason: null
                       requestedAt: '2026-10-05T01:00:00.000Z'
                       decidedAt: null
+  /me/notifications:
+    get:
+      tags: [받은 편지함]
+      summary: 알림(일어난 일)
+      description: |
+        내 태스크가 완료됐다 · 내 질문에 답이 왔다 · 나에게 질문이 왔다. events에서 계산하고 최근 30일만 본다. 최신순.
+        `before`(이전 응답의 마지막 `id`)로 더 본다. `unreadCount`는 읽음 커서 뒤의 내 알림 수.
+        실시간: 조직 토픽 `inbox` 신호를 받으면 다시 읽는다.
+      security: [{ userToken: [] }]
+      parameters:
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 30 } }
+        - { name: before, in: query, required: false, description: '이 이벤트 id보다 앞의 것만', schema: { type: string, pattern: '^\d{1,18}$' } }
+      responses:
+        '200':
+          description: 최신순
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    additionalProperties: false
+                    required: [notifications, unreadCount]
+                    properties:
+                      notifications: { type: array, items: { $ref: '#/components/schemas/Notification' } }
+                      unreadCount: { type: integer }
+  /me/notifications/read:
+    post:
+      tags: [받은 편지함]
+      summary: 알림 읽음
+      description: |
+        읽음 커서를 `upToEventId`까지(없으면 지금 최신까지) 민다. **앞으로만 간다** — 더 작은 값이면 그대로다.
+        읽음은 화면 상태라 이벤트를 남기지 않는다. 받은 편지함을 열 때 그때 받은 첫 알림의 id로 부르면 그 뒤에 온 알림은 안 읽음으로 남는다.
+      security: [{ userToken: [] }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                upToEventId: { type: string, pattern: '^\d{1,18}$', description: '이 이벤트 id까지 읽음(숫자도 받는다)' }
+      responses:
+        '200':
+          description: 읽음 커서와 남은 안 읽음 수
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    additionalProperties: false
+                    required: [readUpToEventId, unreadCount]
+                    properties:
+                      readUpToEventId: { type: string, nullable: true }
+                      unreadCount: { type: integer }
+  /me/inbox:
+    get:
+      tags: [받은 편지함]
+      summary: 처리할 일
+      description: |
+        지금 내가 처리할 일 — 승인·질문·계약·PM 초안·멈춘 태스크·에이전트 연결. 지금 상태에서 계산하므로 처리하면 빠진다. 오래된 것부터.
+        누가 받는지는 각 일을 처리하는 API의 권한 판정과 같다. 실시간: 조직 토픽 `inbox`.
+      security: [{ userToken: [] }]
+      responses:
+        '200':
+          description: 오래된 것부터
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    additionalProperties: false
+                    required: [items, counts]
+                    properties:
+                      items: { type: array, items: { $ref: '#/components/schemas/InboxItem' } }
+                      counts:
+                        type: object
+                        additionalProperties: false
+                        description: 종류별 개수(0 포함)
+                        required: [approval_role_review, approval_final, release, question, contract, plan, stuck_task, agent_needed]
+                        properties:
+                          approval_role_review: { type: integer }
+                          approval_final: { type: integer }
+                          release: { type: integer }
+                          question: { type: integer }
+                          contract: { type: integer }
+                          plan: { type: integer }
+                          stuck_task: { type: integer }
+                          agent_needed: { type: integer }
   /me/approvals:
     get:
       tags: [승인]
