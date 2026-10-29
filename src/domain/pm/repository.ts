@@ -86,6 +86,19 @@ export async function listPlans(db: Queryable, projectId: string): Promise<PlanR
   return rows.map(toPlan);
 }
 
+// 받은 편지함(처리할 일) — 프로젝트·종류(feature·tasks)마다 가장 최근 계획 하나씩, 여러 프로젝트를 한 번에.
+// 수정 요청·새 요청이 오면 옛 초안·실패는 지나간 일이라 최근 것만 본다.
+export async function listLatestPlansByKind(db: Queryable, projectIds: string[]): Promise<PlanRow[]> {
+  if (projectIds.length === 0) return [];
+  const { rows } = await db.query(
+    `SELECT DISTINCT ON (project_id, kind) * FROM plans
+      WHERE project_id = ANY($1::uuid[])
+      ORDER BY project_id, kind, created_at DESC, id DESC`,
+    [projectIds],
+  );
+  return rows.map(toPlan);
+}
+
 export async function findPendingPlan(db: Queryable, projectId: string): Promise<PlanRow | null> {
   const { rows } = await db.query(`SELECT * FROM plans WHERE project_id = $1 AND status = 'pending'`, [projectId]);
   const row = rows[0];
