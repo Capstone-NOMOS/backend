@@ -375,6 +375,19 @@ export async function listOpenDependents(db: Queryable, taskId: string): Promise
   return rows.map((r) => r.task_id as string);
 }
 
+// 재개를 기다리는 태스크(받은 편지함 "처리할 일") — 아래 두 재개 함수가 받는 상태와 같아야 한다(BLOCKED·AGENT_STOPPED, ESCALATED).
+export async function listResumableTasks(db: Queryable, projectIds: string[]): Promise<{ task: Task; updatedAt: string }[]> {
+  if (projectIds.length === 0) return [];
+  const { rows } = await db.query(
+    `SELECT * FROM tasks
+      WHERE project_id = ANY($1::uuid[])
+        AND ((state = 'BLOCKED' AND blocked_reason = 'AGENT_STOPPED') OR state = 'ESCALATED')
+      ORDER BY updated_at, id`,
+    [projectIds],
+  );
+  return rows.map((r) => ({ task: toTask(r), updatedAt: (r.updated_at as Date).toISOString() }));
+}
+
 // 대표가 재개: READY로 돌리고 담당을 비운다(같은 역할의 에이전트가 다시 가져간다). retry_count는 건드리지 않는다.
 export async function resumeStoppedTask(db: Queryable, taskId: string): Promise<Task | null> {
   const { rows } = await db.query(

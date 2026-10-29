@@ -1,3 +1,5 @@
+import { NOTIFICATION_EVENT_TYPES } from '../src/domain/inbox/repository.js';
+import { TOPICS_BY_EVENT } from '../src/realtime/topics.js';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -266,8 +268,27 @@ describe('조직 신호', () => {
     await withTransaction((tx) =>
       appendEvent(tx, { orgId: w.orgId, projectId: w.projectId, type: 'APPROVAL_REQUESTED', onBehalfOf: w.rep.userId, payload: {} as never }),
     );
-    expect((await rep.waitFor(changed(null))).topics).toEqual(['approvals']);
-    expect((await be.waitFor(changed(null))).topics).toEqual(['approvals']);
+    expect((await rep.waitFor(changed(null))).topics).toEqual(['approvals', 'inbox']);
+    expect((await be.waitFor(changed(null))).topics).toEqual(['approvals', 'inbox']);
+    rep.close();
+    be.close();
+  });
+
+  it('받은 편지함 — 알림·처리할 일이 바뀌는 이벤트는 조직 토픽 inbox로 대표·팀원 모두에게 간다(데이터 없음)', async () => {
+    const w = await world();
+    const rep = await connectAs(w.rep.token);
+    const be = await connectAs(w.be.token);
+    const types = ['VERIFICATION_COMPLETED', 'TASK_COMPLETED_MANUALLY', 'QUESTION_ASKED', 'QUESTION_ANSWERED', 'CONTRACT_DRAFTED', 'PM_PLAN_DRAFTED', 'TASK_BLOCKED', 'MEMBER_AGENT_DETACHED'] as const;
+    for (const type of types) {
+      await withTransaction((tx) => appendEvent(tx, { orgId: w.orgId, projectId: w.projectId, type, onBehalfOf: w.rep.userId, payload: {} as never }));
+      for (const conn of [rep, be]) {
+        const msg = await conn.waitFor((m) => m.type === 'changed' && m.projectId === null && (m.topics as string[]).includes('inbox'));
+        expect(Object.keys(msg).sort()).toEqual(['lastEventId', 'projectId', 'topics', 'type']);
+        conn.messages.length = 0;
+      }
+    }
+    // 알림이 되는 이벤트 타입은 전부 inbox 신호를 낸다.
+    for (const type of NOTIFICATION_EVENT_TYPES) expect(TOPICS_BY_EVENT[type].org).toContain('inbox');
     rep.close();
     be.close();
   });

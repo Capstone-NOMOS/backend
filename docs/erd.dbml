@@ -31,6 +31,7 @@ Table users {
   name             text
   org_role         text        [not null, default: 'MEMBER', note: 'MEMBER | REPRESENTATIVE']
   created_at       timestamptz [not null, default: `now()`]
+  notifications_read_event_id bigint [note: '★ 031: 받은 편지함 알림 읽음 커서 — 이 events.id까지 읽음. 앞으로만 간다. 알림 자체는 events에서 계산(테이블 없음)']
 
   Note: '''
   team_role 없음 — 역할은 project_members에서 프로젝트마다 배정
@@ -756,6 +757,10 @@ Table events {
     CREATE TRIGGER trg_events_notify AFTER INSERT ON events
       FOR EACH ROW EXECUTE FUNCTION nomos_notify_event();
     -- pg_notify('nomos_events', {id, orgId, projectId, type}) — payload는 싣지 않는다
+
+  ★ 031 받은 편지함 알림: 알림 테이블 없이 events에서 계산한다(GET /me/notifications). 읽음은 users.notifications_read_event_id 커서
+    CREATE INDEX idx_events_notifications ON events (org_id, id)
+      WHERE type IN ('APPROVAL_RESULT','VERIFICATION_COMPLETED','TASK_COMPLETED_MANUALLY','QUESTION_ANSWERED','QUESTION_DRAFTED','QUESTION_ASKED');
   '''
 }
 

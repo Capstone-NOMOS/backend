@@ -67,6 +67,16 @@ export async function listContracts(db: Queryable, projectId: string): Promise<C
   return rows.map(toContract);
 }
 
+// 받은 편지함(처리할 일) — 여러 프로젝트의 계약을 상태로 걸러 한 번에 읽는다(프로젝트마다 묻지 않게).
+export async function listContractsForProjects(db: Queryable, projectIds: string[], statuses: string[]): Promise<ContractView[]> {
+  if (projectIds.length === 0) return [];
+  const { rows } = await db.query(
+    `${SELECT} WHERE c.project_id = ANY($1::uuid[]) AND c.status = ANY($2::text[]) ORDER BY c.project_id, s.feature_key`,
+    [projectIds, statuses],
+  );
+  return rows.map(toContract);
+}
+
 export async function findContract(db: Queryable, contractId: string, options: { forUpdate?: boolean } = {}): Promise<ContractView | null> {
   const { rows } = await db.query(`${SELECT} WHERE c.id = $1${options.forUpdate ? ' FOR UPDATE OF c' : ''}`, [contractId]);
   return rows[0] ? toContract(rows[0]) : null;
@@ -136,6 +146,16 @@ export async function listApprovedContracts(db: Queryable, projectId: string): P
 }
 
 // 계약을 확정할 사람 — 이 프로젝트의 BACKEND 역할 담당(에이전트 주인). 없으면 null(대표가 대신한다).
+// findBackendOwner를 여러 프로젝트에 한 번에 — 프로젝트 id → BE 담당 user id(없으면 키가 없다).
+export async function findBackendOwners(db: Queryable, projectIds: string[]): Promise<Map<string, string>> {
+  if (projectIds.length === 0) return new Map();
+  const { rows } = await db.query(
+    `SELECT m.project_id, m.user_id FROM project_members m WHERE m.project_id = ANY($1::uuid[]) AND m.team_role = 'BACKEND'`,
+    [projectIds],
+  );
+  return new Map(rows.map((r) => [r.project_id as string, r.user_id as string]));
+}
+
 export async function findBackendOwner(db: Queryable, projectId: string): Promise<string | null> {
   const { rows } = await db.query(
     `SELECT m.user_id FROM project_members m WHERE m.project_id = $1 AND m.team_role = 'BACKEND'`,

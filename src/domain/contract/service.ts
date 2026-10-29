@@ -69,11 +69,18 @@ export async function listAgentContracts(ctx: AgentContext, projectId: string): 
 }
 
 // 확정·수정 요청할 수 있는 사람: 이 프로젝트의 BE 담당(에이전트 주인). BE 담당이 없을 때만 대표가 대신한다(대표 결정).
+// 받은 편지함의 "확정 대기 계약"도 이 판정을 쓴다 — 정의를 두 벌 두지 않는다.
+export function contractApproverRole(backendOwner: string | null, actor: { userId: string; orgRole: string }): 'owner' | 'representative' | null {
+  if (backendOwner !== null && backendOwner === actor.userId) return 'owner';
+  if (backendOwner === null && actor.orgRole === 'REPRESENTATIVE') return 'representative';
+  return null;
+}
+
 async function assertApprover(tx: PoolClient, actor: UserContext, contract: ContractView): Promise<{ byRepresentative: boolean }> {
   await assertProjectVisibleToUser(tx, actor, contract.projectId);
   const owner = await findBackendOwner(tx, contract.projectId);
-  if (owner !== null && owner === actor.userId) return { byRepresentative: false };
-  if (owner === null && actor.orgRole === 'REPRESENTATIVE') return { byRepresentative: true };
+  const role = contractApproverRole(owner, actor);
+  if (role !== null) return { byRepresentative: role === 'representative' };
   throw new AppError(
     'NOT_CONTRACT_APPROVER',
     owner === null ? 'no BACKEND member is assigned; the representative confirms instead' : 'only the BACKEND member of this project can confirm the API contract',
