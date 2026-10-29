@@ -1,6 +1,6 @@
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../src/app.js';
 import { NomosClient } from '../src/bridge/nomos-client.js';
 import { pool } from '../src/config/db.js';
@@ -161,11 +161,11 @@ describe('알림 — 태스크 완료', () => {
     const final = (await http('GET', `/orgs/${w.orgId}/approvals?stage=final`, await w.rep.token())).json.data as unknown as { approvals: { id: string }[] };
     expect((await http('POST', `/approvals/${final.approvals[0]!.id}/approve`, await w.rep.token())).status).toBe(200);
 
-    for (const who of [w.rep, w.fe]) {
-      const done = (await notifications(who)).notifications.filter((n) => n.type === 'task_done');
-      expect(done).toHaveLength(1);
-      expect(done[0]).toMatchObject({ taskId: w.feTaskId, role: 'FRONTEND', questionId: null, read: false, projectName: '스터디', text: '목록 화면 — 대표가 승인해 완료됐습니다' });
-    }
+    const done = (await notifications(w.fe)).notifications.filter((n) => n.type === 'task_done');
+    expect(done).toHaveLength(1);
+    expect(done[0]).toMatchObject({ taskId: w.feTaskId, role: 'FRONTEND', questionId: null, read: false, projectName: '스터디', text: '목록 화면 — 대표가 승인해 완료됐습니다' });
+    // 승인을 누른 대표 자신에게는 알리지 않는다(방금 한 일이다).
+    expect(await types(w.rep)).not.toContain('task_done');
     expect(await types(w.be)).not.toContain('task_done');
     expect(await types(w.idle)).toEqual([]);
   });
@@ -180,8 +180,11 @@ describe('알림 — 태스크 완료', () => {
     setCommitInspector({ kind: 'fake', async changedPaths() { return ['src/layout.tsx']; } });
     const manual = await http('POST', `/tasks/${w.layoutTaskId}/manual-completion`, await w.fe.token(), { commitSha: 'def5678', changedPaths: ['src/layout.tsx'] });
     expect(manual.status).toBe(200);
-    expect((await notifications(w.fe)).notifications.map((n) => n.text)).toEqual(['공통 레이아웃 — FE 담당 지수가 직접 완료했습니다']);
-    expect((await notifications(w.rep)).notifications.map((n) => n.taskId)).toEqual([w.layoutTaskId, w.beTaskId]);
+    // 직접 완료한 FE 담당 자신에게는 알리지 않고, 대표에게는 알린다.
+    expect(await types(w.fe)).toEqual([]);
+    const repDone = (await notifications(w.rep)).notifications;
+    expect(repDone.map((n) => n.taskId)).toEqual([w.layoutTaskId, w.beTaskId]);
+    expect(repDone[0]!.text).toBe('공통 레이아웃 — FE 담당 지수가 직접 완료했습니다');
   });
 });
 
@@ -231,6 +234,26 @@ describe('알림 — 질문', () => {
     expect((await notifications(w.rep)).notifications).toMatchObject([{ type: 'question_asked', questionId: asked.id, role: 'PM' }]);
     expect(await types(w.fe)).toEqual([]);
     expect(await types(w.be)).toEqual([]);
+  });
+});
+
+describe('알림 — 내가 한 일은 나에게 알리지 않는다', () => {
+  it('대표가 PM 질문에 답하면 질문한 쪽 담당에게만 알림이 가고 대표 자신에게는 가지 않는다', async () => {
+    const w = await world();
+    await w.feClient.claimTask(w.feTaskId);
+    setQuestionRouter({ name: 'test:pm', route: async () => ({ target: 'PM', confidence: null, reason: '정책', routedBy: 'test:pm' }) });
+    const asked = await w.feClient.askQuestions(w.feTaskId, [SORT]);
+    await drainPmDrafts();
+    expect((await http('POST', `/questions/${asked.id}/answer`, await w.rep.token(), { answers: { [SORT.question]: '최신순' } })).status).toBe(200);
+
+    expect((await notifications(w.fe)).notifications).toMatchObject([{ type: 'question_answered', questionId: asked.id, text: '대표가 답했습니다 — 기본 정렬은? → 최신순' }]);
+    expect(await types(w.rep)).toEqual(['question_asked']);
+  });
+
+  it('대표가 담당인 역할도 검증만으로 완료되면 알림이 온다 — 명의가 대표여도 사람이 결정한 일이 아니다', async () => {
+    const w = await world({ repOwnsFrontend: true });
+    expect((await submit(w.feClient, w.feTaskId, 'src/list.tsx')).taskState).toBe('DONE');
+    expect((await notifications(w.rep)).notifications.map((n) => [n.type, n.taskId])).toEqual([['task_done', w.feTaskId]]);
   });
 });
 
@@ -381,6 +404,33 @@ describe('처리할 일 (GET /me/inbox)', () => {
     expect((await inbox(w.be)).items).toMatchObject([{ kind: 'agent_needed', role: 'BACKEND' }]);
     expect(await kinds(w.rep)).toEqual([]);
     expect(await kinds(w.fe)).toEqual([]);
+  });
+
+  it('프로젝트가 늘어도 처리할 일을 읽는 쿼리 수는 같다 — 프로젝트마다 묻지 않는다', async () => {
+    const w = await world();
+    const rep = await w.rep.token();
+    const countQueries = async (): Promise<number> => {
+      const spy = vi.spyOn(pool, 'query');
+      try {
+        expect((await http('GET', '/me/inbox', rep)).status).toBe(200);
+        return spy.mock.calls.length;
+      } finally {
+        spy.mockRestore();
+      }
+    };
+    const one = await countQueries();
+
+    // 진행 중 프로젝트 두 개를 더 만든다(각자 레포 — 레포는 진행 중 프로젝트 하나에만 쓴다).
+    const more = await connectRepos({
+      orgId: w.orgId,
+      actorUserId: w.rep.userId,
+      actorOrgRole: 'REPRESENTATIVE',
+      repos: [{ fullName: 'acme/more-1', ownerRole: 'FRONTEND' }, { fullName: 'acme/more-2', ownerRole: 'BACKEND' }],
+    });
+    for (const [i, repo] of more.entries()) {
+      await createProject(w.orgId, w.rep.userId, { name: `추가 ${i}`, autonomyPreset: 'L2', pmBudgetUsd: 5, repoIds: [repo.id] });
+    }
+    expect(await countQueries()).toBe(one);
   });
 
   it('끝난·지운 프로젝트의 일은 없다', async () => {

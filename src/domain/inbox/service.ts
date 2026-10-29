@@ -1,9 +1,9 @@
 import { pool } from '../../config/db.js';
 import { listApprovals, type ApprovalView } from '../approval/repository.js';
-import { findBackendOwner, listContracts } from '../contract/repository.js';
+import { findBackendOwners, listContractsForProjects } from '../contract/repository.js';
 import { contractApproverRole } from '../contract/service.js';
-import { listPlans, type PlanRow } from '../pm/repository.js';
-import { listProjectMembers, listProjectsByOrg, type Project } from '../project/repository.js';
+import { listLatestPlansByKind } from '../pm/repository.js';
+import { listAgentlessRolesOfUser, listProjectsByOrg, type Project } from '../project/repository.js';
 import type { UserContext } from '../project/visibility.js';
 import { listMyQuestions } from '../question/service.js';
 import { listResumableTasks } from '../task/repository.js';
@@ -153,16 +153,6 @@ function approvalItem(a: ApprovalView, kind: InboxKind): InboxItem {
   return item(project, kind, a.requestedAt, { approvalId: a.id, taskId: a.taskId, role, title, text });
 }
 
-// 계획 — 종류(feature·tasks)마다 가장 최근 요청만 본다. 수정 요청·새 요청이 오면 옛 초안·실패는 지나간 일이다.
-function latestPlansByKind(plans: PlanRow[]): PlanRow[] {
-  const latest = new Map<string, PlanRow>();
-  for (const p of plans) {
-    const prev = latest.get(p.kind);
-    if (!prev || Date.parse(iso(p.createdAt)) > Date.parse(iso(prev.createdAt))) latest.set(p.kind, p);
-  }
-  return [...latest.values()];
-}
-
 export async function listInbox(actor: UserContext): Promise<{ items: InboxItem[]; counts: Record<InboxKind, number> }> {
   const isRep = actor.orgRole === 'REPRESENTATIVE';
   // 볼 수 있는 진행 중 프로젝트(프로젝트 목록 API와 같은 선택 — 지운 프로젝트는 이미 빠진다). 끝난 프로젝트의 일은 처리할 것이 아니다.
@@ -196,57 +186,58 @@ export async function listInbox(actor: UserContext): Promise<{ items: InboxItem[
     );
   }
 
-  for (const project of projects) {
-    // 계약 — 확정 대기(draft)와 실패(failed). 확정할 수 있는 사람만(contractApproverRole — 확정 API와 같은 판정).
-    const contracts = await listContracts(pool, project.id);
-    if (contracts.some((c) => c.status === 'draft' || c.status === 'failed')) {
-      if (contractApproverRole(await findBackendOwner(pool, project.id), actor) !== null) {
-        for (const c of contracts) {
-          if (c.status !== 'draft' && c.status !== 'failed') continue;
-          items.push(
-            item(project, 'contract', c.updatedAt, {
-              contractId: c.id,
-              role: 'BACKEND',
-              title: c.specTitle,
-              text:
-                c.status === 'draft'
-                  ? `${c.specTitle} — API 계약 초안을 확정해 주세요`
-                  : `${c.specTitle} — API 계약 작성이 실패했습니다. 다시 요청이 필요합니다`,
-            }),
-          );
-        }
-      }
-    }
+  // 아래는 프로젝트 수와 상관없이 종류마다 쿼리 한 번이다(프로젝트마다 물으면 프로젝트가 늘수록 받은 편지함이 느려진다).
+  const projectIds = projects.map((p) => p.id);
 
-    if (isRep) {
-      // PM 초안 — 검토 대기(ready)와 실패(failed). 대표만(계획 API가 대표 전용).
-      for (const plan of latestPlansByKind(await listPlans(pool, project.id))) {
-        if (plan.status !== 'ready' && plan.status !== 'failed') continue;
-        const label = PLAN_KIND_LABEL[plan.kind] ?? '계획';
-        items.push(
-          item(project, 'plan', plan.createdAt, {
-            planId: plan.id,
-            title: `${label} 초안`,
-            text:
-              plan.status === 'ready'
-                ? `${label} 초안이 준비됐습니다 — 검토해 주세요`
-                : `${label} 초안 작성이 실패했습니다(${plan.errorReason ?? '알 수 없음'}) — 다시 요청이 필요합니다`,
-          }),
-        );
-      }
-    }
-
-    // 에이전트가 필요한 내 역할 — 진행 중 프로젝트에서 담당은 나인데 에이전트가 없다(연결 해제 등).
-    for (const m of await listProjectMembers(pool, project.id)) {
-      if (m.userId !== actor.userId || m.agentId !== null) continue;
+  // 계약 — 확정 대기(draft)와 실패(failed). 확정할 수 있는 사람만(contractApproverRole — 확정 API와 같은 판정).
+  const contracts = await listContractsForProjects(pool, projectIds, ['draft', 'failed']);
+  if (contracts.length > 0) {
+    const owners = await findBackendOwners(pool, [...new Set(contracts.map((c) => c.projectId))]);
+    for (const c of contracts) {
+      if (contractApproverRole(owners.get(c.projectId) ?? null, actor) === null) continue;
       items.push(
-        item(project, 'agent_needed', project.createdAt, {
-          role: m.teamRole,
-          title: project.name,
-          text: `${project.name} — ${roleShort(m.teamRole)} 역할에 에이전트가 연결돼 있지 않습니다. CLI로 연결해 주세요`,
+        item(open.get(c.projectId)!, 'contract', c.updatedAt, {
+          contractId: c.id,
+          role: 'BACKEND',
+          title: c.specTitle,
+          text:
+            c.status === 'draft'
+              ? `${c.specTitle} — API 계약 초안을 확정해 주세요`
+              : `${c.specTitle} — API 계약 작성이 실패했습니다. 다시 요청이 필요합니다`,
         }),
       );
     }
+  }
+
+  // PM 초안 — 프로젝트·종류마다 가장 최근 것이 검토 대기(ready)나 실패(failed)면. 대표만(계획 API가 대표 전용).
+  if (isRep) {
+    for (const plan of await listLatestPlansByKind(pool, projectIds)) {
+      if (plan.status !== 'ready' && plan.status !== 'failed') continue;
+      const label = PLAN_KIND_LABEL[plan.kind] ?? '계획';
+      items.push(
+        item(open.get(plan.projectId)!, 'plan', plan.createdAt, {
+          planId: plan.id,
+          title: `${label} 초안`,
+          text:
+            plan.status === 'ready'
+              ? `${label} 초안이 준비됐습니다 — 검토해 주세요`
+              : `${label} 초안 작성이 실패했습니다(${plan.errorReason ?? '알 수 없음'}) — 다시 요청이 필요합니다`,
+        }),
+      );
+    }
+  }
+
+  // 에이전트가 필요한 내 역할 — 진행 중 프로젝트에서 담당은 나인데 에이전트가 없다(연결 해제 등). 재연결 판정(028)과 같은 함수.
+  for (const seat of await listAgentlessRolesOfUser(pool, actor.userId)) {
+    const project = open.get(seat.projectId);
+    if (!project) continue;
+    items.push(
+      item(project, 'agent_needed', project.createdAt, {
+        role: seat.teamRole,
+        title: project.name,
+        text: `${project.name} — ${roleShort(seat.teamRole)} 역할에 에이전트가 연결돼 있지 않습니다. CLI로 연결해 주세요`,
+      }),
+    );
   }
 
   // 멈춘 태스크 — 재개(POST /tasks/:id/resume)는 대표 전용이다.

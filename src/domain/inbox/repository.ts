@@ -70,7 +70,10 @@ const BASE = `
   ),
   mine AS (
     SELECT n.* FROM n
-     WHERE $2 OR EXISTS (SELECT 1 FROM project_members m WHERE m.project_id = n.project_id AND m.user_id = $3 AND m.team_role = n.role)
+     WHERE ($2 OR EXISTS (SELECT 1 FROM project_members m WHERE m.project_id = n.project_id AND m.user_id = $3 AND m.team_role = n.role))
+       -- 사람이 직접 결정한 일(승인 결과·사람의 답·직접 완료)은 그 사람 자신에게 알리지 않는다 — 방금 내가 누른 것이 안 읽은 알림으로 쌓였다.
+       -- 검증 완료·질문 발생·상담 초안 답은 빼지 않는다: 명의가 에이전트 주인(그 담당 본인)이라 같은 기준이면 받아야 할 알림이 사라진다.
+       AND NOT (n.type IN ('APPROVAL_RESULT', 'QUESTION_ANSWERED', 'TASK_COMPLETED_MANUALLY') AND n.on_behalf_of = $3::text)
   )`;
 
 const iso = (v: unknown): string => (v instanceof Date ? v.toISOString() : String(v));

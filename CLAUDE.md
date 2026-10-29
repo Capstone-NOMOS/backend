@@ -553,6 +553,8 @@ FE의 "받은 편지함"은 두 칸이다(대표 결정 2026-10-29). **둘 다 �
   받는 사람 규칙을 바꿀 때마다 쌓인 행을 고쳐야 한다. 종류는 셋 — `task_done`(최종 승인·검증만으로 완료·직접 완료 — 1차 검토 승인은 `taskState`가
   AWAITING_APPROVAL이라 빠진다), `question_answered`(사람의 답 + 상담 초안이 그대로 답이 된 `QUESTION_DRAFTED.autoAnswered`), `question_asked`(SELF 제외).
   받는 사람 = 관련 역할(태스크 역할·질문한 역할·대상 역할)의 **지금** 담당(`project_members.user_id`) + 대표(조직 전부). 한 이벤트가 한 줄이라 대표이면서 담당이어도 한 번.
+  **사람이 직접 결정한 일(최종 승인 결과·사람의 답·직접 완료)은 결정한 사람 자신(`on_behalf_of`)에게 알리지 않는다** — 방금 누른 것이 안 읽은 알림으로 쌓였다.
+  검증 완료·질문 발생·상담 초안 답은 빼지 않는다: 명의가 에이전트 주인(그 담당 본인)이라 같은 기준이면 받아야 할 알림이 사라진다.
   지운 프로젝트는 빠지고 끝난 프로젝트는 남는다(일어난 일이다). 판정 SQL은 `inbox/repository.ts` 한 곳이고, 대상 타입 목록(`NOTIFICATION_EVENT_TYPES`)은
   031의 부분 인덱스 `idx_events_notifications`와 같아야 한다. **최근 30일만 본다**(`NOTIFICATION_WINDOW_DAYS`) — events는 계속 자라고, 몇 달 전 알림이 안 읽음으로 남으면 숫자가 의미를 잃는다.
 - 문장(`text`)은 서버가 만든다(`inbox/render.ts`, 룸 피드와 같은 이유). 질문 내용·답은 요약 한 줄만 — 화면은 `questionId`로 질문 API를 읽는다(가시성 판정이 두 벌이 되지 않게).
@@ -561,6 +563,8 @@ FE의 "받은 편지함"은 두 칸이다(대표 결정 2026-10-29). **둘 다 �
 - **처리할 일(`GET /me/inbox`) = 지금 상태에서 계산한다** — 처리하면 저절로 빠진다. 종류마다 **그 일을 처리하는 API의 조회·판정 함수를 그대로 쓴다**:
   1차 검토는 `GET /me/approvals`와 같은 `listApprovals`, 최종·G3는 조직 대기열, 질문은 `listMyQuestions`(answerQuestion의 자격), 계약은 `contractApproverRole`(확정 API와 한 벌),
   멈춘 태스크는 `listResumableTasks`(재개 함수와 같은 상태). 정의가 두 벌이면 받은 편지함에 보이는데 누르면 403이 된다. 진행 중 프로젝트만.
+  **종류마다 쿼리는 프로젝트 수와 상관없이 한 번이다**(`listContractsForProjects`·`findBackendOwners`·`listLatestPlansByKind`·`listAgentlessRolesOfUser`) —
+  프로젝트마다 묻던 첫 구현은 프로젝트 하나당 쿼리 3번씩 늘었다. 테스트가 프로젝트를 늘려도 쿼리 수가 같은지 확인한다 — 새 종류를 넣을 때 프로젝트 루프 안에서 묻지 말 것.
 - 화면 신호는 조직 토픽 `inbox`(`realtime/topics.ts`) — 알림이 되는 이벤트와 처리할 일이 바뀌는 이벤트에서 조직 전부에 간다. 데이터가 없다(누구 것인지는 다시 읽어서 안다).
   푸시·이메일은 없다 — 화면을 닫아 두면 다음에 열었을 때 보인다.
 
