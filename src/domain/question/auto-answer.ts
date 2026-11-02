@@ -1,6 +1,7 @@
 import { pool, withTransaction } from '../../config/db.js';
 import { logger } from '../../config/logger.js';
 import { appendEvent } from '../events/append.js';
+import { EXPERIMENT_ACTOR } from '../experiment/attribution.js';
 import { findProjectById } from '../project/repository.js';
 import { afterAnswerCommitted, afterAnswerInTx } from './answer-effects.js';
 import { findQuestion, markAutoAnswered, type AgentQuestion } from './repository.js';
@@ -10,7 +11,7 @@ import { findQuestion, markAutoAnswered, type AgentQuestion } from './repository
 // 선택지는 추천안이 맨 앞이라(기획 단계 질문 지침) 첫 번째가 "가장 그럴듯한 답"이다. 그래도 정답은 아니다 — 정답 라벨(gold)은 사람이 따로 붙인다.
 // 대상이 PM이어도 대표 확정을 기다리지 않는다. 명의는 system:experiment, answerSource auto_first_option — 지표(사람 개입·답까지 걸린 시간)에서 이것으로 뺀다.
 
-export const EXPERIMENT_ACTOR = 'system:experiment';
+export { EXPERIMENT_ACTOR };
 // 선택지가 없는 질문(구현 단계 AskUserQuestion은 선택지 없이도 온다)의 자동 답.
 export const AUTO_ANSWER_NO_OPTION = '(실험 모드 자동 답 — 선택지가 없어 정해 줄 수 없다. 가장 합리적인 쪽으로 정하고 GOTCHA 노트로 남겨라)';
 
@@ -35,7 +36,8 @@ export async function drainAutoAnswers(): Promise<void> {
   while (inflight.size > 0) await Promise.all([...inflight]);
 }
 
-async function autoAnswer(questionId: string, orgId: string): Promise<void> {
+// 주기 정리(experiment/sweep.ts)가 자동 답이 빠진 대기 질문에 다시 부른다 — 대기가 아니면 아무것도 하지 않는다.
+export async function autoAnswer(questionId: string, orgId: string): Promise<void> {
   const question = await findQuestion(pool, questionId);
   if (!question || question.status !== 'pending') return;
   const project = await findProjectById(pool, question.projectId);
@@ -52,6 +54,7 @@ async function autoAnswer(questionId: string, orgId: string): Promise<void> {
       onBehalfOf: EXPERIMENT_ACTOR,
       policyHash: project.policyHash,
       payload: {
+        auto: true,
         questionId,
         taskId: answered.taskId,
         stage: answered.stage,

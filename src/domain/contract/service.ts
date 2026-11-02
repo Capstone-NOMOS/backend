@@ -2,11 +2,15 @@ import type { PoolClient } from 'pg';
 import { pool, withTransaction } from '../../config/db.js';
 import { AppError } from '../../errors.js';
 import { logger } from '../../config/logger.js';
+import { env } from '../../config/env.js';
 import { contractsChanged } from '../dispatch/contracts-changed.js';
+import { experimentNudge } from '../dispatch/experiment-nudge.js';
+import { autoMark, EXPERIMENT_ATTRIBUTION, type Attribution } from '../experiment/attribution.js';
 import { onPlanningQuestionsSettled } from '../dispatch/planning-questions.js';
 import { findProjectById } from '../project/repository.js';
 import {
   answersBlock,
+  answeredTexts,
   assumptionOf,
   closeQuestionsAsAssumed,
   insertPlanningQuestionsInTx,
@@ -14,7 +18,9 @@ import {
   planningQuestionProblems,
   planningQuestionsCommitted,
   questionsPendingError,
+  repeatedAssumption,
   routePlanningQuestions,
+  splitRepeated,
   toAskedQuestion,
   type PlanningQuestion,
 } from '../question/planning.js';
@@ -39,6 +45,7 @@ import {
   markContractFailed,
   requestContractRedraft,
   requestContractRedraftByAnswers,
+  requestContractRedraftByExperiment,
   type ContractJob,
   type ContractView,
 } from './repository.js';
@@ -61,6 +68,7 @@ export async function requestContractsInTx(
   project: { id: string; orgId: string; policyHash: string },
   specIds: string[],
   onBehalfOf: string,
+  attribution?: Attribution,
 ): Promise<string[]> {
   const contractIds = await insertPendingContracts(tx, project.id, specIds);
   if (contractIds.length > 0) {
@@ -70,7 +78,7 @@ export async function requestContractsInTx(
       type: 'CONTRACT_REQUESTED',
       onBehalfOf,
       policyHash: project.policyHash,
-      payload: { contractIds, specIds },
+      payload: { ...autoMark(attribution), contractIds, specIds },
     });
   }
   return contractIds;
@@ -117,9 +125,20 @@ async function loadForDecision(tx: PoolClient, contractId: string): Promise<Cont
 // 기획 단계 질문(033)에 답 대기가 남았으면 409 QUESTIONS_PENDING — 답이 오면 그 답으로 다음 회차가 저절로 열린다.
 // acceptAssumptions면 남은 질문을 가정(추천안)으로 닫고 확정한다.
 export async function approveContract(actor: UserContext, contractId: string, options: { acceptAssumptions?: boolean } = {}): Promise<ContractView> {
-  return withTransaction(async (tx) => {
+  return approveContractWith(actor, contractId, { acceptAssumptions: options.acceptAssumptions === true });
+}
+
+// attribution(034): 실험 모드의 자동 확정 — BE 담당 확정 자격 검사 대신 "실험 모드 프로젝트인가"를 본다(approveContractAsExperiment만 넘긴다).
+async function approveContractWith(
+  actor: UserContext,
+  contractId: string,
+  options: { acceptAssumptions: boolean; attribution?: Attribution },
+): Promise<ContractView> {
+  const by = options.attribution?.onBehalfOf ?? actor.userId;
+  const auto = autoMark(options.attribution);
+  const approved = await withTransaction(async (tx) => {
     const contract = await loadForDecision(tx, contractId);
-    const { byRepresentative } = await assertApprover(tx, actor, contract);
+    const { byRepresentative } = options.attribution ? await assertExperimentContract(tx, contract) : await assertApprover(tx, actor, contract);
     const pending = await listPendingQuestionsOf(tx, { kind: 'contract', contractId });
     if (pending.length > 0 && !options.acceptAssumptions) throw questionsPendingError(pending);
     let assumed: string[] = [];
@@ -127,7 +146,7 @@ export async function approveContract(actor: UserContext, contractId: string, op
       const project = (await findProjectById(tx, contract.projectId))!;
       assumed = await closeQuestionsAsAssumed(
         tx,
-        { orgId: actor.orgId, projectId: contract.projectId, policyHash: project.policyHash, onBehalfOf: actor.userId },
+        { orgId: actor.orgId, projectId: contract.projectId, policyHash: project.policyHash, onBehalfOf: by, ...auto },
         pending,
         { kind: 'contract', contractId },
       );
@@ -139,11 +158,27 @@ export async function approveContract(actor: UserContext, contractId: string, op
       orgId: actor.orgId,
       projectId: contract.projectId,
       type: 'CONTRACT_APPROVED',
-      onBehalfOf: actor.userId,
-      payload: { contractId, featureKey: contract.featureKey, attempt: contract.attempt, byRepresentative, ...(assumed.length > 0 ? { assumedQuestionIds: assumed } : {}) },
+      onBehalfOf: by,
+      payload: {
+        ...auto,
+        contractId,
+        featureKey: contract.featureKey,
+        attempt: contract.attempt,
+        byRepresentative,
+        ...(assumed.length > 0 ? { assumedQuestionIds: assumed } : {}),
+      },
     });
     return (await findContract(tx, contractId))!;
   });
+  // 확정이 태스크 나누기를 풀 수 있다(실험 모드 — 계약이 전부 확정되면 자동 요청).
+  experimentNudge(approved.projectId);
+  return approved;
+}
+
+async function assertExperimentContract(tx: PoolClient, contract: ContractView): Promise<{ byRepresentative: boolean }> {
+  const project = await findProjectById(tx, contract.projectId);
+  if (project?.questionMode !== 'experiment') throw new AppError('QUESTION_MODE_INVALID', 'automatic contract decisions run only in experiment mode');
+  return { byRepresentative: false };
 }
 
 // 수정 요청 — 초안이나 실패에서 다음 회차로 다시 쓰게 한다. 피드백은 선택(실패를 그대로 다시 시도할 때는 없어도 된다).
@@ -151,8 +186,8 @@ export async function reviseContract(actor: UserContext, contractId: string, fee
   const result = await withTransaction(async (tx) => {
     const contract = await loadForDecision(tx, contractId);
     await assertApprover(tx, actor, contract);
-    // 질문의 답으로 연 회차(033)는 BE 담당의 수정 요청이 아니다 — 한도에서 뺀다.
-    const used = contract.attempt - 1 - contract.questionRounds;
+    // 질문의 답으로 연 회차(033)·실험 모드의 자동 재시도(034)는 BE 담당의 수정 요청이 아니다 — 한도에서 뺀다.
+    const used = contract.attempt - 1 - contract.questionRounds - contract.experimentRetries;
     if (used >= CONTRACT_MAX_REVISIONS) {
       throw new AppError('CONTRACT_REVISION_LIMIT', `this contract has already been redrafted ${used} time(s) (limit ${CONTRACT_MAX_REVISIONS})`, {
         limit: CONTRACT_MAX_REVISIONS,
@@ -237,9 +272,14 @@ export async function submitContractDraft(
     throw new AppError('CONTRACT_INVALID', 'the contract is not a valid OpenAPI fragment', [...(checked.ok ? [] : checked.problems), ...questionProblems]);
   }
   const project = (await findProjectById(pool, ctx.projectId))!;
-  const { kept, overflow } = limitPlanningQuestions(structured, { mode: project.questionMode, roundsUsed: contract.questionRounds });
+  // 실험 모드: 이 계약에서 이미 답이 정해진 질문을 다시 물으면 거른다(이미 받은 답은 다음 회차 입력에 그대로 들어간다 — answers).
+  const { fresh, repeated } =
+    project.questionMode === 'experiment'
+      ? splitRepeated(structured, answeredTexts(await listQuestionsOf(pool, { kind: 'contract', contractId })))
+      : { fresh: structured, repeated: [] };
+  const { kept, overflow } = limitPlanningQuestions(fresh, { mode: project.questionMode, roundsUsed: contract.questionRounds });
   const routed = kept.length > 0 ? await routePlanningQuestions(await contractQuestionInputs(ctx, contract, kept)) : [];
-  const recorded = [...plain, ...kept.map((q) => q.question), ...overflow.map(assumptionOf)];
+  const recorded = [...plain, ...kept.map((q) => q.question), ...repeated.map(repeatedAssumption), ...overflow.map(assumptionOf)];
 
   const result = await withTransaction(async (tx) => {
     const done = await markContractDrafted(tx, {
@@ -285,6 +325,7 @@ export async function submitContractDraft(
     return { contract: (await findContract(tx, contractId))!, questions };
   });
   planningQuestionsCommitted(result.questions, routed, project);
+  experimentNudge(ctx.projectId);
   return result.contract;
 }
 
@@ -314,7 +355,7 @@ async function contractQuestionInputs(ctx: AgentContext, contract: ContractView,
 // 노트북이 초안을 못 냈다(형식을 두 번 다 못 맞춤·실행 실패). BE 개발자가 수정 요청으로 다시 시킬 수 있다.
 export async function failContractDraft(ctx: AgentContext, contractId: string, input: { attempt: number; reason: string }): Promise<ContractView> {
   const contract = await assertWriter(ctx, contractId);
-  return withTransaction(async (tx) => {
+  const failed = await withTransaction(async (tx) => {
     if (!(await markContractFailed(tx, contractId, input.attempt, input.reason))) {
       throw new AppError('CONTRACT_STALE', `contract is not waiting for attempt ${input.attempt}`);
     }
@@ -329,6 +370,8 @@ export async function failContractDraft(ctx: AgentContext, contractId: string, i
     });
     return (await findContract(tx, contractId))!;
   });
+  experimentNudge(ctx.projectId);
+  return failed;
 }
 
 // ── 질문의 답으로 다음 회차(033) ──────────────────────────────────────────
@@ -337,7 +380,7 @@ export const PLANNING_QUESTIONS_ACTOR = 'system:planning-questions';
 
 // 계약 초안의 질문이 전부 답해지면 답을 붙여 다음 회차를 연다 — BE 담당의 수정 요청(revise)과 같은 경로(작성 대기 → BE 노트북이 다시 쓴다),
 // 원인 answers. 수정 요청 한도에는 세지 않는다(question_rounds). 계약이 이미 확정·재작성 중이면 아무것도 하지 않는다.
-async function redraftWithAnswers(contractId: string): Promise<void> {
+export async function redraftWithAnswers(contractId: string): Promise<void> {
   const reopened = await withTransaction(async (tx) => {
     const contract = await findContract(tx, contractId, { forUpdate: true });
     if (!contract || contract.status !== 'draft') return null;
@@ -370,3 +413,34 @@ onPlanningQuestionsSettled(async (_projectId, subject) => {
     logger.warn('질문의 답으로 계약 다음 회차를 열지 못했다 — BE 담당이 수정 요청으로 이어 간다', { contractId: subject.contractId, error: String(err) });
   }
 });
+
+// ── 실험 모드 자동 경로(034, domain/experiment가 부른다) ─────────────────────────
+// 판정은 사람 경로와 한 벌이다. 명의는 system:experiment(auto: true), approved_by 칸은 조직 대표(users FK).
+
+export async function approveContractAsExperiment(representative: UserContext, contractId: string): Promise<void> {
+  await approveContractWith(representative, contractId, { acceptAssumptions: true, attribution: EXPERIMENT_ATTRIBUTION });
+}
+
+// 실패한 계약 초안을 다시 시킨다 — 수정 요청과 같은 경로(requestContractRedraft), 한도는 experiment_retries로 따로 센다.
+// 넘었으면 false(호출부가 그 기능을 포기한다).
+export async function retryContractAsExperiment(contractId: string): Promise<boolean> {
+  const result = await withTransaction(async (tx) => {
+    const contract = await loadForDecision(tx, contractId);
+    const project = await findProjectById(tx, contract.projectId);
+    if (project?.questionMode !== 'experiment') throw new AppError('QUESTION_MODE_INVALID', 'automatic contract retries run only in experiment mode');
+    if (contract.status !== 'failed' || contract.experimentRetries >= env.EXPERIMENT_CONTRACT_RETRIES) return null;
+    const feedback = `앞선 회차가 실패했다(${contract.errorReason ?? '사유 없음'}) — 같은 기능의 계약을 다시 써라(실험 모드 자동 재시도).`;
+    if (!(await requestContractRedraftByExperiment(tx, contractId, feedback))) return null;
+    await appendEvent(tx, {
+      orgId: project.orgId,
+      projectId: contract.projectId,
+      type: 'CONTRACT_REVISION_REQUESTED',
+      onBehalfOf: EXPERIMENT_ATTRIBUTION.onBehalfOf,
+      policyHash: project.policyHash,
+      payload: { auto: true, contractId, featureKey: contract.featureKey, attempt: contract.attempt + 1, feedback, cause: 'experiment_retry' },
+    });
+    return contract.projectId;
+  });
+  if (result) contractsChanged(result);
+  return result !== null;
+}

@@ -32,7 +32,8 @@ export type PlanRow = {
   revisionCause: RevisionCause | null;
 };
 
-export type RevisionCause = 'feedback' | 'answers';
+// retry(034): 실험 모드에서 실패한 초안을 같은 요청으로 다시 낸 판.
+export type RevisionCause = 'feedback' | 'answers' | 'retry';
 
 function toPlan(row: QueryResultRow): PlanRow {
   return {
@@ -139,6 +140,12 @@ export async function countChainAnswerRounds(db: Queryable, rootPlanId: string):
     `SELECT count(*)::int AS n FROM plans WHERE root_plan_id = $1 AND revision_cause = 'answers'`,
     [rootPlanId],
   );
+  return rows[0]!.n as number;
+}
+
+// 실험 모드에서 실패한 초안을 다시 낸 횟수(034) — EXPERIMENT_PLAN_RETRIES를 넘으면 그 흐름을 포기한다.
+export async function countChainRetries(db: Queryable, rootPlanId: string): Promise<number> {
+  const { rows } = await db.query(`SELECT count(*)::int AS n FROM plans WHERE root_plan_id = $1 AND revision_cause = 'retry'`, [rootPlanId]);
   return rows[0]!.n as number;
 }
 

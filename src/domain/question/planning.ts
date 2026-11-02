@@ -17,7 +17,8 @@ import { PM_TARGET, toRoutingSnapshot, type QuestionTarget, type RoutingInput, t
 // - 라우팅은 트랜잭션 밖에서 하고(LLM이면 수 초) 결과를 들고 초안 저장 트랜잭션 안에서 INSERT한다 — 구현 단계 askQuestion과 같은 순서.
 // - 형식 판정은 코드가 한다(P2): 문장이 비어 있지 않고, 선택지가 2개 이상이고(추천안이 맨 앞), 같은 질문이 두 번 없다.
 // - 상한(일반 모드): 초안 하나당 PLANNING_QUESTIONS_MAX개, 답에 따른 재작성 PLANNING_QUESTION_ROUNDS회. 넘는 질문은 가정으로 옮긴다
-//   (첫 선택지 = 추천안을 가정으로 적는다). 실험 모드는 둘 다 무제한 — 비용 상한은 PM 예산이다.
+//   (첫 선택지 = 추천안을 가정으로 적는다). 실험 모드는 질문 수 무제한, 회차는 EXPERIMENT_QUESTION_ROUNDS까지.
+// - 실험 모드에서 같은 흐름(기능 명세 체인·같은 계약)에 이미 답이 정해진 질문과 같은 문장이 다시 나오면 라우팅하지 않는다(splitRepeated).
 
 export const planningQuestionSchema = z.object({
   // 기능 명세 초안에서 어느 기능에 대한 질문인지(그 기능 명세가 라우터의 맥락이 된다). 계약 초안은 계약의 기능이라 쓰지 않는다.
@@ -77,9 +78,49 @@ export function limitPlanningQuestions(
   questions: PlanningQuestion[],
   input: { mode: QuestionMode; roundsUsed: number },
 ): { kept: PlanningQuestion[]; overflow: PlanningQuestion[] } {
-  if (input.mode === 'experiment') return { kept: questions, overflow: [] };
+  // 실험 모드: 한 초안의 질문 수는 무제한, 답에 따른 재작성만 EXPERIMENT_QUESTION_ROUNDS회까지(무인 실험이 끝나지 않는 재작성에 갇히지 않게).
+  if (input.mode === 'experiment') {
+    return input.roundsUsed >= env.EXPERIMENT_QUESTION_ROUNDS ? { kept: [], overflow: questions } : { kept: questions, overflow: [] };
+  }
   if (input.roundsUsed >= env.PLANNING_QUESTION_ROUNDS) return { kept: [], overflow: questions };
   return { kept: questions.slice(0, env.PLANNING_QUESTIONS_MAX), overflow: questions.slice(env.PLANNING_QUESTIONS_MAX) };
+}
+
+// 실험 모드 — 같은 흐름에서 이미 답이 정해진 질문과 같은 문장(공백 정리 후 완전 일치)은 새 질문으로 세지 않는다.
+// 라우팅·INSERT하지 않고 이미 받은 답을 가정 문장으로 남긴다(다음 재작성 입력에는 흐름 전체의 답이 들어간다).
+// 재작성이 같은 질문을 되풀이하면 회차만 소모하고 끝나지 않았다 — 기본 모드는 사람이 보고 있어 거르지 않는다.
+export function normalizeQuestionText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+export function splitRepeated(
+  questions: PlanningQuestion[],
+  answered: Map<string, string>,
+): { fresh: PlanningQuestion[]; repeated: { question: PlanningQuestion; answer: string }[] } {
+  const fresh: PlanningQuestion[] = [];
+  const repeated: { question: PlanningQuestion; answer: string }[] = [];
+  for (const q of questions) {
+    const answer = answered.get(normalizeQuestionText(q.question));
+    if (answer === undefined) fresh.push(q);
+    else repeated.push({ question: q, answer });
+  }
+  return { fresh, repeated };
+}
+
+// 질문 행들에서 정해진 답(문장 → 답). 실험 모드의 되풀이 거르기와 재작성 입력이 같은 것을 본다.
+export function answeredTexts(questions: AgentQuestion[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const q of questions) {
+    for (const item of q.questions) {
+      const answer = q.answers?.[item.question];
+      if (answer !== undefined) map.set(normalizeQuestionText(item.question), answer);
+    }
+  }
+  return map;
+}
+
+export function repeatedAssumption(item: { question: PlanningQuestion; answer: string }): string {
+  return `가정(이미 답함): ${item.question.question} → ${item.answer}`;
 }
 
 // 가정으로 옮긴 질문의 문장 — 추천안(첫 선택지)을 가정한다.
@@ -206,7 +247,7 @@ export function questionsPendingError(pending: AgentQuestion[]): AppError {
 // "가정으로 확정" — 남은 대기 질문을 만료로 닫는다(이벤트에 사유). 기능 명세 적용(pm/service.ts)과 계약 확정(contract/service.ts)이 같은 함수를 쓴다.
 export async function closeQuestionsAsAssumed(
   tx: PoolClient,
-  ctx: { orgId: string; projectId: string; policyHash: string; onBehalfOf: string },
+  ctx: { orgId: string; projectId: string; policyHash: string; onBehalfOf: string; auto?: true },
   pending: AgentQuestion[],
   subject: PlanningSubject,
 ): Promise<string[]> {
@@ -219,6 +260,7 @@ export async function closeQuestionsAsAssumed(
       onBehalfOf: ctx.onBehalfOf,
       policyHash: ctx.policyHash,
       payload: {
+        ...(ctx.auto ? { auto: true as const } : {}),
         questionId: q.id,
         taskId: null,
         stage: q.stage,

@@ -73,9 +73,18 @@ const envSchema = z
     // BLOCKED로 내려놓는다 — 이 기간 안에 답이 오면 READY로 돌아가고, 지나면 질문은 만료되고 태스크는 ESCALATED.
     QUESTION_TIMEOUT_MS: z.coerce.number().int().min(10_000).max(30 * 86_400_000).default(3 * 86_400_000),
     // 기획 단계 질문(033) — 일반 모드에서 초안 하나당 질문 수, 답에 따른 재작성 횟수. 넘는 질문은 가정(assumptions·openQuestions 문장)으로 옮긴다.
-    // 실험 모드는 둘 다 무제한(상한은 PM 예산이다). 대표의 수정 요청 한도(PM_MAX_REVISIONS·CONTRACT_MAX_REVISIONS)와 따로 센다.
+    // 실험 모드는 한 초안의 질문 수가 무제한이고 회차만 EXPERIMENT_QUESTION_ROUNDS로 막는다. 대표의 수정 요청 한도(PM_MAX_REVISIONS·CONTRACT_MAX_REVISIONS)와 따로 센다.
     PLANNING_QUESTIONS_MAX: z.coerce.number().int().min(0).max(20).default(5),
     PLANNING_QUESTION_ROUNDS: z.coerce.number().int().min(0).max(10).default(2),
+    // 무인 실험(034, domain/experiment) — 실험 모드에서만 쓴다. 기본 모드는 이 값을 읽지 않는다.
+    //   EXPERIMENT_QUESTION_ROUNDS: 답에 따른 재작성 상한(기능 명세·계약). 계약 재작성은 BE 노트북 구독이라 PM 예산이 막지 못한다 — 이게 유일한 멈춤 장치다.
+    //   EXPERIMENT_PLAN_RETRIES·EXPERIMENT_CONTRACT_RETRIES: 실패한 초안을 같은 요청으로 다시 내는 횟수(넘으면 EXPERIMENT_SKIPPED).
+    //   EXPERIMENT_STALE_QUESTION_MS: 자동 답이 빠진 대기 질문을 다시 자동 답하기까지. EXPERIMENT_VERIFYING_TIMEOUT_MS: 검증 보고 없이 VERIFYING에 머문 태스크를 멈추기까지.
+    EXPERIMENT_QUESTION_ROUNDS: z.coerce.number().int().min(0).max(20).default(5),
+    EXPERIMENT_PLAN_RETRIES: z.coerce.number().int().min(0).max(10).default(2),
+    EXPERIMENT_CONTRACT_RETRIES: z.coerce.number().int().min(0).max(10).default(2),
+    EXPERIMENT_STALE_QUESTION_MS: z.coerce.number().int().min(1000).default(2 * 60 * 1000),
+    EXPERIMENT_VERIFYING_TIMEOUT_MS: z.coerce.number().int().min(1000).default(20 * 60 * 1000),
     // 질문 라우터(025): llm = PM 모델이 FE·BE·PM 중 고른다(실패하면 rule로 대체·기록), rule = 반대 역할 규칙.
     QUESTION_ROUTER: z.enum(['llm', 'decision']).default('llm'),
     // 평가용(026): 실제로 보내지는 않고 같은 질문에 함께 돌려 기록할 라우터들(쉼표 구분: llm,decision). 비우면 끈다.

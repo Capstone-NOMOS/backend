@@ -3,6 +3,7 @@ import { pool, withTransaction, type Queryable } from '../../config/db.js';
 import { AppError } from '../../errors.js';
 import { hashObject } from '../../utils/canonical-json.js';
 import { tasksChanged } from '../dispatch/tasks-changed.js';
+import { experimentBudgetWarnings } from '../experiment/budget.js';
 import { appendEvent } from '../events/append.js';
 import type { GithubInviteResult, GithubRevokeResult } from '../events/types.js';
 import { githubRepApi } from '../github/rep-api.js';
@@ -329,9 +330,9 @@ export async function updateProjectSettings(
   actor: Actor,
   projectId: string,
   input: { questionRelay?: boolean; questionMode?: QuestionMode },
-): Promise<Project> {
+): Promise<{ project: Project; warnings: string[] }> {
   if (actor.orgRole !== 'REPRESENTATIVE') throw new AppError('NOT_REPRESENTATIVE', 'only the representative can change project settings');
-  return withTransaction(async (tx) => {
+  const project = await withTransaction(async (tx) => {
     const project = await assertProjectInOrg(tx, actor.orgId, projectId, 'update');
     if (project.startedAt !== null) throw new AppError('PROJECT_STARTED', 'project has started; settings are frozen');
     const next = { questionRelay: input.questionRelay ?? project.questionRelay, questionMode: input.questionMode ?? project.questionMode };
@@ -353,6 +354,8 @@ export async function updateProjectSettings(
     });
     return updated;
   });
+  // 실험 모드(034): PM 예산이 무인 실험에 모자라 보이면 경고만 싣는다(막지 않는다).
+  return { project, warnings: project.questionMode === 'experiment' ? experimentBudgetWarnings(Number(project.pmBudgetUsd)) : [] };
 }
 
 export async function assignMember(

@@ -176,6 +176,16 @@ export async function listQuestionsOf(db: Queryable, subject: PlanningSubject): 
   return rows.map(toQuestion);
 }
 
+// 기능 명세 수정 체인 전체의 질문(실험 모드 — 같은 흐름에서 이미 답한 질문 거르기·재작성 입력).
+export async function listQuestionsOfPlanChain(db: Queryable, rootPlanId: string): Promise<AgentQuestion[]> {
+  const { rows } = await db.query(
+    `SELECT q.* FROM agent_questions q JOIN plans p ON p.id = q.plan_id
+      WHERE p.root_plan_id = $1 ORDER BY q.created_at, q.id`,
+    [rootPlanId],
+  );
+  return rows.map(toQuestion);
+}
+
 // 대기 중인 질문(만료 시각이 지난 것은 빼지 않는다 — 만료는 읽을 때 정리된다. 적용·확정 막기는 정리 뒤에 본다).
 export async function listPendingQuestionsOf(db: Queryable, subject: PlanningSubject): Promise<AgentQuestion[]> {
   const { column, id } = subjectClause(subject);

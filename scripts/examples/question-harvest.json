@@ -1,6 +1,0 @@
-{
-  "tasks": [
-    { "ref": "list-api", "title": "스터디 목록 API", "teamRole": "BACKEND", "kind": "IMPLEMENT", "repo": "acme/api", "featureKey": "F-1" },
-    { "ref": "list-ui", "title": "스터디 목록 화면 API 연동", "teamRole": "FRONTEND", "kind": "IMPLEMENT", "repo": "acme/web", "featureKey": "F-1" }
-  ]
-}

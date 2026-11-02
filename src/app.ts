@@ -21,6 +21,7 @@ import { roomsRouter } from './routes/rooms.js';
 import { contractsRouter } from './routes/contracts.js';
 import { inboxRouter } from './routes/inbox.js';
 import { startDispatchRecorder } from './domain/room/dispatch.js';
+import { startExperimentAutopilot } from './domain/experiment/autopilot.js';
 import { tasksRouter } from './routes/tasks.js';
 
 export type AppOptions = {
@@ -48,6 +49,8 @@ export function createApp(options: AppOptions = appOptionsFromEnv()): Express {
   const app = express();
   // 가져갈 수 있게 된 태스크마다 "실행해 주세요"(TASK_DISPATCHED)를 남긴다 — 룸 피드의 첫 줄. 한 번만 구독한다.
   startDispatchRecorder();
+  // 무인 실험(034): 실험 모드 프로젝트의 사람 결정 지점을 자동으로 통과시킨다(기본 모드 프로젝트의 신호는 첫 조회에서 끝난다).
+  startExperimentAutopilot();
   // 운영은 Caddy 한 단 뒤에 있다. 이 설정이 없으면 req.ip가 Caddy 주소로 찍힌다(브라우저 승인 화면의 요청 IP가 쓸모없어진다).
   // 1단만 믿는다 — X-Forwarded-For의 맨 오른쪽(Caddy가 붙인 값)을 쓰므로 클라이언트가 앞에 끼운 값에 속지 않는다.
   app.set('trust proxy', 1);

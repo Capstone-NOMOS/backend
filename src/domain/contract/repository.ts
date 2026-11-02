@@ -28,6 +28,8 @@ export type ContractView = {
   questionCount: number;
   pendingQuestionCount: number;
   questionRounds: number;
+  // 034: 실험 모드에서 실패한 초안을 자동으로 다시 시킨 횟수 — 수정 요청 한도에서 뺀다.
+  experimentRetries: number;
 };
 
 function toContract(row: QueryResultRow): ContractView {
@@ -53,6 +55,7 @@ function toContract(row: QueryResultRow): ContractView {
     questionCount: (row.question_count as number | undefined) ?? 0,
     pendingQuestionCount: (row.pending_question_count as number | undefined) ?? 0,
     questionRounds: (row.question_rounds as number | undefined) ?? 0,
+    experimentRetries: (row.experiment_retries as number | undefined) ?? 0,
   };
 }
 
@@ -149,6 +152,16 @@ export async function requestContractRedraftByAnswers(db: Queryable, contractId:
   const { rowCount } = await db.query(
     `UPDATE contracts SET status = 'pending', attempt = attempt + 1, question_rounds = question_rounds + 1, feedback = $2, error_reason = NULL, updated_at = now()
       WHERE id = $1 AND status = 'draft'`,
+    [contractId, feedback],
+  );
+  return rowCount === 1;
+}
+
+// 실험 모드에서 실패한 초안을 다시 시킨다(034) — 수정 요청과 같은 전이(실패 → 작성 대기, 회차 +1), 한도는 experiment_retries로 따로 센다.
+export async function requestContractRedraftByExperiment(db: Queryable, contractId: string, feedback: string): Promise<boolean> {
+  const { rowCount } = await db.query(
+    `UPDATE contracts SET status = 'pending', attempt = attempt + 1, experiment_retries = experiment_retries + 1, feedback = $2, error_reason = NULL, updated_at = now()
+      WHERE id = $1 AND status = 'failed'`,
     [contractId, feedback],
   );
   return rowCount === 1;

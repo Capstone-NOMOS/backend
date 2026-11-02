@@ -172,6 +172,7 @@ function eventText(row: FeedRow): { speaker: RoomMessage['speaker']; text: strin
         timeout: '시간 제한을 넘겼습니다',
         failed: '비정상 종료했습니다',
         unresponsive: '에이전트 응답이 끊겼습니다',
+        verification_timeout: '검증 보고가 오지 않았습니다(실험 모드 정리)',
       };
       const denied = Array.isArray(p.deniedCommands) && p.deniedCommands.length > 0 ? ` / 거부된 명령: ${(p.deniedCommands as unknown[]).map(str).join(', ')}` : '';
       const said = str(p.lastMessage) ? ` / 에이전트: "${str(p.lastMessage).slice(0, 200)}"` : '';

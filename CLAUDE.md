@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 프로젝트
 
-NOMOS 서버 — 여러 개발자가 각자 노트북에서 Claude Code 에이전트를 돌릴 때 그 사이의 계약·권한·분쟁을 조율하는 서버. 현재 구현 범위는 조직·레포·경로 소유권·초대, 로컬 계정과 CLI 연결(브라우저 승인 포함), 프로젝트·태스크·산출물·인계 노트·검증, 명세·태스크 작성, 새 계획 흐름(기능 명세 → API 계약 → 태스크 나누기, 기획 단계 질문 033), 승인 대기열(ACTION 게이트), 받은 편지함(알림·처리할 일), 화면용 실시간 신호, 역할별 룸 피드, AWS 배포다.
+NOMOS 서버 — 여러 개발자가 각자 노트북에서 Claude Code 에이전트를 돌릴 때 그 사이의 계약·권한·분쟁을 조율하는 서버. 현재 구현 범위는 조직·레포·경로 소유권·초대, 로컬 계정과 CLI 연결(브라우저 승인 포함), 프로젝트·태스크·산출물·인계 노트·검증, 명세·태스크 작성, 새 계획 흐름(기능 명세 → API 계약 → 태스크 나누기, 기획 단계 질문 033), 무인 실험(실험 모드 자동 통과 034), 승인 대기열(ACTION 게이트), 받은 편지함(알림·처리할 일), 화면용 실시간 신호, 역할별 룸 피드, AWS 배포다.
 
 설계 원칙(위반 금지): **P1** 상태는 서버가 소유하고 클라이언트는 전이를 요청만 한다. **P3** 모든 행동은 사람에게 귀속된다(`on_behalf_of` 없는 이벤트는 없다). **P5** 모든 상태 변화는 `events`에 append되고 events가 유일한 진실이다.
 
@@ -52,6 +52,7 @@ npm run executor -- login <baseUrl> # 로그인만 (--connect-key=연결 키 경
 npm run build:cli                   # CLI 패키지 → packages/cli/dist (check:cli-package = pack·설치·실행 점검)
 docker build -t nomos-server .      # 운영 이미지. 배포 절차는 docs/deploy-aws.md
 npm run verify:settings             # worktree의 settings.json을 서버 판정과 대조
+npm run experiment:run -- --project <id> --login <대표> --requirements <파일.json> [--repeat N] [--dry-run|--report --run <이름>]   # 무인 실험 감독(실험 모드 프로젝트)
 npm run db:psql                     # .env의 DATABASE_URL로 조회 (접속 대상을 첫 줄에 찍는다)
 npm run db:psql -- "SELECT ..."     # 임의 SQL
 
@@ -467,7 +468,7 @@ BE 에이전트가 FE가 정할 화면 요구를 임의로 정했고, 그게 그
 - **확정 막기**: 답 대기가 남으면 적용(apply)·계약 확정(approve)이 409 `QUESTIONS_PENDING`(details: 질문 id·문장·대상). `{ acceptAssumptions: true }`면 남은 질문을 만료로 닫고
   (`QUESTION_EXPIRED.reason = 'confirmed_with_assumptions'`) 확정한다 — 이벤트에 `assumedQuestionIds`. 답할 사람이 없어도 빠져나올 길이다.
 - **상한(일반 모드)**: 초안당 `PLANNING_QUESTIONS_MAX`(5)개, 답에 따른 재작성 `PLANNING_QUESTION_ROUNDS`(2)회. 넘는 질문은 버리지 않고 첫 선택지를 **가정으로 옮긴다**
-  (`가정: 질문 → 추천안`, 대표가 초안에서 본다). 실험 모드는 무제한(비용 상한은 PM 예산). 상한은 비용과 대표의 피로 때문이다 — 질문마다 사람이 답한다.
+  (`가정: 질문 → 추천안`, 대표가 초안에서 본다). 실험 모드는 초안당 질문 수 무제한·회차만 `EXPERIMENT_QUESTION_ROUNDS`(5). 상한은 비용과 대표의 피로 때문이다 — 질문마다 사람이 답한다.
 - 계약의 옛 문자열 `openQuestions`(CLI 0.1.17 이하)는 **기록만 하고 라우팅하지 않는다** — 선택지가 없어 답을 받을 수 없다. 구조화 질문은 CLI 0.1.18부터라 배포는 서버 먼저.
 
 ### 내장 PM (`domain/pm`) — 기능 명세·태스크 나누기
@@ -653,15 +654,38 @@ FE의 "받은 편지함"은 두 칸이다(대표 결정 2026-10-29). **둘 다 �
   **결정 전달**: 기능 명세 질문은 그 기능 키의 명세가 생긴 뒤 그 명세의 태스크, 계약 질문은 그 계약의 명세의 태스크(FE·BE 대상의 "같은 명세"), PM 대상은 전부 — 조건은 `listDecisionRows` 한 곳.
 - **실험 모드(`projects.question_mode = experiment`, 033)** — 질문 발생률·라우팅을 재는 반복 실행용. 사람이 매번 답하면 반복이 멈추고, 상한이 있으면 덜 묻는다.
   - **시작(G1) 전에만**, 질문 중계가 켜져 있어야 켠다(`PATCH /projects/:id/settings`, 아니면 422 `QUESTION_MODE_INVALID` — DB `projects_question_mode_chk`도 막는다). 끄면 질문 자체가 없어 잴 것이 없다.
-  - 상한 없음(기획 단계 질문 수·답 회차). **자동 답 = `options[0].label`**(추천안) — primary 라우팅 기록과 그림자 라우터 시도가 **끝난 뒤에** 답한다(`question/auto-answer.ts`,
+  - 기획 단계 질문 수는 무제한. **자동 답 = `options[0].label`**(추천안) — primary 라우팅 기록과 그림자 라우터 시도가 **끝난 뒤에** 답한다(`question/auto-answer.ts`,
     `after-ask.ts`) — 먼저 답하면 라우팅 지표가 일반 모드와 다른 조건이 된다. 명의 `system:experiment`, `answer_source = 'auto_first_option'`, `answered_by` NULL
     (사람이 아니다 — `agent_questions_answered_by_chk`). PM 대상도 대표 확정 없이 바로. 구현 단계 질문도 같은 실행 안에서 답을 받는다.
   - **상담 실행·PM 답 초안을 돌리지 않는다**(답할 쪽 구독·API 비용이 질문 수만큼 든다 — 어차피 첫 선택지로 답한다).
   - **사람 지표에서 뺀다**: 알림·처리할 일에 나오지 않고, 결정으로 전달하지 않으며(사람이 정한 것이 아니고, 결정마다 제출 409 왕복이 생긴다), 보고서의 "답까지 걸린 시간"에서 뺀다.
     정답 라벨(gold)은 여전히 사람이 붙인다. 발표 때 "실험 모드의 답은 추천안"임을 밝힌다(`docs/experiment-question-routing.md` 6절).
-  - **반복 실행**은 `npm run harvest:questions`(`scripts/question-harvest.ts`, 대표 HTTP만): 같은 태스크 묶음을 회차마다 `[harvest <run> r<n>]` 꼬리표로 새로 만들고,
-    끝나면(DONE·ESCALATED·BLOCKED — 질문 대기 BLOCKED는 제외) 멈춘 것은 취소하고 다음 회차. 같은 태스크를 재개하지 않는 이유: 재시도·반려 지표가 섞인다.
-    꼬리표가 중복을 막고 같은 `--run`이면 이어 간다. `--report`는 routing-dataset·routing-report만 읽는다(서버 판정을 흉내 내지 않는다).
+  - **무인 실험(034, `domain/experiment`) — 실험 모드 프로젝트는 사람 없이 끝까지 돈다.** 사람은 끝난 뒤 데이터셋에 정답 라벨만 붙인다.
+    **전부 실험 모드 전용이고 기본 모드의 동작은 한 줄도 바뀌지 않는다** — 새 동작은 모두 `question_mode = 'experiment'`일 때만 켜지고(조회 쿼리·좁은 입구가 걸러낸다),
+    `tests/experiment-autopilot.test.ts`가 같은 시나리오를 기본 모드로 돌려 사람 대기로 남는지 고정한다. 기본 모드는 사람이 보고 있어 자동 통과가 판단을 빼앗기 때문이다.
+    - 자동 통과(`autopilot.ts`): 기능 명세 초안(ready·대기 질문 없음·그 판에 새 질문 없음 = "다 됐다") → 적용(acceptAssumptions) · 계약 draft("다 됐다") → 확정 ·
+      태스크 없는 확정 명세 + 계약 전부 확정 + 작성 중 계획 없음 → 태스크 나누기 요청(지시 없음) → ready면 적용 · ACTION 카드(1차·최종) → 승인 ·
+      PM 초안 failed(budget 제외) → 같은 요청을 `EXPERIMENT_PLAN_RETRIES`회(`revision_cause = 'retry'`, 원래 요청의 부모·답을 그대로 — `effectiveRequest`) ·
+      계약 failed → 수정 요청을 `EXPERIMENT_CONTRACT_RETRIES`회(`contracts.experiment_retries`, 수정 요청 한도에서 뺀다). 넘으면 `EXPERIMENT_SKIPPED`(한 번만).
+      **G3(완료 승인)는 자동으로 하지 않는다** — 승인하면 프로젝트가 끝나 다음 회차 태스크를 넣을 수 없다.
+    - **판정을 두 벌 두지 않는다**: 자동 통과는 사람 경로의 서비스 함수를 그대로 부르고(`applyPlanAsExperiment`·`approveContractAsExperiment`·`decideAsExperiment`·
+      `retryPlanAsExperiment`·`requestTaskSplitAsExperiment`·`retryContractAsExperiment`), 권한 검사만 "실험 모드 프로젝트인가"로 바꾼다(그 함수 안, 잠금 안에서 확인 — 라우트는 넘기지 못한다).
+      명의는 `system:experiment`, payload `auto: true`(`experiment/attribution.ts` — `appendEvent`의 payload에 어느 타입이든 붙는다). DB의 사람 칸(`approved_by`·`decided_by`·`requested_by`)은
+      users FK라 조직 대표를 적는다 — 명의의 정본은 events다.
+    - **언제 도나**: 상태를 바꾼 서비스가 커밋 뒤에 부르는 신호(`dispatch/experiment-nudge.ts` — PM 초안 ready·failed·적용, 계약 초안·실패·확정)와 `tasksChanged`·`contractsChanged`,
+      그리고 주기 정리. 매번 상태를 다시 읽어 판정하므로 놓치거나 겹쳐도 같다(프로젝트당 한 줄, 겹치면 끝난 뒤 한 번 더). 자동 처리가 실패해도 원래 흐름은 이미 커밋돼 있다 — 로그만.
+    - **끝나지 않는 재작성 막기**: 실험 모드에도 답 회차 상한 `EXPERIMENT_QUESTION_ROUNDS`(5)가 있다(기능 명세·계약 모두) — 계약 재작성은 BE 노트북 구독이라 PM 예산이 막지 못해
+      이게 유일한 멈춤 장치다. 같은 흐름(기능 명세 체인·같은 계약)에서 이미 답한 질문과 같은 문장(공백 정리 후 완전 일치)은 라우팅·INSERT하지 않고 이미 받은 답을
+      가정(`가정(이미 답함): …`)으로 남긴다(`splitRepeated`) — 실험 모드 재작성 입력에는 체인 전체의 답이 들어간다. 되풀이를 세면 회차만 소모하고 끝나지 않았다.
+    - **주기 정리**(`experiment/sweep.ts`, `startServer`에서만): 자동 답이 빠진 대기 질문(`EXPERIMENT_STALE_QUESTION_MS`)에 다시 자동 답, 검증 보고 없이
+      `EXPERIMENT_VERIFYING_TIMEOUT_MS` 넘게 VERIFYING인 태스크를 BLOCKED(AGENT_STOPPED, cause `verification_timeout`) — 45분 감시는 CLAIMED·IN_PROGRESS만 봐서 VERIFYING이 영원히 남았다 —,
+      놓친 신호를 메우는 자동 진행. 쿼리가 전부 question_mode로 거른다.
+    - 켤 때 PM 예산이 요구사항 하나의 최대 어림보다 작으면 응답에 `warnings`(막지 않는다 — 예산 소진은 사람 없이 풀리지 않는 멈춤이라 미리 보이게).
+  - **감독 스크립트** `npm run experiment:run`(`scripts/experiment-run.ts`, 대표 HTTP만 — 033의 `harvest:questions`를 대체): 요구사항 파일 `[{ key, instruction, repeat? }]`을
+    하나씩 기능 명세로 요청하고, 서버가 끝까지 진행하면 시작·r1(PM이 나눈 태스크)·r2~(같은 묶음을 `[exp <run> r<n>]` 꼬리표로 새로) 순으로 돌린다. 같은 태스크를 재개하지 않는 이유: 재시도·반려 지표가 섞인다.
+    정리: BLOCKED(AGENT_STOPPED) 재개 1회 → 또 멈추면 취소, ESCALATED 취소, 회차 시간 초과면 취소할 수 있는 것을 취소하고 다음 회차. **자동으로 풀 수 없는 고장**(같은 실패 연속 K번·
+    에이전트·PM 워커 offline·예산 소진·READY를 아무도 안 가져감·계약 포기)은 멈추고 원인·할 일을 한 줄로(종료 코드 3, `EXPERIMENT_ALERT_WEBHOOK`). 서버 판정을 흉내 내지 않는다 —
+    상태는 API로만 읽는다. 진행 상태 파일 `scripts/data/experiment-runs/<run>.json`(커밋하지 않음)으로 같은 `--run`이면 이어 간다. 절차는 `docs/experiment-question-routing.md` 8절.
 - **`GET /me/questions`**: 내가 답할 질문(대표는 전부, 팀원은 자기 역할이 대상인 것) — 알림 배지용. 답할 자격 정의는 `answerQuestion`과 같아야 한다.
 
 ### 룸 (`domain/room`, 017) — 보기 전용

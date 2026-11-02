@@ -320,7 +320,7 @@ Table plans {
   structure             jsonb       [note: '★ 014: M6a용 구조(정렬된 명세 키·태스크 튜플·선행 쌍)']
   applied_at            timestamptz [note: '★ 014: 적용 시각(applied일 때만)']
   rejected_at           timestamptz [note: '★ 014: 반려 시각(rejected일 때만)']
-  revision_cause        text        [note: "★ 033: 수정 체인에서 다시 쓴 이유 — feedback(대표 수정 요청, PM_MAX_REVISIONS에 센다) | answers(기획 단계 질문의 답을 붙여 다시 씀, 따로 센다). 원본은 NULL. CHECK plans_revision_cause_chk"]
+  revision_cause        text        [note: "★ 033: 수정 체인에서 다시 쓴 이유 — feedback(대표 수정 요청, PM_MAX_REVISIONS에 센다) | answers(기획 단계 질문의 답을 붙여 다시 씀, 따로 센다) | ★ 034 retry(실험 모드에서 실패한 초안을 같은 요청으로 다시 냄, EXPERIMENT_PLAN_RETRIES). 원본은 NULL. CHECK plans_revision_cause_chk"]
   reject_reason         text        [note: '★ 014: 반려 사유(선택, 1000자 이하)']
 
   indexes {
@@ -394,7 +394,8 @@ Table contracts {
   schema_yaml      text        [note: 'OpenAPI 조각(paths·components). 서버가 형식을 검사한 뒤에만 들어간다. V1A가 이걸로 대조한다']
   summary          text        [note: '사람이 읽는 요약']
   open_questions   jsonb       [not null, default: `'[]'`, note: '작성한 에이전트가 정하지 못한 것(문장). ★ 033: 질문 형식으로 낸 것은 agent_questions(stage contract)로도 라우팅된다']
-  question_rounds  integer     [not null, default: 0, note: '★ 033: 질문의 답으로 다시 쓴 회차 수 — attempt에 들어가지만 수정 요청 한도에서는 뺀다. CHECK question_rounds < attempt']
+  question_rounds  integer     [not null, default: 0, note: '★ 033: 질문의 답으로 다시 쓴 회차 수 — attempt에 들어가지만 수정 요청 한도에서는 뺀다. CHECK question_rounds + experiment_retries < attempt']
+  experiment_retries integer   [not null, default: 0, note: '★ 034: 실험 모드에서 실패한 초안을 자동으로 다시 시킨 횟수(EXPERIMENT_CONTRACT_RETRIES) — 수정 요청 한도에서 뺀다']
   drafted_by_agent uuid        [note: '초안을 쓴 BE 에이전트']
   drafted_at       timestamptz
   approved_by      uuid        [note: '확정한 사람(BE 담당, 없으면 대표)']

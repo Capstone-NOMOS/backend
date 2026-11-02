@@ -10,6 +10,7 @@ import { createTask } from '../src/domain/authoring/service.js';
 import { login, signup } from '../src/domain/auth/service.js';
 import { requestContractsInTx } from '../src/domain/contract/service.js';
 import { drainPlanningQuestions } from '../src/domain/dispatch/planning-questions.js';
+import { drainExperimentAutopilot } from '../src/domain/experiment/autopilot.js';
 import { acceptInvite, createInvite } from '../src/domain/invite/service.js';
 import { createOrganization } from '../src/domain/org/service.js';
 import { clearPolicyCache } from '../src/domain/policy/policy-cache.js';
@@ -80,6 +81,7 @@ async function settle(): Promise<void> {
     await drainAutoAnswers();
     await drainPlanningQuestions();
     await drainPmDrafts();
+    await drainExperimentAutopilot();
   }
 }
 
@@ -417,8 +419,8 @@ describe('실험 모드', () => {
     // 상담·PM 답 초안을 만들지 않는다.
     expect((await pool.query(`SELECT count(*)::int AS n FROM events WHERE type = 'QUESTION_DRAFTED'`)).rows[0]!.n).toBe(0);
     expect(pm.calls.filter((c) => c.context?.purpose === 'question_draft')).toHaveLength(0);
-    // 자동 답 뒤 다시 썼다(질문이 없는 초안).
-    expect((await plans(w))[0]).toMatchObject({ revisionCause: 'answers', status: 'ready', questionCount: 0 });
+    // 자동 답 뒤 다시 썼고(질문이 없는 초안), 무인 실험(034)이 그 초안을 바로 적용했다.
+    expect((await plans(w))[0]).toMatchObject({ revisionCause: 'answers', status: 'applied', questionCount: 0 });
 
     // 받은 편지함 — 자동 답한 질문은 알림(질문 옴·답 옴)도 처리할 일도 아니다.
     const notes = (await http('GET', '/me/notifications', w.rep)).json.data as unknown as { notifications: { type: string }[] };

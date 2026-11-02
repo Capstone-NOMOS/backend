@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { drainTasksChanged } from '../src/domain/dispatch/tasks-changed.js';
+import { drainExperimentAutopilot } from '../src/domain/experiment/autopilot.js';
 import { drainPmDrafts } from '../src/domain/question/pm-draft.js';
 import { drainRoutingRecords } from '../src/domain/question/routing-eval.js';
 
@@ -37,6 +38,9 @@ export async function truncateAll(): Promise<void> {
   // 질문 뒤에 비동기로 도는 평가 기록·PM 초안도 끝나길 기다린다(지운 질문을 참조하지 않게).
   await drainRoutingRecords();
   await drainPmDrafts();
+  // 실험 모드 자동 진행(034)도 — 신호 뒤 비동기로 돈다.
+  await drainExperimentAutopilot();
+  await drainTasksChanged();
   await testPool.query(
     `TRUNCATE TABLE question_routing_runs, agent_questions, agent_activity, task_dispatches, approvals, notes, verifications, artifacts, task_deps, tasks, plans, spec_tests, specs, project_policies, oauth_sessions, project_members, project_repos, projects,
        agent_connect_codes, agent_device_requests, agent_tokens, agents, events, invites, repo_paths, repos, users, organizations

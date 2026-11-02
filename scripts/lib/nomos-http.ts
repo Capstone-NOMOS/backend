@@ -1,5 +1,5 @@
 // 운영자 노트북의 스크립트가 서버 API를 부르는 HTTP 도우미 — 서버 코드(env.ts·DB)를 거치지 않는다.
-// 질문 중계 점검(question-probe)·질문 모으기 반복 실행(question-harvest)이 같이 쓴다.
+// 질문 중계 점검(question-probe)·무인 실험 감독(experiment-run)이 같이 쓴다.
 // 인증: NOMOS_TOKEN(이미 받은 사람 토큰) 또는 --login + NOMOS_PASSWORD(없으면 화면에 안 보이는 입력 창). 토큰·비밀번호는 출력하지 않는다.
 
 export type HttpMethod = 'GET' | 'POST' | 'PATCH' | 'DELETE';

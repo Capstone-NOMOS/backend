@@ -31,6 +31,8 @@ export type AuthoringInput = {
   tasks: TaskDraft[];
   // PM 계획을 적용할 때 그 계획 id(tasks.plan_id). 사람이 만든 것은 null.
   planId?: string | null;
+  // 034, 실험 모드의 자동 적용: 권한은 actorUserId(조직 대표 — 실험을 켠 사람)로 보고, 이벤트 명의는 system:experiment·auto: true로 남긴다.
+  attribution?: { onBehalfOf: string; auto: true };
 };
 
 // 같은 트랜잭션·같은 프로젝트 잠금 안에서 돌아야 하는 추가 작업(예: PM 계획 적용의 상태 확인·기록).
@@ -78,7 +80,8 @@ export async function authorInTransaction(
       throw new AppError('PLAN_INVALID', `명세·태스크 검증 실패 ${problems.length}건`, problems);
     }
 
-    const event = { orgId: project.orgId, projectId: project.id, onBehalfOf: input.actorUserId, policyHash: project.policyHash };
+    const event = { orgId: project.orgId, projectId: project.id, onBehalfOf: input.attribution?.onBehalfOf ?? input.actorUserId, policyHash: project.policyHash };
+    const auto = input.attribution ? { auto: true as const } : {};
 
     const specs: SpecView[] = [];
     const specIdByKey = new Map<string, string>();
@@ -92,6 +95,7 @@ export async function authorInTransaction(
         ...event,
         type: 'SPEC_CREATED',
         payload: {
+          ...auto,
           source: input.source,
           specId: created.id,
           featureKey: spec.featureKey,
@@ -129,6 +133,7 @@ export async function authorInTransaction(
         ...event,
         type: 'TASK_CREATED',
         payload: {
+          ...auto,
           source: input.source,
           taskId,
           title: task.title,

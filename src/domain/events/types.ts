@@ -55,6 +55,7 @@ export type EventType =
   | 'TASK_CANCELLED'
   | 'TASK_COMPLETED_MANUALLY'
   | 'PROJECT_SETTINGS_UPDATED'
+  | 'EXPERIMENT_SKIPPED'
   | 'RELEASE_REQUESTED'
   | 'RELEASE_DECIDED'
   | 'ACTION_DETECTED'
@@ -426,7 +427,8 @@ export type ContractRequestedPayload = { contractIds: string[]; specIds: string[
 // questionCount(033): 질문 형식으로 내 라우팅한 질문 수(openQuestionCount는 기록한 문장 전부 — 옛 CLI의 문자열·가정으로 옮긴 것 포함).
 export type ContractDraftedPayload = { contractId: string; featureKey: string; attempt: number; operations: string[]; openQuestionCount: number; questionCount?: number };
 // cause answers(033): 질문의 답으로 연 회차(명의 system:planning-questions) — BE 담당의 수정 요청 한도에 세지 않는다.
-export type ContractRevisionRequestedPayload = { contractId: string; featureKey: string; attempt: number; feedback: string | null; cause?: 'answers' };
+// cause: answers(033, 질문의 답으로 다음 회차) · experiment_retry(034, 실험 모드에서 실패한 초안을 다시 시킴 — experiment_retries).
+export type ContractRevisionRequestedPayload = { contractId: string; featureKey: string; attempt: number; feedback: string | null; cause?: 'answers' | 'experiment_retry' };
 // assumedQuestionIds(033): 답을 기다리지 않고 가정으로 닫은 질문.
 export type ContractApprovedPayload = { contractId: string; featureKey: string; attempt: number; byRepresentative: boolean; assumedQuestionIds?: string[] };
 export type ContractFailedPayload = { contractId: string; featureKey: string; attempt: number; reason: string };
@@ -484,7 +486,8 @@ export type RoomMessageSentPayload = {
 export type TaskBlockedPayload = {
   taskId: string;
   reason: 'AGENT_STOPPED';
-  cause: 'not_submitted' | 'timeout' | 'failed' | 'unresponsive';
+  // verification_timeout(034, 실험 모드): 검증 보고(V2·V4)가 오지 않아 VERIFYING에서 내렸다(system:experiment).
+  cause: 'not_submitted' | 'timeout' | 'failed' | 'unresponsive' | 'verification_timeout';
   agentId: string;
   lastMessage: string | null;
   deniedCommands: string[];
@@ -630,7 +633,8 @@ export type TaskCreatedPayload = {
 // ── 내장 PM(domain/pm) ──
 // 요청·적용은 대표 명의, 초안 생성·호출은 system:pm 명의다(P3).
 // cause answers(033): 기획 단계 질문의 답을 붙여 다시 쓴다(명의 system:pm) — 대표의 수정 요청 한도에 세지 않는다.
-export type PmPlanRequestedPayload = { planId: string; parentPlanId: string | null; kind: 'draft' | 'revise'; planKind?: 'feature' | 'tasks'; cause?: 'answers' };
+// cause: answers(033) · retry(034, 실험 모드에서 실패한 초안을 같은 요청으로 다시 냄) · experiment_split(034, 실험 모드의 자동 태스크 나누기 요청).
+export type PmPlanRequestedPayload = { planId: string; parentPlanId: string | null; kind: 'draft' | 'revise'; planKind?: 'feature' | 'tasks'; cause?: 'answers' | 'retry' | 'experiment_split' };
 
 // PM의 모델 호출 한 번. 비용은 events.token_cost(USD)에 싣는다 — 프로젝트 PM 예산은 이 합계로 검사한다.
 // interrupted면 실제 사용량을 모른다(재시작·시간 제한) — 호출 전에 잡아 둔 최대치로 정산한 것이다.
@@ -657,6 +661,14 @@ export type PmPlanDraftedPayload = {
   repaired: boolean;
   questionCount?: number;
   assumedQuestionCount?: number;
+  // 034, 실험 모드: 체인에서 이미 답한 질문을 되풀이해 거른 수(라우팅하지 않고 이미 받은 답을 가정으로 남겼다).
+  repeatedQuestionCount?: number;
+};
+// 034, 실험 모드: 자동으로 다시 시켜도 끝내지 못해 그 흐름을 포기했다. 감독 스크립트가 세고, 계약 포기는 태스크 나누기를 막아 감독이 멈춘다.
+export type ExperimentSkippedPayload = {
+  subject: { kind: 'plan'; planId: string; planKind: 'feature' | 'tasks' } | { kind: 'contract'; contractId: string; featureKey: string };
+  reason: string;
+  retries: number;
 };
 export type PmPlanFailedPayload = { planId: string; reason: string };
 // 대표가 초안을 버렸다. 사유는 선택이다. 지표: PM 초안이 얼마나 반려되나(수정 요청과 구분된다).
@@ -732,6 +744,7 @@ export type EventPayloadMap = {
   TASK_CANCELLED: TaskCancelledPayload;
   TASK_COMPLETED_MANUALLY: TaskCompletedManuallyPayload;
   PROJECT_SETTINGS_UPDATED: ProjectSettingsUpdatedPayload;
+  EXPERIMENT_SKIPPED: ExperimentSkippedPayload;
   RELEASE_REQUESTED: ReleaseRequestedPayload;
   RELEASE_DECIDED: ReleaseDecidedPayload;
   ACTION_DETECTED: ActionDetectedPayload;

@@ -135,7 +135,9 @@ projectsRouter.patch(
   async (req, res) => {
     const { projectId } = req.params as z.infer<typeof projectIdParamsSchema>;
     const body = req.body as z.infer<typeof settingsBodySchema>;
-    res.status(200).json({ data: await updateProjectSettings(actorOf(req), projectId, body) });
+    // warnings(034): 실험 모드를 켤 때 PM 예산이 모자라 보이면 경고(막지 않는다). data는 예전처럼 프로젝트다.
+    const { project, warnings } = await updateProjectSettings(actorOf(req), projectId, body);
+    res.status(200).json({ data: project, warnings });
   },
 );
 

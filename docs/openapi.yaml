@@ -1160,11 +1160,12 @@ components:
     Contract:
       type: object
       description: 'API 계약(023). BE 노트북의 에이전트가 BE 코드를 읽고 초안을 쓰고, BE 담당이 확정한다'
-      required: [id, projectId, specId, featureKey, specTitle, status, attempt, feedback, schemaYaml, summary, openQuestions, draftedByAgentId, draftedAt, approvedBy, approvedAt, errorReason, createdAt, updatedAt, questionCount, pendingQuestionCount, questionRounds]
+      required: [id, projectId, specId, featureKey, specTitle, status, attempt, feedback, schemaYaml, summary, openQuestions, draftedByAgentId, draftedAt, approvedBy, approvedAt, errorReason, createdAt, updatedAt, questionCount, pendingQuestionCount, questionRounds, experimentRetries]
       properties:
         questionCount: { type: integer, description: '이 계약 초안의 기획 단계 질문 수(033)' }
         pendingQuestionCount: { type: integer, description: '답 대기 질문 수 — 0이 아니면 확정은 409 QUESTIONS_PENDING(가정으로 확정은 acceptAssumptions)' }
         questionRounds: { type: integer, description: '질문의 답으로 다시 쓴 회차 수 — attempt에 들어가지만 수정 요청 한도에서는 뺀다' }
+        experimentRetries: { type: integer, description: '실험 모드(034)에서 실패한 초안을 자동으로 다시 시킨 횟수 — attempt에 들어가지만 수정 요청 한도에서는 뺀다. 기본 모드는 늘 0' }
         id: { type: string, format: uuid }
         projectId: { type: string, format: uuid }
         specId: { type: string, format: uuid }
@@ -1188,11 +1189,12 @@ components:
         updatedAt: { type: string, format: date-time }
     ContractJob:
       type: object
-      required: [id, projectId, specId, featureKey, specTitle, status, attempt, feedback, schemaYaml, summary, openQuestions, draftedByAgentId, draftedAt, approvedBy, approvedAt, errorReason, createdAt, updatedAt, questionCount, pendingQuestionCount, questionRounds, specContent, apiNeeds, previous, answers]
+      required: [id, projectId, specId, featureKey, specTitle, status, attempt, feedback, schemaYaml, summary, openQuestions, draftedByAgentId, draftedAt, approvedBy, approvedAt, errorReason, createdAt, updatedAt, questionCount, pendingQuestionCount, questionRounds, experimentRetries, specContent, apiNeeds, previous, answers]
       properties:
         questionCount: { type: integer, description: '이 계약 초안의 기획 단계 질문 수(033)' }
         pendingQuestionCount: { type: integer, description: '답 대기 질문 수 — 0이 아니면 확정은 409 QUESTIONS_PENDING(가정으로 확정은 acceptAssumptions)' }
         questionRounds: { type: integer, description: '질문의 답으로 다시 쓴 회차 수 — attempt에 들어가지만 수정 요청 한도에서는 뺀다' }
+        experimentRetries: { type: integer, description: '실험 모드(034)에서 실패한 초안을 자동으로 다시 시킨 횟수 — attempt에 들어가지만 수정 요청 한도에서는 뺀다. 기본 모드는 늘 0' }
         answers:
           type: array
           description: '이 계약의 질문에 받은 답(033) — 다음 회차 프롬프트에 넣는다(CLI 0.1.18)'
@@ -1305,8 +1307,8 @@ components:
         revisionCause:
           type: string
           nullable: true
-          enum: [feedback, answers, null]
-          description: '수정 체인이면 왜 다시 썼나(033) — feedback 대표의 수정 요청(한도에 센다) · answers 질문의 답을 붙여 자동으로 다시 씀(따로 센다). 원본은 null'
+          enum: [feedback, answers, retry, null]
+          description: '수정 체인이면 왜 다시 썼나(033) — feedback 대표의 수정 요청(한도에 센다) · answers 질문의 답을 붙여 자동으로 다시 씀(따로 센다) · retry 실험 모드에서 실패한 초안을 같은 요청으로 다시 냄(034, 따로 센다). 원본은 null'
         questionCount: { type: integer, description: '이 초안의 기획 단계 질문 수(033)' }
         pendingQuestionCount: { type: integer, description: '답 대기 질문 수 — 0이 아니면 적용은 409 QUESTIONS_PENDING("가정으로 확정"은 acceptAssumptions)' }
         assignments:
@@ -3427,7 +3429,15 @@ paths:
           description: 바뀐 프로젝트
           content:
             application/json:
-              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/Project' } } }
+              schema:
+                type: object
+                required: [data, warnings]
+                properties:
+                  data: { $ref: '#/components/schemas/Project' }
+                  warnings:
+                    type: array
+                    items: { type: string }
+                    description: '실험 모드(034)를 켤 때 PM 예산이 무인 실험 요구사항 하나의 최대 어림보다 작으면 경고 문장(막지는 않는다). 없으면 빈 목록'
         '403':
           description: 대표가 아니거나 시작한 프로젝트
           content:
