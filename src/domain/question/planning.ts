@@ -140,8 +140,12 @@ export function toAskedQuestion(q: PlanningQuestion): AskedQuestion {
 export type RoutedPlanningQuestion = { question: AskedQuestion; input: RoutingInput; routed: RoutedResult };
 
 // 트랜잭션 밖에서 라우팅한다. 질문끼리 독립이라 함께 부른다.
+// 차례로 라우팅한다. 한꺼번에 보내면 중계 모드에서 pm-worker 하나가 한 건씩 처리하는 동안 뒤의 질문이 라우터 시간 제한(30초)에 걸려
+// 대표에게 보내는 대체 경로(fallback:representative)로 빠졌다(로컬 시범: 5개 중 3개) — 라우터가 판정하지 않은 행이 정확도 데이터에 섞인다.
 export async function routePlanningQuestions(items: { question: AskedQuestion; input: RoutingInput }[]): Promise<RoutedPlanningQuestion[]> {
-  return Promise.all(items.map(async (item) => ({ ...item, routed: await routeQuestion(item.input) })));
+  const routed: RoutedPlanningQuestion[] = [];
+  for (const item of items) routed.push({ ...item, routed: await routeQuestion(item.input) });
+  return routed;
 }
 
 export type PlanningQuestionContext = {

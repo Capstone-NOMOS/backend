@@ -25,8 +25,15 @@ export async function startServer(): Promise<void> {
   // 실험 모드(034): 자동 답이 빠진 질문·검증 보고 없는 VERIFYING을 정리하고 놓친 자동 진행 신호를 메운다. 기본 모드 프로젝트는 건드리지 않는다.
   startExperimentSweep();
   const app = createApp();
-  await new Promise<void>((resolve) => {
-    const server = app.listen(env.PORT, () => {
+  await new Promise<void>((resolve, reject) => {
+    // Express 5는 포트를 열지 못해도(EADDRINUSE·EACCES) 이 콜백을 오류와 함께 부른다 — 오류를 보지 않으면 "listening"을 찍고 아무것도 받지 않는 서버가 된다.
+    // Windows는 WinNAT/Hyper-V가 부팅마다 포트 구간을 예약해 EACCES가 난다(실측: 2944~3043) — `netsh interface ipv4 show excludedportrange protocol=tcp`로 보고 PORT를 바꾼다.
+    const server = app.listen(env.PORT, (err?: Error) => {
+      if (err) {
+        logger.error(`port ${env.PORT} could not be opened`, { error: String(err) });
+        reject(err);
+        return;
+      }
       logger.info(`server listening on port ${env.PORT}`, {
         commitInspector: env.COMMIT_INSPECTOR,
         docs: env.DOCS_ENABLED ? (env.DOCS_BASIC_AUTH ? 'basic-auth' : 'open') : 'off',
