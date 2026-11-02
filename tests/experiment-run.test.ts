@@ -25,7 +25,7 @@ import type { HttpMethod, NomosApi } from '../scripts/lib/nomos-http.js';
 type Task = { id: string; title: string; state: string; blockedReason: string | null; teamRole: string | null; kind: string; repoId: string; specId: string | null };
 
 // 감독이 부르는 API만 흉내 낸다. 상태는 테스트가 onPoll로 바꾼다(에이전트가 일하는 것처럼).
-function fakeServer(options: { questionMode?: string; projectStatus?: string } = {}) {
+function fakeServer(options: { questionMode?: string; projectStatus?: string; repoOwners?: string[]; memberRoles?: string[] } = {}) {
   const s = {
     project: { id: 'p1', name: '스터디', status: options.projectStatus ?? 'planning', questionRelay: true, questionMode: options.questionMode ?? 'experiment' },
     plans: [] as Record<string, unknown>[],
@@ -83,7 +83,13 @@ function fakeServer(options: { questionMode?: string; projectStatus?: string } =
     async call<T>(method: HttpMethod, path: string, body?: unknown): Promise<T> {
       s.calls.push({ method, path, body });
       const ok = (v: unknown) => v as T;
-      if (method === 'GET' && path === '/projects/p1') return ok({ project: s.project, members: [{ teamRole: 'FRONTEND', agentId: 'a1' }, { teamRole: 'BACKEND', agentId: 'a2' }] });
+      if (method === 'GET' && path === '/projects/p1') {
+        const members = (options.memberRoles ?? ['FRONTEND', 'BACKEND']).map((teamRole, i) => ({ teamRole, agentId: `a${i + 1}` }));
+        const repos = (options.repoOwners ?? []).map((_, i) => ({ id: `r${i}` }));
+        return ok({ project: s.project, members, ...(options.repoOwners ? { repos } : {}) });
+      }
+      const repoPaths = /^\/repos\/r(\d+)\/paths$/.exec(path);
+      if (method === 'GET' && repoPaths) return ok({ paths: [{ ownerRole: options.repoOwners![Number(repoPaths[1])] }, { ownerRole: null }] });
       if (path === '/projects/p1/pm/status') return ok(s.pm);
       if (path === '/projects/p1/rooms') return ok({ rooms: s.rooms });
       if (path === '/projects/p1/pm/plans') return ok({ plans: s.plans });
@@ -159,6 +165,15 @@ describe('감독 흐름', () => {
     await new Supervisor(api, opts({ dryRun: true }), memoryStore(), io).run();
     expect(posts(s.calls)).toEqual([]);
     expect(lines.at(-1)).toBe('--dry-run: 아무것도 요청하지 않았다');
+  });
+
+  it('담당을 요구하는 역할은 프로젝트 레포의 소유 역할뿐이다 — BE 레포만 있으면 FE 담당 없이 시작한다', async () => {
+    const beOnly = fakeServer({ repoOwners: ['BACKEND'], memberRoles: ['BACKEND'] });
+    await new Supervisor(beOnly.api, opts({ dryRun: true }), memoryStore(), clockIo().io).run();
+    const both = fakeServer({ repoOwners: ['FRONTEND', 'BACKEND'], memberRoles: ['BACKEND'] });
+    const err = await new Supervisor(both.api, opts({ dryRun: true }), memoryStore(), clockIo().io).run().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(HaltError);
+    expect((err as Error).message).toContain('FRONTEND 담당이 배정되지 않았다');
   });
 
   it('실험 모드가 아니면 시작하지 않는다(HaltError)', async () => {

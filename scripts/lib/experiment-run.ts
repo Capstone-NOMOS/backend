@@ -77,6 +77,7 @@ export type StateStore = { load(): Promise<RunState | null>; save(state: RunStat
 
 type ProjectDetail = {
   project: { id: string; name: string; status: string; questionRelay: boolean; questionMode?: string };
+  repos?: { id: string }[];
   members: { teamRole: string; agentId: string | null }[];
 };
 type PlanJson = {
@@ -224,6 +225,18 @@ export class Supervisor {
     this.health = new HealthMonitor(api, opts, io);
   }
 
+  // 담당이 있어야 하는 역할 = 프로젝트 레포의 경로 규칙이 소유자로 지정한 역할. BE 레포만 넣은 프로젝트는 FE 태스크가 생기지 않으므로 FE 담당을 요구하지 않는다.
+  // 레포 목록을 모르면(옛 서버) 두 역할 모두.
+  private async requiredRoles(detail: ProjectDetail): Promise<string[]> {
+    if (!detail.repos || detail.repos.length === 0) return ['FRONTEND', 'BACKEND'];
+    const roles = new Set<string>();
+    for (const repo of detail.repos) {
+      const { paths } = await this.api.call<{ paths: { ownerRole: string | null }[] }>('GET', `/repos/${repo.id}/paths`);
+      for (const p of paths) if (p.ownerRole) roles.add(p.ownerRole);
+    }
+    return ['FRONTEND', 'BACKEND'].filter((r) => roles.has(r));
+  }
+
   async preflight(): Promise<ProjectDetail> {
     const detail = await this.api.call<ProjectDetail>('GET', `/projects/${this.opts.projectId}`);
     const problems: string[] = [];
@@ -231,7 +244,7 @@ export class Supervisor {
       problems.push(`실험 모드가 아니다(questionMode=${detail.project.questionMode ?? '없음'}) — 시작 전에 PATCH /projects/:id/settings { questionMode: 'experiment' }`);
     }
     if (!['planning', 'active'].includes(detail.project.status)) problems.push(`프로젝트 상태가 ${detail.project.status}다(planning·active만)`);
-    for (const role of ['FRONTEND', 'BACKEND']) {
+    for (const role of await this.requiredRoles(detail)) {
       const m = detail.members.find((x) => x.teamRole === role);
       if (!m) problems.push(`${role} 담당이 배정되지 않았다`);
       else if (!m.agentId) problems.push(`${role} 담당의 에이전트가 연결돼 있지 않다 — 그 노트북에서 connect`);

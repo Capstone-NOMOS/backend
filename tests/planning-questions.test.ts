@@ -284,6 +284,29 @@ describe('기능 명세 초안의 질문', () => {
     expect((await http('POST', `/projects/${w.projectId}/pm/plans/${rewritten.id}/apply`, w.rep)).status).toBe(200);
   });
 
+  it('초안 하나의 질문은 차례로 라우팅한다 — 중계 모드의 pm-worker 하나가 한 건씩 처리하므로 한꺼번에 보내면 뒤의 것이 시간 제한에 걸린다', async () => {
+    let inflight = 0;
+    let maxInflight = 0;
+    const order: string[] = [];
+    setQuestionRouter({
+      name: 'test:slow',
+      route: async (input: RoutingInput) => {
+        inflight += 1;
+        maxInflight = Math.max(maxInflight, inflight);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        order.push(input.questions[0]!.question);
+        inflight -= 1;
+        return { target: tagOf(input), confidence: 0.9, reason: '태그', routedBy: 'test:slow' };
+      },
+    });
+    const w = await world();
+    fakePm(featureDraft([q('첫째 [PM]'), q('둘째 [BE]'), q('셋째 [FE]')]));
+    const plan = await requestFeature(w);
+    expect(plan.questionCount).toBe(3);
+    expect(maxInflight).toBe(1);
+    expect(order).toEqual(['첫째 [PM]', '둘째 [BE]', '셋째 [FE]']);
+  });
+
   it('답 대기 중 acceptAssumptions로 적용하면 남은 질문을 가정으로 닫는다(confirmed_with_assumptions)', async () => {
     const w = await world();
     fakePm(featureDraft([q('정원은 몇 명? [PM]')]));
