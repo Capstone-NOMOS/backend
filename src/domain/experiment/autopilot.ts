@@ -88,15 +88,25 @@ export async function runExperimentAutopilot(projectId: string): Promise<number>
   return total;
 }
 
-async function attempt(what: string, subject: Record<string, string>, fn: () => Promise<boolean | void>): Promise<boolean> {
+// 적용 실패 중 다시 해도 같은 결과인 것(저장된 초안 자체가 검증에 걸린다)만 포기한다.
+// 그 밖의 실패(경합으로 이미 적용됨·잠시 끊긴 DB 등)는 다음 신호·주기 정리에서 다시 본다 — 한 번의 일시 오류로 요구사항을 영영 버리지 않게.
+const PERMANENT_APPLY_ERRORS = new Set(['PLAN_INVALID', 'PLAN_CONFLICT']);
+
+type AttemptResult = { ok: true } | { ok: false; code: string | null };
+
+async function tryRun(what: string, subject: Record<string, string>, fn: () => Promise<boolean | void>): Promise<AttemptResult> {
   try {
-    return (await fn()) !== false;
+    return (await fn()) !== false ? { ok: true } : { ok: false, code: null };
   } catch (err) {
+    const code = err instanceof AppError ? err.code : null;
     // 다른 초안이 작성 중(프로젝트당 하나)이면 그게 끝날 때 다시 신호가 온다 — 경고할 일이 아니다.
-    if (err instanceof AppError && err.code === 'PM_PLAN_IN_PROGRESS') return false;
-    logger.warn(`실험 모드 자동 처리 실패: ${what}`, { ...subject, error: String(err) });
-    return false;
+    if (code !== 'PM_PLAN_IN_PROGRESS') logger.warn(`실험 모드 자동 처리 실패: ${what}`, { ...subject, error: String(err) });
+    return { ok: false, code };
   }
+}
+
+async function attempt(what: string, subject: Record<string, string>, fn: () => Promise<boolean | void>): Promise<boolean> {
+  return (await tryRun(what, subject, fn)).ok;
 }
 
 async function onePass(project: ExperimentProject, rep: UserContext): Promise<number> {
@@ -112,9 +122,11 @@ async function onePass(project: ExperimentProject, rep: UserContext): Promise<nu
         await attempt('답으로 다시 쓰기', { planId: plan.id }, () => retryRewriteWithAnswers(plan.id));
         continue;
       }
-      const applied = await attempt('초안 적용', { planId: plan.id }, () => applyPlanAsExperiment(rep.userId, project.id, plan.id));
-      if (applied) acted += 1;
-      else if (await skip(project, { kind: 'plan', planId: plan.rootPlanId, planKind: plan.kind }, 'apply_failed', plan.retries)) acted += 1;
+      const applied = await tryRun('초안 적용', { planId: plan.id }, () => applyPlanAsExperiment(rep.userId, project.id, plan.id));
+      if (applied.ok) acted += 1;
+      else if (applied.code !== null && PERMANENT_APPLY_ERRORS.has(applied.code)) {
+        if (await skip(project, { kind: 'plan', planId: plan.rootPlanId, planKind: plan.kind }, 'apply_failed', plan.retries)) acted += 1;
+      }
       continue;
     }
     // failed — 예산 소진은 다시 내도 같다(감독 스크립트가 멈추고 알린다).

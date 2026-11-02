@@ -319,6 +319,49 @@ describe('기획 흐름 자동 통과(실험 모드)', () => {
     expect(await events('EXPERIMENT_SKIPPED')).toHaveLength(1);
   });
 
+  it('초안 적용이 일시 오류로 실패하면 포기하지 않고 다음 주기 정리에서 적용한다', async () => {
+    // 적용(plans → applied)을 DB에서 잠시 막아 일시 오류를 흉내 낸다(AppError가 아닌 예외).
+    await testPool.query(`CREATE FUNCTION block_apply() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN IF NEW.status = 'applied' THEN RAISE EXCEPTION 'simulated outage'; END IF; RETURN NEW; END $$`);
+    await testPool.query(`CREATE TRIGGER block_apply BEFORE UPDATE ON plans FOR EACH ROW EXECUTE FUNCTION block_apply()`);
+    try {
+      const w = await world({ experiment: true });
+      fakePm({ feature: [featureDraft([], false)] });
+      await requestFeature(w);
+      expect((await plans(w)).map((p) => p.status)).toEqual(['ready']);
+      expect(await events('EXPERIMENT_SKIPPED')).toHaveLength(0);
+
+      await testPool.query(`DROP TRIGGER block_apply ON plans`);
+      fakePm({ tasks: [TASKS_DRAFT] });
+      await sweepExperiment();
+      await settle();
+      expect((await plans(w)).find((p) => p.kind === 'feature')?.status).toBe('applied');
+      expect(await events('EXPERIMENT_SKIPPED')).toHaveLength(0);
+    } finally {
+      await testPool.query(`DROP TRIGGER IF EXISTS block_apply ON plans`);
+      await testPool.query(`DROP FUNCTION IF EXISTS block_apply()`);
+    }
+  });
+
+  it('저장된 초안이 검증에 걸려 적용되지 않으면(PLAN_INVALID) 그 요구사항을 한 번 포기한다', async () => {
+    // 기본 모드에서 초안을 받아 두고(자동 적용 없음), 대표가 같은 기능 키(F-1)의 명세를 손으로 만든 뒤 실험 모드로 바꾼다.
+    const w = await world({ experiment: false });
+    fakePm({ feature: [featureDraft([], false)], tasks: [TASKS_DRAFT] });
+    const planId = await requestFeature(w);
+    const spec = await http('POST', `/projects/${w.projectId}/specs`, w.rep, { featureKey: 'F-1', title: '스터디 목록', content: '손으로 쓴 명세', tests: [] });
+    expect(spec.status).toBe(201);
+    expect((await http('PATCH', `/projects/${w.projectId}/settings`, w.rep, { questionMode: 'experiment' })).status).toBe(200);
+    await sweepExperiment();
+    await settle();
+    const skipped = (await events('EXPERIMENT_SKIPPED')).filter((e) => (e.payload.subject as { planId?: string }).planId === planId);
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]).toMatchObject({ on_behalf_of: 'system:experiment', payload: { auto: true, reason: 'apply_failed' } });
+    expect((await plans(w)).find((p) => p.id === planId)?.status).toBe('ready');
+    await sweepExperiment();
+    await settle();
+    expect((await events('EXPERIMENT_SKIPPED')).filter((e) => (e.payload.subject as { planId?: string }).planId === planId)).toHaveLength(1);
+  });
+
   it('계약 초안이 실패하면 EXPERIMENT_CONTRACT_RETRIES회 다시 시키고(수정 요청 한도와 따로), 넘으면 그 기능을 포기한다', async () => {
     const w = await world({ experiment: true });
     fakePm({ feature: [featureDraft([])] });
