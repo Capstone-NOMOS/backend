@@ -24,6 +24,10 @@ export type ContractView = {
   errorReason: string | null;
   createdAt: string;
   updatedAt: string;
+  // 033: 기획 단계 질문 — 화면의 "답 대기 질문 N개", 질문의 답으로 다시 쓴 회차(수정 요청 한도에서 뺀다).
+  questionCount: number;
+  pendingQuestionCount: number;
+  questionRounds: number;
 };
 
 function toContract(row: QueryResultRow): ContractView {
@@ -46,10 +50,15 @@ function toContract(row: QueryResultRow): ContractView {
     errorReason: row.error_reason ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    questionCount: (row.question_count as number | undefined) ?? 0,
+    pendingQuestionCount: (row.pending_question_count as number | undefined) ?? 0,
+    questionRounds: (row.question_rounds as number | undefined) ?? 0,
   };
 }
 
-const SELECT = `SELECT c.*, s.feature_key, s.title AS spec_title FROM contracts c JOIN specs s ON s.id = c.spec_id`;
+const QUESTION_COUNTS = `(SELECT count(*)::int FROM agent_questions q WHERE q.contract_id = c.id) AS question_count,
+       (SELECT count(*)::int FROM agent_questions q WHERE q.contract_id = c.id AND q.status = 'pending') AS pending_question_count`;
+const SELECT = `SELECT c.*, s.feature_key, s.title AS spec_title, ${QUESTION_COUNTS} FROM contracts c JOIN specs s ON s.id = c.spec_id`;
 
 // 기능 명세를 확정한 그 트랜잭션에서 API가 필요한 명세마다 작성 대기 계약을 만든다. 이미 있으면 건너뛴다.
 export async function insertPendingContracts(db: Queryable, projectId: string, specIds: string[]): Promise<string[]> {
@@ -87,7 +96,7 @@ export type ContractJob = ContractView & { specContent: string; apiNeeds: string
 
 export async function listPendingContractJobs(db: Queryable, projectId: string): Promise<ContractJob[]> {
   const { rows } = await db.query(
-    `SELECT c.*, s.feature_key, s.title AS spec_title, s.content AS spec_content, s.api_needs
+    `SELECT c.*, s.feature_key, s.title AS spec_title, s.content AS spec_content, s.api_needs, ${QUESTION_COUNTS}
        FROM contracts c JOIN specs s ON s.id = c.spec_id
       WHERE c.project_id = $1 AND c.status = 'pending'
       ORDER BY s.feature_key`,
@@ -130,6 +139,16 @@ export async function requestContractRedraft(db: Queryable, contractId: string, 
   const { rowCount } = await db.query(
     `UPDATE contracts SET status = 'pending', attempt = attempt + 1, feedback = $2, error_reason = NULL, updated_at = now()
       WHERE id = $1 AND status IN ('draft', 'failed')`,
+    [contractId, feedback],
+  );
+  return rowCount === 1;
+}
+
+// 질문의 답으로 다음 회차를 연다(033) — 초안일 때만. 수정 요청과 같은 전이지만 question_rounds를 함께 올려 BE 담당의 수정 요청 한도에서 뺀다.
+export async function requestContractRedraftByAnswers(db: Queryable, contractId: string, feedback: string): Promise<boolean> {
+  const { rowCount } = await db.query(
+    `UPDATE contracts SET status = 'pending', attempt = attempt + 1, question_rounds = question_rounds + 1, feedback = $2, error_reason = NULL, updated_at = now()
+      WHERE id = $1 AND status = 'draft'`,
     [contractId, feedback],
   );
   return rowCount === 1;

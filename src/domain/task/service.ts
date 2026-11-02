@@ -153,7 +153,8 @@ export type BriefingDecision = {
   id: string;
   question: string;
   answer: string | null;
-  askerRole: TeamRole;
+  // 기능 명세 초안의 질문(033)은 PM이 물었다.
+  askerRole: TeamRole | 'PM';
   targetRole: string;
   decidedByName: string | null;
   answeredAt: string | null;

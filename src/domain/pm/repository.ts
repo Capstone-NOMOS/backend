@@ -1,5 +1,6 @@
 import type { QueryResultRow } from 'pg';
 import type { Queryable } from '../../config/db.js';
+import type { QuestionMode } from '../project/repository.js';
 import type { PlanContext } from './prompt.js';
 
 export type PlanStatus = 'pending' | 'ready' | 'failed' | 'applied' | 'rejected';
@@ -28,7 +29,10 @@ export type PlanRow = {
   appliedAt: string | null;
   rejectedAt: string | null;
   rejectReason: string | null;
+  revisionCause: RevisionCause | null;
 };
+
+export type RevisionCause = 'feedback' | 'answers';
 
 function toPlan(row: QueryResultRow): PlanRow {
   return {
@@ -51,6 +55,7 @@ function toPlan(row: QueryResultRow): PlanRow {
     appliedAt: row.applied_at,
     rejectedAt: row.rejected_at,
     rejectReason: row.reject_reason,
+    revisionCause: row.revision_cause ?? null,
   };
 }
 
@@ -65,12 +70,14 @@ export async function insertPendingPlan(
     feedback: string | null;
     parentPlanId: string | null;
     rootPlanId: string;
+    // 033: 수정 체인이면 왜 다시 쓰나 — feedback(대표의 수정 요청) | answers(기획 단계 질문의 답). 원본은 null.
+    revisionCause: RevisionCause | null;
   },
 ): Promise<PlanRow> {
   const { rows } = await db.query(
-    `INSERT INTO plans (id, project_id, kind, requested_by, instruction, feedback, parent_plan_id, root_plan_id, source, status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'planner', 'pending') RETURNING *`,
-    [plan.id, plan.projectId, plan.kind, plan.requestedBy, plan.instruction, plan.feedback, plan.parentPlanId, plan.rootPlanId],
+    `INSERT INTO plans (id, project_id, kind, requested_by, instruction, feedback, parent_plan_id, root_plan_id, source, status, revision_cause)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'planner', 'pending', $9) RETURNING *`,
+    [plan.id, plan.projectId, plan.kind, plan.requestedBy, plan.instruction, plan.feedback, plan.parentPlanId, plan.rootPlanId, plan.revisionCause],
   );
   return toPlan(rows[0]!);
 }
@@ -79,6 +86,12 @@ export async function findPlan(db: Queryable, planId: string, options: { forUpda
   const { rows } = await db.query(`SELECT * FROM plans WHERE id = $1${options.forUpdate ? ' FOR UPDATE' : ''}`, [planId]);
   const row = rows[0];
   return row ? toPlan(row) : null;
+}
+
+// 이 초안에서 이어진 다음 판(수정 요청·답에 따른 재작성)이 이미 있나 — 답에 따른 재작성을 두 번 열지 않는다.
+export async function hasChildPlan(db: Queryable, planId: string): Promise<boolean> {
+  const { rows } = await db.query(`SELECT 1 FROM plans WHERE parent_plan_id = $1 LIMIT 1`, [planId]);
+  return rows.length > 0;
 }
 
 export async function listPlans(db: Queryable, projectId: string): Promise<PlanRow[]> {
@@ -111,12 +124,33 @@ export async function listAllPendingPlans(db: Queryable): Promise<PlanRow[]> {
 }
 
 // 수정 체인에서 이미 받은 수정 요청 수(원본 요청 제외, 실패한 수정 요청도 센다 — 요청마다 PM을 한 번 부른다).
+// 질문의 답으로 다시 쓴 것(revision_cause answers, 033)은 대표의 수정 요청이 아니라 세지 않는다 — 따로 센다(countChainAnswerRounds).
 export async function countChainRevisions(db: Queryable, rootPlanId: string): Promise<number> {
   const { rows } = await db.query(
-    `SELECT count(*)::int AS n FROM plans WHERE root_plan_id = $1 AND parent_plan_id IS NOT NULL`,
+    `SELECT count(*)::int AS n FROM plans WHERE root_plan_id = $1 AND revision_cause = 'feedback'`,
     [rootPlanId],
   );
   return rows[0]!.n as number;
+}
+
+// 질문의 답으로 다시 쓴 횟수(033) — 일반 모드에서 PLANNING_QUESTION_ROUNDS를 넘으면 새 질문을 받지 않고 가정으로 옮긴다.
+export async function countChainAnswerRounds(db: Queryable, rootPlanId: string): Promise<number> {
+  const { rows } = await db.query(
+    `SELECT count(*)::int AS n FROM plans WHERE root_plan_id = $1 AND revision_cause = 'answers'`,
+    [rootPlanId],
+  );
+  return rows[0]!.n as number;
+}
+
+// 계획마다 기획 단계 질문 수 — 화면의 "답 대기 질문 N개".
+export async function planQuestionCounts(db: Queryable, planIds: string[]): Promise<Map<string, { total: number; pending: number }>> {
+  if (planIds.length === 0) return new Map();
+  const { rows } = await db.query(
+    `SELECT plan_id, count(*)::int AS total, count(*) FILTER (WHERE status = 'pending')::int AS pending
+       FROM agent_questions WHERE plan_id = ANY($1::uuid[]) GROUP BY plan_id`,
+    [planIds],
+  );
+  return new Map(rows.map((r) => [r.plan_id as string, { total: r.total as number, pending: r.pending as number }]));
 }
 
 export async function chainHasAppliedPlan(db: Queryable, rootPlanId: string): Promise<boolean> {
@@ -226,17 +260,25 @@ export async function planCostsUsd(db: Queryable, planIds: string[]): Promise<Ma
 
 // ── 맥락
 
-export type ProjectForPm = { id: string; orgId: string; name: string; deadline: string | null; pmBudgetUsd: number; policyHash: string };
+export type ProjectForPm = { id: string; orgId: string; name: string; deadline: string | null; pmBudgetUsd: number; policyHash: string; questionMode: QuestionMode };
 
 export async function findProjectForPm(db: Queryable, projectId: string): Promise<ProjectForPm | null> {
   const { rows } = await db.query(
-    `SELECT id, org_id, name, to_char(deadline, 'YYYY-MM-DD') AS deadline, pm_budget_usd::float8 AS pm_budget_usd, policy_hash
+    `SELECT id, org_id, name, to_char(deadline, 'YYYY-MM-DD') AS deadline, pm_budget_usd::float8 AS pm_budget_usd, policy_hash, question_mode
        FROM projects WHERE id = $1 AND deleted_at IS NULL`,
     [projectId],
   );
   const r = rows[0];
   return r
-    ? { id: r.id, orgId: r.org_id, name: r.name, deadline: r.deadline, pmBudgetUsd: r.pm_budget_usd, policyHash: r.policy_hash }
+    ? {
+        id: r.id,
+        orgId: r.org_id,
+        name: r.name,
+        deadline: r.deadline,
+        pmBudgetUsd: r.pm_budget_usd,
+        policyHash: r.policy_hash,
+        questionMode: r.question_mode === 'experiment' ? 'experiment' : 'normal',
+      }
     : null;
 }
 
@@ -282,6 +324,7 @@ export async function loadPlanContext(db: Queryable, project: ProjectForPm): Pro
   const constitution = await db.query(`SELECT constitution FROM projects WHERE id = $1`, [project.id]);
   return {
     projectName: project.name,
+    questionMode: project.questionMode,
     deadline: project.deadline,
     repos: repos.rows.map((r) => ({ fullName: r.full_name as string, ownerRoles: r.roles as string[] })),
     members: members.rows.map((m) => ({ teamRole: m.team_role as string, agentName: m.name as string })),

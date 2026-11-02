@@ -240,9 +240,12 @@ export type QuestionGoldLabeledPayload = {
   previousGoldTarget: string | null;
 };
 
-export type QuestionAskedPayload = {
+// 033: 기획 단계 질문(feature_spec·contract)은 태스크가 없다 — taskId null, planId·contractId로 어느 초안인지 안다. 옛 이벤트에는 stage가 없다(= implementation).
+type QuestionStageFields = { stage?: 'implementation' | 'feature_spec' | 'contract'; planId?: string | null; contractId?: string | null };
+
+export type QuestionAskedPayload = QuestionStageFields & {
   questionId: string;
-  taskId: string;
+  taskId: string | null;
   askerRole: string;
   targetRole: string;
   routedBy: string;
@@ -257,21 +260,22 @@ export type QuestionAskedPayload = {
 // 대상 역할의 사람이 답했다. answeredByRole: 답한 사람이 대상 역할 담당인지 대표인지(대표는 어느 역할이든 답할 수 있다).
 // source: human(직접) · agent_confirmed(에이전트 답 확인) · human_override(에이전트 답 뒤집기 — 고치는 태스크는 미구현, notice).
 // resumedTask: 이 답으로 질문 때문에 멈춘 태스크가 READY로 돌아갔다.
-export type QuestionAnsweredPayload = {
+// EXPERIMENT_AUTO·auto_first_option(033): 실험 모드의 자동 답(첫 번째 선택지, 명의 system:experiment) — 사람이 정한 답이 아니다.
+export type QuestionAnsweredPayload = QuestionStageFields & {
   questionId: string;
-  taskId: string;
+  taskId: string | null;
   targetRole: string;
-  answeredByRole: 'TARGET_OWNER' | 'REPRESENTATIVE';
-  source: 'human' | 'agent_confirmed' | 'human_override';
+  answeredByRole: 'TARGET_OWNER' | 'REPRESENTATIVE' | 'EXPERIMENT_AUTO';
+  source: 'human' | 'agent_confirmed' | 'human_override' | 'auto_first_option';
   resumedTask: boolean;
   waitedMs: number;
   notice?: 'REWORK_NOT_IMPLEMENTED';
 };
 
 // 대상 역할 에이전트의 상담 실행이 초안을 올렸다. autoAnswered: 전부 이미 정해진 것이라 초안이 곧 답(사람 미확인).
-export type QuestionDraftedPayload = {
+export type QuestionDraftedPayload = QuestionStageFields & {
   questionId: string;
-  taskId: string;
+  taskId: string | null;
   decidedCount: number;
   questionCount: number;
   autoAnswered: boolean;
@@ -288,12 +292,14 @@ export type TaskBlockedOnQuestionPayload = {
 };
 
 // 시간 안에 답이 오지 않았다 — 에이전트는 멈추고(E4) 태스크는 사람이 다시 움직여야 한다.
-export type QuestionExpiredPayload = {
+export type QuestionExpiredPayload = QuestionStageFields & {
   questionId: string;
-  taskId: string;
+  taskId: string | null;
   targetRole: string;
   // 그 질문으로 멈춘 태스크를 ESCALATED로 올렸다.
   escalated: boolean;
+  // 033: confirmed_with_assumptions — 대표·BE 담당이 답을 기다리지 않고 가정으로 확정했다. 없으면 기간이 지났다.
+  reason?: 'confirmed_with_assumptions';
 };
 
 // 대표가 승인·반려했다.
@@ -359,9 +365,10 @@ export type ProjectCreatedPayload = {
 };
 
 // 시작 전 프로젝트 설정 변경 — 지금은 질문 중계 스위치뿐. 대조군 실험의 근거라 바뀐 사실을 남긴다.
+// 033: questionMode(normal·experiment)를 함께 남긴다. 옛 이벤트에는 없다(= normal).
 export type ProjectSettingsUpdatedPayload = {
-  before: { questionRelay: boolean };
-  after: { questionRelay: boolean };
+  before: { questionRelay: boolean; questionMode?: 'normal' | 'experiment' };
+  after: { questionRelay: boolean; questionMode?: 'normal' | 'experiment' };
 };
 
 // G1 — 이 시점의 멤버·태스크 수·승인한 계획을 남긴다. 이후 지표("이 구성으로 시작해서 어땠나")의 기준점이다.
@@ -416,9 +423,12 @@ export type GithubCollaboratorsRemovedPayload = {
 
 // API 계약(023, 새 계획 흐름 2단계). 기능 명세를 확정하면 API가 필요한 기능마다 작성 대기 → BE 노트북이 초안 → BE 개발자가 확정·수정 요청.
 export type ContractRequestedPayload = { contractIds: string[]; specIds: string[] };
-export type ContractDraftedPayload = { contractId: string; featureKey: string; attempt: number; operations: string[]; openQuestionCount: number };
-export type ContractRevisionRequestedPayload = { contractId: string; featureKey: string; attempt: number; feedback: string | null };
-export type ContractApprovedPayload = { contractId: string; featureKey: string; attempt: number; byRepresentative: boolean };
+// questionCount(033): 질문 형식으로 내 라우팅한 질문 수(openQuestionCount는 기록한 문장 전부 — 옛 CLI의 문자열·가정으로 옮긴 것 포함).
+export type ContractDraftedPayload = { contractId: string; featureKey: string; attempt: number; operations: string[]; openQuestionCount: number; questionCount?: number };
+// cause answers(033): 질문의 답으로 연 회차(명의 system:planning-questions) — BE 담당의 수정 요청 한도에 세지 않는다.
+export type ContractRevisionRequestedPayload = { contractId: string; featureKey: string; attempt: number; feedback: string | null; cause?: 'answers' };
+// assumedQuestionIds(033): 답을 기다리지 않고 가정으로 닫은 질문.
+export type ContractApprovedPayload = { contractId: string; featureKey: string; attempt: number; byRepresentative: boolean; assumedQuestionIds?: string[] };
 export type ContractFailedPayload = { contractId: string; featureKey: string; attempt: number; reason: string };
 
 // 프로젝트 중단(021). 지우지 않고 aborted로 닫는다 — 이벤트·태스크·노트가 가리킨다.
@@ -619,7 +629,8 @@ export type TaskCreatedPayload = {
 
 // ── 내장 PM(domain/pm) ──
 // 요청·적용은 대표 명의, 초안 생성·호출은 system:pm 명의다(P3).
-export type PmPlanRequestedPayload = { planId: string; parentPlanId: string | null; kind: 'draft' | 'revise'; planKind?: 'feature' | 'tasks' };
+// cause answers(033): 기획 단계 질문의 답을 붙여 다시 쓴다(명의 system:pm) — 대표의 수정 요청 한도에 세지 않는다.
+export type PmPlanRequestedPayload = { planId: string; parentPlanId: string | null; kind: 'draft' | 'revise'; planKind?: 'feature' | 'tasks'; cause?: 'answers' };
 
 // PM의 모델 호출 한 번. 비용은 events.token_cost(USD)에 싣는다 — 프로젝트 PM 예산은 이 합계로 검사한다.
 // interrupted면 실제 사용량을 모른다(재시작·시간 제한) — 호출 전에 잡아 둔 최대치로 정산한 것이다.
@@ -636,7 +647,17 @@ export type PmCallPayload = {
   attempts: { model: string; inputTokens: number; outputTokens: number; cacheWriteTokens: number; cacheReadTokens: number }[];
 };
 
-export type PmPlanDraftedPayload = { planId: string; planKind?: 'feature' | 'tasks'; dagHash: string; specCount: number; taskCount: number; repaired: boolean };
+// questionCount·assumedQuestionCount(033, 기능 명세): 라우팅한 질문 수와 상한을 넘어 가정으로 옮긴 질문 수.
+export type PmPlanDraftedPayload = {
+  planId: string;
+  planKind?: 'feature' | 'tasks';
+  dagHash: string;
+  specCount: number;
+  taskCount: number;
+  repaired: boolean;
+  questionCount?: number;
+  assumedQuestionCount?: number;
+};
 export type PmPlanFailedPayload = { planId: string; reason: string };
 // 대표가 초안을 버렸다. 사유는 선택이다. 지표: PM 초안이 얼마나 반려되나(수정 요청과 구분된다).
 export type PlanRejectedPayload = {
@@ -646,7 +667,8 @@ export type PlanRejectedPayload = {
 };
 
 // planKind(022): feature = 기능 명세 확정, tasks = 태스크 적용. 이전 이벤트에는 없다(tasks).
-export type PlanAppliedPayload = { planId: string; planKind?: 'feature' | 'tasks'; specIds: string[]; taskIds: string[] };
+// assumedQuestionIds(033): acceptAssumptions로 답을 기다리지 않고 닫은 질문.
+export type PlanAppliedPayload = { planId: string; planKind?: 'feature' | 'tasks'; specIds: string[]; taskIds: string[]; assumedQuestionIds?: string[] };
 
 // CLI 브라우저 승인. 요청 시점에는 승인할 사람이 아직 없다 — on_behalf_of는 system:device-flow.
 // 결정(승인·거부)은 결정한 사람 명의다. 토큰 발급은 AGENT_CONNECTED(method: 'device')로 남는다.

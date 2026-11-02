@@ -72,6 +72,10 @@ const envSchema = z
     // 에이전트 질문(AskUserQuestion)의 유효 기간. 묻는 쪽 실행은 몇 분만 기다리고(브릿지 NOMOS_QUESTION_INLINE_WAIT_MS) 태스크를
     // BLOCKED로 내려놓는다 — 이 기간 안에 답이 오면 READY로 돌아가고, 지나면 질문은 만료되고 태스크는 ESCALATED.
     QUESTION_TIMEOUT_MS: z.coerce.number().int().min(10_000).max(30 * 86_400_000).default(3 * 86_400_000),
+    // 기획 단계 질문(033) — 일반 모드에서 초안 하나당 질문 수, 답에 따른 재작성 횟수. 넘는 질문은 가정(assumptions·openQuestions 문장)으로 옮긴다.
+    // 실험 모드는 둘 다 무제한(상한은 PM 예산이다). 대표의 수정 요청 한도(PM_MAX_REVISIONS·CONTRACT_MAX_REVISIONS)와 따로 센다.
+    PLANNING_QUESTIONS_MAX: z.coerce.number().int().min(0).max(20).default(5),
+    PLANNING_QUESTION_ROUNDS: z.coerce.number().int().min(0).max(10).default(2),
     // 질문 라우터(025): llm = PM 모델이 FE·BE·PM 중 고른다(실패하면 rule로 대체·기록), rule = 반대 역할 규칙.
     QUESTION_ROUTER: z.enum(['llm', 'decision']).default('llm'),
     // 평가용(026): 실제로 보내지는 않고 같은 질문에 함께 돌려 기록할 라우터들(쉼표 구분: llm,decision). 비우면 끈다.

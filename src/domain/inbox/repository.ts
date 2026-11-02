@@ -64,9 +64,10 @@ const BASE = `
        AND (   (e.type = 'APPROVAL_RESULT' AND e.payload->>'decision' = 'APPROVE' AND e.payload->>'taskState' = 'DONE')
             OR (e.type = 'VERIFICATION_COMPLETED' AND e.payload->>'taskState' = 'DONE')
             OR e.type = 'TASK_COMPLETED_MANUALLY'
-            OR e.type = 'QUESTION_ANSWERED'
+            -- 실험 모드의 자동 답(033, 첫 선택지)은 사람 일이 아니다 — 답도, 그 질문이 왔다는 알림도 내지 않는다(곧바로 답해진다).
+            OR (e.type = 'QUESTION_ANSWERED' AND e.payload->>'source' IS DISTINCT FROM 'auto_first_option')
             OR (e.type = 'QUESTION_DRAFTED' AND e.payload->>'autoAnswered' = 'true')
-            OR (e.type = 'QUESTION_ASKED' AND e.payload->>'targetRole' <> 'SELF'))
+            OR (e.type = 'QUESTION_ASKED' AND e.payload->>'targetRole' <> 'SELF' AND q.answer_source IS DISTINCT FROM 'auto_first_option'))
   ),
   mine AS (
     SELECT n.* FROM n

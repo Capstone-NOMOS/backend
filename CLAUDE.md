@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 프로젝트
 
-NOMOS 서버 — 여러 개발자가 각자 노트북에서 Claude Code 에이전트를 돌릴 때 그 사이의 계약·권한·분쟁을 조율하는 서버. 현재 구현 범위는 조직·레포·경로 소유권·초대, 로컬 계정과 CLI 연결(브라우저 승인 포함), 프로젝트·태스크·산출물·인계 노트·검증, 명세·태스크 작성, 새 계획 흐름(기능 명세 → API 계약 → 태스크 나누기, 마이그레이션 023까지), 승인 대기열(ACTION 게이트), 받은 편지함(알림·처리할 일), 화면용 실시간 신호, 역할별 룸 피드, AWS 배포다.
+NOMOS 서버 — 여러 개발자가 각자 노트북에서 Claude Code 에이전트를 돌릴 때 그 사이의 계약·권한·분쟁을 조율하는 서버. 현재 구현 범위는 조직·레포·경로 소유권·초대, 로컬 계정과 CLI 연결(브라우저 승인 포함), 프로젝트·태스크·산출물·인계 노트·검증, 명세·태스크 작성, 새 계획 흐름(기능 명세 → API 계약 → 태스크 나누기, 기획 단계 질문 033), 승인 대기열(ACTION 게이트), 받은 편지함(알림·처리할 일), 화면용 실시간 신호, 역할별 룸 피드, AWS 배포다.
 
 설계 원칙(위반 금지): **P1** 상태는 서버가 소유하고 클라이언트는 전이를 요청만 한다. **P3** 모든 행동은 사람에게 귀속된다(`on_behalf_of` 없는 이벤트는 없다). **P5** 모든 상태 변화는 `events`에 append되고 events가 유일한 진실이다.
 
@@ -452,6 +452,24 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
    - 브리핑 `contract`는 태스크 명세의 확정한 계약이다(FE·BE가 **같은** 계약을 받는다). Executor 프롬프트의 "확정한 API 계약" 절.
    - **시작 조건**: 끝나지 않은 태스크가 붙은 API 기능의 계약이 확정되지 않았으면 시작할 수 없다(사람이 손으로 만든 태스크도) — 계약 없이 시작하면 FE·BE가 서로 다른 API를 짐작한다.
 
+**기획 단계 질문(033)** — 1·2단계의 초안 작성자(PM·BE 에이전트)도 혼자 정하면 안 되는 것을 질문으로 낸다. 통합 테스트에서 PM이 대표가 정하지 않은 정책을,
+BE 에이전트가 FE가 정할 화면 요구를 임의로 정했고, 그게 그대로 계약·태스크가 됐다. 구현 단계와 같은 라우터·같은 `agent_questions`를 쓴다(`question/planning.ts`).
+- 형식 `questions: [{ question, header?, options(≥2, 추천안 맨 앞), multiSelect? }]`(기능 명세는 `featureKey`). 판정은 코드다(같은 질문·같은 선택지·없는 기능 → 교정 1회 — PM 교정·`CONTRACT_INVALID`와 같은 횟수).
+  지침은 "혼자 정하지 말고 추측은 가정이 아니라 질문으로"(`planningQuestionGuide`, PM·Executor 프롬프트가 같은 문장).
+- **질문 하나 = 한 행**(`stage` feature_spec·contract, `plan_id`·`contract_id`, `task_id` 없음 — 033이 단계별 CHECK로 짝을 지킨다). 질문마다 답할 사람이 다를 수 있어서다.
+  라우팅은 트랜잭션 밖에서 먼저 하고 초안 저장(ready·draft) 트랜잭션에서 INSERT한다(askQuestion과 같은 순서). **태스크를 멈추지 않는다** — 막을 태스크가 없다.
+- 같은 트랜잭션의 질문들은 `created_at = clock_timestamp()`로 넣는다(`insertQuestion`) — `now()`면 시각이 같아 초안에 낸 순서가 목록·`QUESTIONS_PENDING` 상세에서 id(무작위)로 섞였다.
+- **답이 다 오면 새 단발 호출로 다시 쓴다**: 기능 명세 = 같은 체인의 새 계획(`plans.revision_cause = 'answers'`, 명의 `system:pm`), 계약 = 다음 회차가 저절로 열림
+  (`contracts.question_rounds` +1, 명의 `system:planning-questions`). 다시 쓴 초안이 또 물으면 반복된다. **답 회차는 수정 요청 한도와 따로 센다** —
+  `PM_MAX_REVISIONS`는 `revision_cause='feedback'`만, 계약 한도는 `attempt - 1 - question_rounds`. 사람이 누른 횟수가 아니라서다.
+- "다 답했다"는 **받는 쪽이 잠금 안에서 센다**(`rewriteWithAnswers`는 프로젝트 잠금 안의 `answersSettled` — 대기 질문 0·다음 판 없음, `redraftWithAnswers`는 계약 행 `FOR UPDATE`).
+  답 저장 트랜잭션 안에서 세면 동시에 커밋된 답끼리 서로를 대기로 보아 아무도 신호를 내지 않았다(실험 모드 자동 답). 신호(`dispatch/planning-questions.ts`)는 답마다 나가고 여러 번 와도 한 번만 연다.
+- **확정 막기**: 답 대기가 남으면 적용(apply)·계약 확정(approve)이 409 `QUESTIONS_PENDING`(details: 질문 id·문장·대상). `{ acceptAssumptions: true }`면 남은 질문을 만료로 닫고
+  (`QUESTION_EXPIRED.reason = 'confirmed_with_assumptions'`) 확정한다 — 이벤트에 `assumedQuestionIds`. 답할 사람이 없어도 빠져나올 길이다.
+- **상한(일반 모드)**: 초안당 `PLANNING_QUESTIONS_MAX`(5)개, 답에 따른 재작성 `PLANNING_QUESTION_ROUNDS`(2)회. 넘는 질문은 버리지 않고 첫 선택지를 **가정으로 옮긴다**
+  (`가정: 질문 → 추천안`, 대표가 초안에서 본다). 실험 모드는 무제한(비용 상한은 PM 예산). 상한은 비용과 대표의 피로 때문이다 — 질문마다 사람이 답한다.
+- 계약의 옛 문자열 `openQuestions`(CLI 0.1.17 이하)는 **기록만 하고 라우팅하지 않는다** — 선택지가 없어 답을 받을 수 없다. 구조화 질문은 CLI 0.1.18부터라 배포는 서버 먼저.
+
 ### 내장 PM (`domain/pm`) — 기능 명세·태스크 나누기
 
 대표의 지시 → PM 초안(비동기, `pending → ready | failed`) → 대표 검토 → 적용(`applied`). PM은 NOMOS 키(`ANTHROPIC_API_KEY`)로 서버에서 돈다.
@@ -465,6 +483,8 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
 - **수정 요청은 한 체인에서 `PM_MAX_REVISIONS`(기본 3)회까지**(원본 요청 제외, 실패한 수정 요청도 센다). 넘으면 409 `PLAN_REVISION_LIMIT`, `details: { limit, used }`.
   프로젝트 행 잠금 안에서 센다(동시 요청 우회 방지). 새 계획 요청은 새 체인이라 0부터. 중계 모드에서는 API 예산이 상한 역할을 못 해 서버가 센다.
 - **수정 요청과 교정은 새 단발 호출이다**(이전 초안 + 피드백/위반). 대화를 이어 붙이지 않으므로 거절된 턴이 섞이지 않는다.
+- **기능 명세 초안의 질문(033, 위 "새 계획 흐름")**도 같은 체인의 새 단발 호출로 다시 쓴다(`revisionCause: 'answers'`, 이전 초안 + "질문에 받은 답"). 대표의 수정 요청 한도에는 세지 않는다.
+  PM이 묻는 질문에는 PM 답 초안을 쓰지 않는다(자기 질문에 자기가 답하게 된다) — PM 대상이면 대표가 직접 답한다.
 - **비용**: 호출마다 `PM_CALL` 이벤트(`on_behalf_of: system:pm`, `events.token_cost` USD). `usage.iterations`의 **시도마다** 그 모델 가격으로 더한다
   캐시 쓰기(입력 × 1.25)와 읽기는 따로 센다. 가격표는 `pm/pricing.ts` 한 곳.
 - **대체 모델(`fallbacks`)은 쓰지 않는다.** 켜면 안전 거절 때 서버가 고른 다른 모델이 한 번 더 돌 수 있어, 호출 상한을 가장 비싼 모델 기준으로
@@ -604,7 +624,8 @@ FE의 "받은 편지함"은 두 칸이다(대표 결정 2026-10-29). **둘 다 �
   Decision AI는 `DECISION_ROUTER_URL`(HTTP, `question/http-router.ts`) — 질문·명세가 외부로 나가므로 켜기 전에 팀이 동의한다.
   오프라인 데이터셋 비교(100문항)는 `scripts/eval-question-router.ts`가 같은 프롬프트·해석으로 한다.
   **라우터가 본 입력도 남긴다**(032 `agent_questions.routing_input` = `RoutingInputSnapshot`, 질문 INSERT와 같은 트랜잭션 — 명세·계약이 바뀌므로 다시 조립하지 말 것).
-  입력에는 단계(`stage`: implementation·feature_spec·contract — 지금은 implementation만 생긴다)가 있고, PM이 묻는 단계에서는 SELF가 없다(PM 소관 = 대상 PM, 대표가 확정).
+  입력에는 단계(`stage`: implementation·feature_spec·contract — 033부터 셋 다 생긴다)가 있고, PM이 묻는 단계에서는 SELF가 없다(PM 소관 = 대상 PM, 대표가 확정).
+  내보내기에 `answerSource`가 실린다 — `auto_first_option`(실험 모드)은 정답이 아니다(정답은 사람이 붙이는 gold).
   `GET /projects/:id/routing-dataset`(대표)가 그대로 오프라인 데이터셋 v2로 내보내고, 평가는 그 `input`을 그대로 라우터에 넣는다 — 실행은 질문을 모을 때 한 번, 비교는 몇 번이든.
 - **질문으로 정해진 결정은 다른 태스크에도 간다**(`question/decisions.ts`) — 답은 원래 질문한 태스크에만 갔다(같은 실행·재개 브리핑의 `answeredQuestions`). FE가 "페이지 크기?"를 묻고
   BE 담당이 코드에 없던 "20개"를 정하면 그 API를 만드는 BE 태스크는 몰랐다.
@@ -626,6 +647,21 @@ FE의 "받은 편지함"은 두 칸이다(대표 결정 2026-10-29). **둘 다 �
     옛 CLI는 결정을 브리핑에서 읽지도, 작업공간 파일에 남기지도 않아 id를 알 수 없다 — 요구하면 같은 제출을 반복하다 멈춘다. 새 CLI(0.1.15+, `buildSubmitBody`)는 **빈 배열이라도 항상** 보낸다.
     id 형식은 검사하지 않는다(모르는·틀린 id는 무시) — 형식 하나로 제출 전체를 400으로 막으면 빠져나올 길이 없고, 빠진 결정은 어차피 409로 전문이 다시 온다.
     그래서 배포는 서버 먼저, CLI 나중이다.
+- **태스크 없는 질문(033 기획 단계)**: `task_id`·`asked_by_agent`가 비어 있을 수 있다. 질문 목록·내 질문·결정·받은 편지함·룸·만료 정리·브리핑이 전부 이걸 견딘다
+  (태스크 조인은 LEFT JOIN, 만료 정리는 태스크가 있을 때만 ESCALATED). 룸에는 기능 명세 질문이 모든 룸에, 계약 질문이 BE 룸과 대상 룸에 나온다.
+  답 뒤처리는 `question/answer-effects.ts` 한 벌이다(구현 단계 = 멈춘 태스크 재개, 기획 단계 = 다시 쓰기 신호) — 사람의 답·상담 초안·자동 답이 같은 함수를 탄다.
+  **결정 전달**: 기능 명세 질문은 그 기능 키의 명세가 생긴 뒤 그 명세의 태스크, 계약 질문은 그 계약의 명세의 태스크(FE·BE 대상의 "같은 명세"), PM 대상은 전부 — 조건은 `listDecisionRows` 한 곳.
+- **실험 모드(`projects.question_mode = experiment`, 033)** — 질문 발생률·라우팅을 재는 반복 실행용. 사람이 매번 답하면 반복이 멈추고, 상한이 있으면 덜 묻는다.
+  - **시작(G1) 전에만**, 질문 중계가 켜져 있어야 켠다(`PATCH /projects/:id/settings`, 아니면 422 `QUESTION_MODE_INVALID` — DB `projects_question_mode_chk`도 막는다). 끄면 질문 자체가 없어 잴 것이 없다.
+  - 상한 없음(기획 단계 질문 수·답 회차). **자동 답 = `options[0].label`**(추천안) — primary 라우팅 기록과 그림자 라우터 시도가 **끝난 뒤에** 답한다(`question/auto-answer.ts`,
+    `after-ask.ts`) — 먼저 답하면 라우팅 지표가 일반 모드와 다른 조건이 된다. 명의 `system:experiment`, `answer_source = 'auto_first_option'`, `answered_by` NULL
+    (사람이 아니다 — `agent_questions_answered_by_chk`). PM 대상도 대표 확정 없이 바로. 구현 단계 질문도 같은 실행 안에서 답을 받는다.
+  - **상담 실행·PM 답 초안을 돌리지 않는다**(답할 쪽 구독·API 비용이 질문 수만큼 든다 — 어차피 첫 선택지로 답한다).
+  - **사람 지표에서 뺀다**: 알림·처리할 일에 나오지 않고, 결정으로 전달하지 않으며(사람이 정한 것이 아니고, 결정마다 제출 409 왕복이 생긴다), 보고서의 "답까지 걸린 시간"에서 뺀다.
+    정답 라벨(gold)은 여전히 사람이 붙인다. 발표 때 "실험 모드의 답은 추천안"임을 밝힌다(`docs/experiment-question-routing.md` 6절).
+  - **반복 실행**은 `npm run harvest:questions`(`scripts/question-harvest.ts`, 대표 HTTP만): 같은 태스크 묶음을 회차마다 `[harvest <run> r<n>]` 꼬리표로 새로 만들고,
+    끝나면(DONE·ESCALATED·BLOCKED — 질문 대기 BLOCKED는 제외) 멈춘 것은 취소하고 다음 회차. 같은 태스크를 재개하지 않는 이유: 재시도·반려 지표가 섞인다.
+    꼬리표가 중복을 막고 같은 `--run`이면 이어 간다. `--report`는 routing-dataset·routing-report만 읽는다(서버 판정을 흉내 내지 않는다).
 - **`GET /me/questions`**: 내가 답할 질문(대표는 전부, 팀원은 자기 역할이 대상인 것) — 알림 배지용. 답할 자격 정의는 `answerQuestion`과 같아야 한다.
 
 ### 룸 (`domain/room`, 017) — 보기 전용

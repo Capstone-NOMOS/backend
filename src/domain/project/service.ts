@@ -55,7 +55,8 @@ import {
   listProjectsByOrg,
   markProjectStarted,
   summarizeProjectTasks,
-  updateQuestionRelay,
+  updateQuestionSettings,
+  type QuestionMode,
   type AutonomyPreset,
   type Project,
   type MemberInviteStatus,
@@ -321,22 +322,34 @@ export async function createProject(
   });
 }
 
-// 프로젝트 설정 변경(대표 전용) — 지금은 질문 중계 스위치뿐. 시작(G1) 전에만 바꿀 수 있다:
-// 실행 중에 바뀌면 같은 프로젝트 안에서 "중계 있음/없음" 실행이 섞여 대조 실험이 성립하지 않는다.
-export async function updateProjectSettings(actor: Actor, projectId: string, input: { questionRelay: boolean }): Promise<Project> {
+// 프로젝트 설정 변경(대표 전용) — 질문 중계 스위치(018)와 질문 모드(033). 시작(G1) 전에만 바꿀 수 있다:
+// 실행 중에 바뀌면 같은 프로젝트 안에서 "중계 있음/없음"·"일반/실험" 실행이 섞여 대조 실험이 성립하지 않는다.
+// 실험 모드는 질문 중계가 켜져 있어야 의미가 있다(질문이 없으면 모을 것도 없다) — 둘 다 켜져야 한다(422 QUESTION_MODE_INVALID, DB CHECK도 같다).
+export async function updateProjectSettings(
+  actor: Actor,
+  projectId: string,
+  input: { questionRelay?: boolean; questionMode?: QuestionMode },
+): Promise<Project> {
   if (actor.orgRole !== 'REPRESENTATIVE') throw new AppError('NOT_REPRESENTATIVE', 'only the representative can change project settings');
   return withTransaction(async (tx) => {
     const project = await assertProjectInOrg(tx, actor.orgId, projectId, 'update');
     if (project.startedAt !== null) throw new AppError('PROJECT_STARTED', 'project has started; settings are frozen');
-    if (project.questionRelay === input.questionRelay) return project;
-    const updated = await updateQuestionRelay(tx, projectId, input.questionRelay);
+    const next = { questionRelay: input.questionRelay ?? project.questionRelay, questionMode: input.questionMode ?? project.questionMode };
+    if (next.questionMode === 'experiment' && !next.questionRelay) {
+      throw new AppError('QUESTION_MODE_INVALID', 'experiment mode needs question relay on — turn both on (questionRelay: true, questionMode: experiment)');
+    }
+    if (project.questionRelay === next.questionRelay && project.questionMode === next.questionMode) return project;
+    const updated = await updateQuestionSettings(tx, projectId, next);
     await appendEvent(tx, {
       orgId: actor.orgId,
       projectId,
       type: 'PROJECT_SETTINGS_UPDATED',
       onBehalfOf: actor.userId,
       policyHash: project.policyHash,
-      payload: { before: { questionRelay: project.questionRelay }, after: { questionRelay: updated.questionRelay } },
+      payload: {
+        before: { questionRelay: project.questionRelay, questionMode: project.questionMode },
+        after: { questionRelay: updated.questionRelay, questionMode: updated.questionMode },
+      },
     });
     return updated;
   });

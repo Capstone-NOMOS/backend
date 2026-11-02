@@ -264,6 +264,9 @@ export async function listRoomFeed(
             (e.type = ANY($3::text[]) AND t.id IS NOT NULL
               AND (t.team_role IS NULL OR t.team_role = $2 OR (e.type LIKE 'QUESTION\_%' AND e.payload->>'targetRole' = $2)))
             OR e.type = ANY($4::text[])
+            -- 기획 단계 질문(033)은 태스크가 없다 — 기능 명세 초안의 질문은 모든 룸에(프로젝트 단위), 계약 초안의 질문은 BE 룸과 답할 역할의 룸에.
+            OR (e.type LIKE 'QUESTION\_%' AND e.payload->>'stage' IN ('feature_spec', 'contract')
+                AND (e.payload->>'stage' = 'feature_spec' OR $2 = 'BACKEND' OR e.payload->>'targetRole' = $2))
             OR (e.type = 'ROOM_MESSAGE_SENT' AND e.payload->>'role' = $2)
             -- 그 역할 에이전트의 연결 해제·재연결(028) — 태스크에 딸리지 않아 역할(payload.teamRole)로 거른다.
             OR (e.type IN ('MEMBER_AGENT_DETACHED', 'MEMBER_AGENT_ATTACHED') AND e.payload->>'teamRole' = $2)

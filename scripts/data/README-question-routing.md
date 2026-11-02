@@ -32,7 +32,7 @@ npx tsx scripts/eval-question-router.ts claude:sonnet --data 내파일.json --re
 | ├ `difficulty` | | `clear` · `ambiguous` · `trap` |
 | └ `note` | | 메모 |
 
-내보내기 항목에는 `stage`(= `input.stage`)·`askedAt`·`primary`(실제로 보낸 판정)·`goldLabeled`도 있다 — 평가는 `stage`만 확인하고(다르면 형식 오류) 나머지는 무시한다.
+내보내기 항목에는 `stage`(= `input.stage`)·`askedAt`·`primary`(실제로 보낸 판정)·`goldLabeled`·`answerSource`(033 — `auto_first_option`이면 실험 모드 자동 답, 정답 아님)도 있다 — 평가는 `stage`만 확인하고(다르면 형식 오류) 나머지는 무시한다.
 
 ## 구조 — v1 (옛 형식, 계속 읽는다)
 

@@ -177,15 +177,21 @@ function eventText(row: FeedRow): { speaker: RoomMessage['speaker']; text: strin
       const said = str(p.lastMessage) ? ` / 에이전트: "${str(p.lastMessage).slice(0, 200)}"` : '';
       return { speaker: 'pm', text: `멈췄습니다 — ${why[str(p.cause)] ?? '제출하지 않았습니다'}${said}${denied} → 대표 확인 후 재개가 필요합니다` };
     }
-    case 'QUESTION_ASKED':
-      return { speaker: 'agent', text: `${str(p.askerRole)} 에이전트가 ${targetLabel(p.targetRole)}에게 질문했습니다 (${num(p.questionCount)}개)` };
+    case 'QUESTION_ASKED': {
+      // 기획 단계 질문(033) — 기능 명세·API 계약 초안을 쓰다가 물었다(태스크가 없어 프로젝트의 모든 룸에 나온다).
+      const where = p.stage === 'feature_spec' ? ' (기능 명세 초안)' : p.stage === 'contract' ? ' (API 계약 초안)' : '';
+      return { speaker: 'agent', text: `${str(p.askerRole)} 에이전트가 ${targetLabel(p.targetRole)}에게 질문했습니다${where} (${num(p.questionCount)}개)` };
+    }
     case 'QUESTION_DRAFTED':
       if (p.drafter === 'pm') return { speaker: 'pm', text: `PM이 답 초안을 만들었습니다 — 대표 확인을 기다립니다 (정해진 것 ${num(p.decidedCount)}/${num(p.questionCount)})` };
       return p.autoAnswered === true
         ? { speaker: 'agent', text: '답할 역할의 에이전트가 코드에서 찾아 답했습니다' }
         : { speaker: 'agent', text: `답 초안을 만들었습니다 — 정해진 것 ${num(p.decidedCount)}/${num(p.questionCount)}, 나머지는 담당자 확인이 필요합니다` };
-    case 'QUESTION_ANSWERED':
-      return { speaker: 'pm', text: `질문에 답이 왔습니다(${p.answeredByRole === 'REPRESENTATIVE' ? '대표' : '담당자'})${p.resumedTask === true ? ' → 다시 시작합니다' : ''}` };
+    case 'QUESTION_ANSWERED': {
+      // 실험 모드(033)는 사람이 아니라 첫 번째 선택지로 자동 답한다 — 룸에서도 그렇게 보인다.
+      const by = p.answeredByRole === 'EXPERIMENT_AUTO' ? '실험 모드 자동 답 — 첫 번째 선택지' : p.answeredByRole === 'REPRESENTATIVE' ? '대표' : '담당자';
+      return { speaker: 'pm', text: `질문에 답이 왔습니다(${by})${p.resumedTask === true ? ' → 다시 시작합니다' : ''}` };
+    }
     case 'TASK_BLOCKED_ON_QUESTION':
       return { speaker: 'pm', text: `${targetLabel(p.targetRole)}의 답을 기다리며 태스크를 잠시 내려놓았습니다 — 답이 오면 다시 시작합니다` };
     case 'QUESTION_EXPIRED':

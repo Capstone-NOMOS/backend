@@ -17,6 +17,8 @@ export type ContractJobPayload = {
   specContent: string;
   apiNeeds: string | null;
   previous: { schemaYaml: string; summary: string } | null;
+  // 서버 033: 이 계약의 질문에 받은 답(다음 회차에 반영). 옛 서버면 없다.
+  answers?: { question: string; answer: string }[];
 };
 
 export type QuestionState = {
@@ -185,7 +187,16 @@ export class NomosClient {
     return (await this.request('GET', '/api/agents/me/contract-jobs')) as Awaited<ReturnType<NomosClient['listContractJobs']>>;
   }
 
-  async submitContractDraft(contractId: string, draft: { attempt: number; openapiYaml: string; summary: string; openQuestions: string[] }): Promise<{ status: string }> {
+  // openQuestions(033): 질문 형식 — 서버가 라우팅한다. 문자열(옛 형식)도 받는다(기록만).
+  async submitContractDraft(
+    contractId: string,
+    draft: {
+      attempt: number;
+      openapiYaml: string;
+      summary: string;
+      openQuestions: (string | { question: string; header?: string; options: { label: string; description?: string }[]; multiSelect?: boolean })[];
+    },
+  ): Promise<{ status: string }> {
     return (await this.request('POST', `/api/contracts/${contractId}/draft`, draft)) as { status: string };
   }
 

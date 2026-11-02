@@ -1,3 +1,5 @@
+import type { QuestionMode } from '../project/repository.js';
+import { planningQuestionGuide } from '../question/planning.js';
 import type { PlanDraft } from './draft.js';
 
 // PM 지침. 바뀌지 않는 부분만 여기 둔다 — 프롬프트 캐시는 앞부분 일치라 날짜·id 같은 변하는 값을 넣으면 매번 깨진다.
@@ -35,6 +37,8 @@ export const PM_SYSTEM_PROMPT = `당신은 NOMOS의 내장 PM이다. 대표가 �
 
 export type PlanContext = {
   projectName: string;
+  // 질문 모드(033) — 기획 단계 질문의 상한 안내가 달라진다.
+  questionMode: QuestionMode;
   deadline: string | null;
   repos: { fullName: string; ownerRoles: string[] }[];
   members: { teamRole: string; agentName: string }[];
@@ -131,15 +135,25 @@ export const FEATURE_SYSTEM_PROMPT = `당신은 NOMOS의 내장 PM이다. 대표
 - 개발 용어(API 경로, HTTP 메서드, 상태 코드, JSON, 데이터베이스, 프레임워크 이름)를 쓰지 않는다.
 - 이미 있는 명세의 featureKey를 다시 쓰지 않는다.
 - 모든 텍스트는 한국어로 쓴다.
-- 요구가 모호하면 가장 작고 확인 가능한 범위로 잡고, 가정은 assumptions에 적는다.`;
+- 요구가 모호하면 가장 작고 확인 가능한 범위로 잡는다.
+
+질문(questions)
+- 대표·FE·BE가 정할 것을 혼자 정하지 말고 질문으로 내라. 확신할 수 있는 것만 명세에 쓰고, 추측한 것은 assumptions가 아니라 questions로 낸다.
+  · 제품 정책·범위(예: 탈퇴한 회원의 기록을 남기나) → 대표가 답한다. 화면 표현(예: 빈 목록 문구) → FE, 저장·조회 규칙(예: 한 번에 몇 개) → BE가 답한다. 누구에게 갈지는 서버가 정한다.
+- 질문마다 featureKey(어느 기능에 대한 질문인지), question(한 문장), options(선택지 2개 이상, **추천안을 맨 앞에**)를 쓴다. 같은 질문을 두 번 내지 않는다.
+- 답이 오면 그 답을 반영해 초안을 다시 쓰게 된다. 답으로 정해진 것은 다시 묻지 않는다.
+- assumptions에는 질문할 필요가 없을 만큼 사소한 가정만 남긴다.`;
 
 export function buildFeatureUserPrompt(input: {
   context: PlanContext;
   instruction: string;
-  previous?: { draft: unknown; feedback?: string; problems?: string[] };
+  previous?: { draft: unknown; feedback?: string; answers?: string; problems?: string[] };
 }): string {
   const c = input.context;
   const lines = [
+    '## 질문 규칙',
+    planningQuestionGuide(c.questionMode),
+    '',
     '## 프로젝트',
     `- 이름: ${c.projectName}`,
     `- 마감: ${c.deadline ?? '없음'}`,
@@ -155,6 +169,9 @@ export function buildFeatureUserPrompt(input: {
     lines.push('', '## 이전 초안', JSON.stringify(input.previous.draft));
     if (input.previous.feedback !== undefined) {
       lines.push('', '## 대표의 수정 요청 — 이전 초안을 이에 맞게 고쳐 전체를 다시 내라', input.previous.feedback);
+    }
+    if (input.previous.answers !== undefined) {
+      lines.push('', '## 이전 초안의 질문에 받은 답 — 이 답을 반영해 전체를 다시 내라. 답으로 정해진 것은 다시 묻지 않는다', input.previous.answers);
     }
     if (input.previous.problems !== undefined) {
       lines.push('', '## 검증에서 걸린 곳 — 이것만 고쳐 전체를 다시 내라', ...input.previous.problems.map((p) => `- ${p}`));

@@ -1,7 +1,6 @@
 import type { Queryable } from '../../config/db.js';
-import type { TeamRole } from '../roles.js';
 import { listDecisionRows, type AnswerSource, type DecisionRow, type QuestionStatus } from './repository.js';
-import type { QuestionTarget } from './router.js';
+import type { QuestionTarget, RoutingAsker, RoutingStage } from './router.js';
 
 // 질문으로 정해진 결정 — AskUserQuestion의 답을 질문한 태스크 밖으로 꺼낸다.
 //
@@ -30,11 +29,15 @@ export type QuestionDecision = {
   // "<questionId>:<질문 인덱스>" — 제출 확인(acknowledgedDecisionIds)의 단위.
   id: string;
   questionId: string;
-  taskId: string;
-  taskTitle: string;
+  // 033: 질문이 나온 단계. 기획 단계(feature_spec·contract) 질문은 태스크가 없다 — taskId·taskTitle null, 기능 명세 질문은 PM이 묻는다(askedByAgentName null).
+  stage: RoutingStage;
+  taskId: string | null;
+  taskTitle: string | null;
+  planId: string | null;
+  contractId: string | null;
   askedAt: string;
-  askerRole: TeamRole;
-  askedByAgentName: string;
+  askerRole: RoutingAsker;
+  askedByAgentName: string | null;
   targetRole: QuestionTarget;
   routedBy: string;
   question: string;
@@ -65,7 +68,7 @@ function oneLine(text: string): string {
 // 한 줄 요약은 서버가 조립한다(인계 노트 제목과 같은 이유 — 화면마다 다르게 만들면 같은 결정이 다르게 읽힌다).
 // 예: "FE가 물음 · BE 담당 홍길동이 정함 — 스터디 목록 페이지 크기 → 20개"
 export function buildDecisionSummary(d: Omit<QuestionDecision, 'summary'>): string {
-  const asker = `${ROLE_SHORT[d.askerRole]}가 물음`;
+  const asker = d.askerRole === 'PM' ? 'PM이 물음' : `${ROLE_SHORT[d.askerRole]}가 물음`;
   const target = ROLE_SHORT[d.targetRole];
   let who: string;
   if (d.decidedBy?.kind === 'user') {
@@ -79,6 +82,8 @@ export function buildDecisionSummary(d: Omit<QuestionDecision, 'summary'>): stri
           : `${person}이 정함`;
   } else if (d.decidedBy?.kind === 'agent') {
     who = `${target} 에이전트 ${d.decidedBy.agentName ?? '(이름 없음)'}가 코드에서 찾음`;
+  } else if (d.answerSource === 'auto_first_option') {
+    who = '실험 모드 자동 답(첫 선택지)';
   } else if (d.status === 'pending') {
     who = `${target} 답 대기`;
   } else if (d.status === 'expired') {
@@ -102,8 +107,11 @@ function expand(row: DecisionRow): QuestionDecision[] {
     const base = {
       id: decisionId(q.id, index),
       questionId: q.id,
+      stage: q.stage,
       taskId: q.taskId,
       taskTitle: row.taskTitle,
+      planId: q.planId,
+      contractId: q.contractId,
       askedAt: q.createdAt,
       askerRole: q.askerRole,
       askedByAgentName: row.askedByAgentName,
@@ -156,6 +164,9 @@ export async function selectDecisions(db: Queryable, projectId: string, filter: 
 //   - targetRole = PM → 프로젝트의 모든 태스크(명세 없는 태스크 포함). 제품 정책·요구사항은 기능을 가리지 않는다.
 //   - targetRole = FRONTEND·BACKEND → 질문한 태스크와 spec_id가 같은 태스크만(둘 다 있을 때만). 명세 없는 태스크가 물은 FE·BE 결정은 전달하지 않는다.
 //   - 어느 쪽이든 질문한 태스크 자신은 뺀다(이미 answeredQuestions로 받는다).
+//   - 기획 단계 질문(033)은 질문한 태스크가 없다 — "같은 명세"를 그 기능 명세로 본다: 기능 명세 초안의 질문은 그 기능 키의 명세가 생긴 뒤
+//     그 명세의 태스크에, 계약 초안의 질문은 그 계약의 명세의 태스크에. PM 대상은 위와 같이 전부.
+//   - 실험 모드의 자동 답(auto_first_option)은 전달하지 않는다 — 사람이 정한 결정이 아니고, 결정마다 제출 409 왕복이 생긴다.
 // 왜 전부가 아닌가: 전부 전달하면 결정 하나마다 실행 중인 모든 태스크가 제출 때 409 왕복을 겪는다 — 질문을 일부러 많이 만드는
 // 실험에서 비용이 크다. FE·BE 구현 결정이 필요한 쪽은 같은 기능의 상대 태스크다(인계 노트의 "같은 명세" 기준).
 // PM 결정은 정책이라 전부가 알아야 하고, 대표가 확정하는 것이라 드물어 전체 전달의 왕복 비용이 작다.

@@ -105,6 +105,9 @@ export type InboxItem = {
   text: string;
 };
 
+// 기획 단계 질문(033)이 어느 초안에서 나왔나.
+const STAGE_LABEL: Record<string, string> = { implementation: '태스크', feature_spec: '기능 명세 초안', contract: 'API 계약 초안' };
+
 const OPEN_STATUSES = new Set(['planning', 'active', 'halted']);
 const PLAN_KIND_LABEL: Record<string, string> = { feature: '기능 명세', tasks: '태스크 나누기' };
 
@@ -174,14 +177,16 @@ export async function listInbox(actor: UserContext): Promise<{ items: InboxItem[
 
   // 질문 — GET /me/questions와 같은 선택(answerQuestion의 자격 정의).
   for (const { question, projectName, taskTitle } of await listMyQuestions(actor, 'pending', 200)) {
-    if (!open.has(question.projectId)) continue;
+    // 실험 모드(033)의 질문은 라우팅 기록 뒤 곧바로 자동 답한다 — 사람이 처리할 일이 아니다.
+    if (!open.has(question.projectId) || open.get(question.projectId)!.questionMode === 'experiment') continue;
     items.push(
       item({ id: question.projectId, name: projectName }, 'question', question.createdAt, {
         questionId: question.id,
         taskId: question.taskId,
         role: question.targetRole,
         title: firstQuestion(question.questions),
-        text: `${roleShort(question.askerRole)} 에이전트의 질문 (${taskTitle}) — ${firstQuestion(question.questions)}`,
+        // 기획 단계 질문(033)은 태스크가 없다 — 어느 초안의 질문인지로 적는다.
+        text: `${roleShort(question.askerRole)} 에이전트의 질문 (${taskTitle ?? STAGE_LABEL[question.stage]}) — ${firstQuestion(question.questions)}`,
       }),
     );
   }
