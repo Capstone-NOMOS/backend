@@ -45,8 +45,8 @@ describe('데이터셋 v2', () => {
     const exported = {
       data: {
         items: [
-          { id: 'q1', stage: 'implementation', input: INPUT, accept: ['BACKEND'], source: 'real-run', asked_at: '2026-11-01T00:00:00.000Z', primary: { router: 'llm', target: 'BACKEND' }, gold_labeled: true },
-          { id: 'q2', input: { ...INPUT, contract: null }, accept: [], source: 'real-run', asked_at: '2026-11-01T00:00:01.000Z', primary: { router: 'llm', target: 'PM' }, gold_labeled: false },
+          { id: 'q1', stage: 'implementation', input: INPUT, accept: ['BACKEND'], source: 'real-run', askedAt: '2026-11-01T00:00:00.000Z', primary: { router: 'llm', target: 'BACKEND' }, goldLabeled: true },
+          { id: 'q2', input: { ...INPUT, contract: null }, accept: [], source: 'real-run', askedAt: '2026-11-01T00:00:01.000Z', primary: { router: 'llm', target: 'PM' }, goldLabeled: false },
         ],
       },
     };
@@ -118,8 +118,8 @@ describe('데이터셋 v1 (옛 형식)', () => {
 });
 
 describe('--check', () => {
-  const tsx = path.resolve('node_modules/.bin/tsx');
-  const run = (file: string) => spawnSync(tsx, ['scripts/eval-question-router.ts', '--check', '--data', file], { encoding: 'utf8' });
+  // node_modules/.bin/tsx는 Windows에서 셸 스크립트라 spawnSync로 바로 실행되지 않는다(status null) — node에 tsx 로더를 붙여 띄운다.
+  const run = (file: string) => spawnSync(process.execPath, ['--import', 'tsx', 'scripts/eval-question-router.ts', '--check', '--data', file], { encoding: 'utf8' });
 
   it('v2 형식을 검사한다 — 맞으면 0, 틀리면 위반을 적고 1', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'nomos-routing-ds-'));

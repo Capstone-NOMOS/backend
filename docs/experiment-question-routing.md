@@ -98,7 +98,7 @@ a-2와 같다. 발표 시연("에이전트가 실제로 막히면 묻는다")용
 - **저장**(마이그레이션 032): 질문을 올리는 순간(질문 INSERT와 같은 트랜잭션) 라우터에 넣은 입력을 `agent_questions.routing_input`에 그대로 남긴다.
   명세·계약은 나중에 바뀌므로 다시 조립하면 그때의 맥락이 아니다 — 그래서 조립하지 않고 저장한다. 032 이전 질문은 입력이 없어 빠진다.
 - **내보내기**: `GET /api/projects/:id/routing-dataset`(대표, `?labeledOnly=true`면 정답 라벨이 붙은 것만) — 데이터셋 v2 항목
-  `{ id, stage, input, accept(gold 라벨, 없으면 []), source: 'real-run', asked_at, primary: { router, target }, gold_labeled }`. `?stage=`로 단계를 거른다.
+  `{ id, stage, input, accept(gold 라벨, 없으면 []), source: 'real-run', askedAt, primary: { router, target }, goldLabeled }`. `?stage=`로 단계를 거른다.
   응답을 파일로 저장해 그대로 넣는다:
   ```bash
   curl -H "Authorization: Bearer $TOKEN" "$SERVER/api/projects/$ID/routing-dataset?labeledOnly=true" > scripts/data/run-1.json

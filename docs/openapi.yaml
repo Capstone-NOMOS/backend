@@ -283,7 +283,7 @@ components:
         오프라인 라우터 평가 데이터셋(v2) 항목 하나 — `scripts/eval-question-router.ts`가 이 응답 파일을 그대로 읽는다.
         평가는 `input`을 **다시 조립하지 않고 그대로** 라우터에 넣는다. 필드 이름(snake_case 일부)은 데이터셋 파일 형식을 따른다.
       additionalProperties: false
-      required: [id, stage, input, accept, source, asked_at, primary, gold_labeled]
+      required: [id, stage, input, accept, source, askedAt, primary, goldLabeled]
       properties:
         id: { type: string, format: uuid, description: '질문 id' }
         stage: { type: string, enum: [implementation, feature_spec, contract], description: 'input.stage와 같다(거르고 세기 편하게 위로 꺼낸 것)' }
@@ -293,7 +293,7 @@ components:
           items: { type: string, enum: [FRONTEND, BACKEND, PM, SELF] }
           description: '정답 담당자 — 사람이 붙인 gold 라벨(POST /questions/{questionId}/gold). 없으면 빈 배열(평가에서 건너뛴다)'
         source: { type: string, enum: [real-run] }
-        asked_at: { type: string, format: date-time }
+        askedAt: { type: string, format: date-time }
         primary:
           type: object
           additionalProperties: false
@@ -302,7 +302,7 @@ components:
           properties:
             router: { type: string }
             target: { type: string, enum: [FRONTEND, BACKEND, PM, SELF] }
-        gold_labeled: { type: boolean }
+        goldLabeled: { type: boolean }
     Approval:
       type: object
       required: [id, projectId, projectName, gate, stage, reviewer, roleReview, taskId, taskTitle, taskState, artifactId, gateMode, payload, decision, decidedBy, reason, requestedAt, decidedAt]

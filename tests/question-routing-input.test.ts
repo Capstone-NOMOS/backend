@@ -156,10 +156,10 @@ describe('평가 데이터셋 내보내기 (GET /projects/:id/routing-dataset)',
     const eventsBefore = (await pool.query(`SELECT count(*)::int AS n FROM events`)).rows[0]!.n as number;
     const all = await http('GET', `/projects/${w.projectId}/routing-dataset`, repToken);
     expect(all.status).toBe(200);
-    const items = (all.json.data as { items: { id: string; accept: string[]; gold_labeled: boolean; source: string; primary: { router: string; target: string }; input: unknown }[] }).items;
+    const items = (all.json.data as { items: { id: string; accept: string[]; goldLabeled: boolean; source: string; primary: { router: string; target: string }; input: unknown }[] }).items;
     expect(items.map((i) => i.id)).toEqual([labeled.id, unlabeled.id]);
-    expect(items[0]).toMatchObject({ stage: 'implementation', accept: ['BACKEND'], gold_labeled: true, source: 'real-run', primary: { router: 'role_rule:opposite', target: 'BACKEND' } });
-    expect(items[1]).toMatchObject({ accept: [], gold_labeled: false });
+    expect(items[0]).toMatchObject({ stage: 'implementation', accept: ['BACKEND'], goldLabeled: true, source: 'real-run', primary: { router: 'role_rule:opposite', target: 'BACKEND' } });
+    expect(items[1]).toMatchObject({ accept: [], goldLabeled: false });
     expect(items[0]!.input).toMatchObject({ askerRole: 'FRONTEND', questions: [PAGE] });
     // 읽기는 이벤트를 남기지 않는다.
     expect((await pool.query(`SELECT count(*)::int AS n FROM events`)).rows[0]!.n).toBe(eventsBefore);

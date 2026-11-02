@@ -222,9 +222,9 @@ export type RoutingDatasetItem = {
   input: RoutingInputSnapshot;
   accept: string[];
   source: 'real-run';
-  asked_at: string;
+  askedAt: string;
   primary: { router: string; target: string };
-  gold_labeled: boolean;
+  goldLabeled: boolean;
 };
 
 export async function exportRoutingDataset(
@@ -241,8 +241,8 @@ export async function exportRoutingDataset(
     input: r.input,
     accept: r.goldTarget === null ? [] : [r.goldTarget],
     source: 'real-run',
-    asked_at: r.askedAt,
+    askedAt: r.askedAt,
     primary: { router: r.routedBy, target: r.target },
-    gold_labeled: r.goldTarget !== null,
+    goldLabeled: r.goldTarget !== null,
   }));
 }
