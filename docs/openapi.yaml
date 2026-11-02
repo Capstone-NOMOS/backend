@@ -216,6 +216,93 @@ components:
         role: { type: string, nullable: true }
         title: { type: string }
         text: { type: string, description: '서버가 만든 한 줄' }
+    RoutingInputSnapshot:
+      type: object
+      description: |
+        질문을 라우팅할 때 라우터가 본 입력 그대로(`src/domain/question/router.ts`의 `RoutingInputSnapshot` — 서버 전용 context는 뺀다).
+        질문을 올리는 순간 저장한다(`agent_questions.routing_input`, 032) — 명세·계약이 나중에 바뀌어도 그때의 맥락이 남는다.
+      additionalProperties: false
+      required: [stage, askerRole, roles, task, spec, repo, questions]
+      properties:
+        stage:
+          type: string
+          enum: [implementation, feature_spec, contract]
+          description: '질문이 나온 단계 — implementation(태스크 구현 중) · feature_spec(PM이 기능 명세 초안을 쓰는 중) · contract(BE가 API 계약 초안을 쓰는 중). 지금은 implementation만 생긴다'
+        askerRole: { type: string, enum: [FRONTEND, BACKEND, PM], description: '묻는 쪽(기능 명세 초안의 질문은 PM)' }
+        roles: { type: array, items: { type: string, enum: [FRONTEND, BACKEND] }, description: '이 프로젝트에 있는 역할' }
+        task:
+          type: object
+          nullable: true
+          description: '기획 단계(feature_spec·contract)에는 null'
+          additionalProperties: false
+          required: [title, kind]
+          properties:
+            title: { type: string }
+            kind: { type: string }
+        spec:
+          type: object
+          nullable: true
+          description: 'implementation·contract는 확정한 기능 명세, feature_spec은 쓰고 있는 초안'
+          additionalProperties: false
+          required: [featureKey, title, content]
+          properties:
+            featureKey: { type: string }
+            title: { type: string }
+            content: { type: string }
+        repo:
+          type: object
+          nullable: true
+          additionalProperties: false
+          required: [fullName]
+          properties:
+            fullName: { type: string }
+        questions:
+          type: array
+          description: Claude Code AskUserQuestion 형식 그대로
+          items:
+            type: object
+            additionalProperties: true
+            required: [question, options]
+            properties:
+              question: { type: string }
+              header: { type: string }
+              multiSelect: { type: boolean }
+              options: { type: array, items: { type: object, additionalProperties: true } }
+        contract:
+          type: object
+          nullable: true
+          description: '그 기능의 확정한 API 계약 요약 — implementation에서만(없으면 null, contract 단계도 null)'
+          additionalProperties: false
+          required: [featureKey, summary]
+          properties:
+            featureKey: { type: string }
+            summary: { type: string, nullable: true }
+    RoutingDatasetItem:
+      type: object
+      description: |
+        오프라인 라우터 평가 데이터셋(v2) 항목 하나 — `scripts/eval-question-router.ts`가 이 응답 파일을 그대로 읽는다.
+        평가는 `input`을 **다시 조립하지 않고 그대로** 라우터에 넣는다. 필드 이름(snake_case 일부)은 데이터셋 파일 형식을 따른다.
+      additionalProperties: false
+      required: [id, stage, input, accept, source, askedAt, primary, goldLabeled]
+      properties:
+        id: { type: string, format: uuid, description: '질문 id' }
+        stage: { type: string, enum: [implementation, feature_spec, contract], description: 'input.stage와 같다(거르고 세기 편하게 위로 꺼낸 것)' }
+        input: { $ref: '#/components/schemas/RoutingInputSnapshot' }
+        accept:
+          type: array
+          items: { type: string, enum: [FRONTEND, BACKEND, PM, SELF] }
+          description: '정답 담당자 — 사람이 붙인 gold 라벨(POST /questions/{questionId}/gold). 없으면 빈 배열(평가에서 건너뛴다)'
+        source: { type: string, enum: [real-run] }
+        askedAt: { type: string, format: date-time }
+        primary:
+          type: object
+          additionalProperties: false
+          required: [router, target]
+          description: '실제로 질문을 보낸 판정(라우터 이름·대상, 자기 소관이면 SELF)'
+          properties:
+            router: { type: string }
+            target: { type: string, enum: [FRONTEND, BACKEND, PM, SELF] }
+        goldLabeled: { type: boolean }
     Approval:
       type: object
       required: [id, projectId, projectName, gate, stage, reviewer, roleReview, taskId, taskTitle, taskState, artifactId, gateMode, payload, decision, decidedBy, reason, requestedAt, decidedAt]
@@ -445,7 +532,7 @@ components:
     RoutingReport:
       type: object
       description: '질문 라우팅 평가(026, 발표 지표). 라우터마다 같은 실제 질문에서의 판정을 정답(gold)과 비교한다'
-      required: [projectId, questions, labeled, routers, answer, rows]
+      required: [projectId, questions, labeled, routers, byStage, answer, rows]
       properties:
         projectId: { type: string, format: uuid }
         questions: { type: integer }
@@ -467,6 +554,28 @@ components:
               p95LatencyMs: { type: integer, nullable: true }
               avgCostUsd: { type: number, nullable: true, description: '요청당 비용(USD)' }
               totalCostUsd: { type: number, nullable: true }
+        byStage:
+          type: array
+          description: '단계별(implementation 구현 중 · feature_spec 기능 명세 초안 · contract API 계약 초안) 질문 수와 라우터별 일치율 — 정답이 붙은 판정이 있는 라우터만. 질문이 없는 단계도 나온다'
+          items:
+            type: object
+            additionalProperties: false
+            required: [stage, questions, labeled, routers]
+            properties:
+              stage: { type: string, enum: [implementation, feature_spec, contract] }
+              questions: { type: integer }
+              labeled: { type: integer }
+              routers:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [router, labeled, aligned, alignmentRate]
+                  properties:
+                    router: { type: string }
+                    labeled: { type: integer }
+                    aligned: { type: integer }
+                    alignmentRate: { type: number, nullable: true }
         answer:
           type: object
           required: [answered, medianMs]
@@ -477,9 +586,10 @@ components:
           type: array
           items:
             type: object
-            required: [questionId, askedAt, askerRole, status, firstQuestion, goldTarget, answeredAt, decisions]
+            required: [questionId, askedAt, askerRole, status, firstQuestion, goldTarget, answeredAt, stage, decisions]
             properties:
               questionId: { type: string, format: uuid }
+              stage: { type: string, enum: [implementation, feature_spec, contract], description: '질문이 나온 단계(입력이 저장되기 전 질문은 implementation)' }
               askedAt: { type: string, format: date-time }
               askerRole: { type: string }
               status: { type: string }
@@ -1604,6 +1714,34 @@ paths:
                       questionId: { type: string, format: uuid }
                       goldTarget: { type: string, enum: [FRONTEND, BACKEND, PM, SELF] }
 
+  /projects/{projectId}/routing-dataset:
+    get:
+      tags: [질문]
+      summary: 라우팅 평가 데이터셋 내보내기 (대표)
+      description: |
+        이 프로젝트에서 실제로 나온 질문을 **라우터가 본 입력 그대로** 오프라인 평가 데이터셋(v2) 형식으로 낸다. 응답을 파일로 저장해
+        `npx tsx scripts/eval-question-router.ts <라우터> --data <파일>`에 그대로 넣는다 — 같은 입력으로 라우터들을 몇 번이든 다시 비교한다.
+        입력이 저장되기 전(마이그레이션 032 이전)의 질문은 빠진다. `labeledOnly=true`면 정답 라벨이 붙은 질문만. 대표만. 읽기는 이벤트를 남기지 않는다.
+      security: [{ userToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - { name: labeledOnly, in: query, required: false, schema: { type: string, enum: ['true', 'false'], default: 'false' } }
+        - { name: stage, in: query, required: false, description: '이 단계의 질문만', schema: { type: string, enum: [implementation, feature_spec, contract] } }
+      responses:
+        '200':
+          description: 질문 시각순
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    additionalProperties: false
+                    required: [items]
+                    properties:
+                      items: { type: array, items: { $ref: '#/components/schemas/RoutingDatasetItem' } }
   /projects/{projectId}/routing-report:
     get:
       tags: [질문]

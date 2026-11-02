@@ -306,6 +306,7 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     await call('POST', `/questions/${questionId}/gold`, rep, { target: 'BACKEND', note: '응답 형식은 서버가 정한다' });
     await drainRoutingRecords();
     await call('GET', `/projects/${projectId}/routing-report`, rep);
+    await call('GET', `/projects/${projectId}/routing-dataset?labeledOnly=false&stage=implementation`, rep);
     await call('GET', `/tasks/${taskId}/questions/${questionId}`, agent);
     await call('POST', `/tasks/${taskId}/questions/${questionId}/detach`, agent); // 이미 답이 있어 아무것도 바꾸지 않는다
     await call('GET', '/agents/me/questions', agent);

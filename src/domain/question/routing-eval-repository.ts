@@ -1,4 +1,5 @@
 import type { Queryable } from '../../config/db.js';
+import type { RoutingStage } from './router.js';
 
 // 질문 라우팅 평가 기록(026). SQL만 둔다.
 
@@ -43,12 +44,14 @@ export type EvalQuestionRow = {
   firstQuestion: string;
   goldTarget: string | null;
   answeredAt: string | null;
+  // 질문이 나온 단계(routing_input.stage — 없으면 implementation).
+  stage: RoutingStage;
   runs: { router: string; mode: string; target: string | null; confidence: number | null; latencyMs: number; costUsd: number | null; error: string | null }[];
 };
 
 export async function listEvalQuestions(db: Queryable, projectId: string): Promise<EvalQuestionRow[]> {
   const { rows } = await db.query(
-    `SELECT q.id, q.created_at, q.asker_role, q.status, q.questions->0->>'question' AS first_question, q.gold_target, q.answered_at,
+    `SELECT q.id, q.created_at, q.asker_role, q.status, q.questions->0->>'question' AS first_question, q.gold_target, q.answered_at, COALESCE(q.routing_input->>'stage', 'implementation') AS stage,
             coalesce(json_agg(json_build_object(
               'router', r.router, 'mode', r.mode, 'target', r.target, 'confidence', r.confidence,
               'latencyMs', r.latency_ms, 'costUsd', r.cost_usd, 'error', r.error) ORDER BY r.id) FILTER (WHERE r.id IS NOT NULL), '[]') AS runs
@@ -66,6 +69,7 @@ export async function listEvalQuestions(db: Queryable, projectId: string): Promi
     status: r.status as string,
     firstQuestion: (r.first_question as string | null) ?? '',
     goldTarget: (r.gold_target as string | null) ?? null,
+    stage: r.stage as RoutingStage,
     answeredAt: iso(r.answered_at),
     runs: (r.runs as EvalQuestionRow['runs']).map((x) => ({ ...x, costUsd: x.costUsd === null ? null : Number(x.costUsd) })),
   }));
