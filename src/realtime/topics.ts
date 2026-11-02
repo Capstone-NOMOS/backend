@@ -97,6 +97,7 @@ export const TOPICS_BY_EVENT: Record<EventType, Mapping> = {
   PM_CALL: { project: ['plans'] },
   PM_PLAN_DRAFTED: { project: ['plans'], org: ['inbox'] },
   PM_PLAN_FAILED: { project: ['plans'], org: ['inbox'] },
+  EXPERIMENT_SKIPPED: { project: ['plans', 'contracts'] },
   PLAN_REJECTED: { project: ['plans'], org: ['inbox'] },
   PLAN_APPLIED: { project: ['plans', 'tasks', 'specs', 'room'], org: ['inbox'] },
 };

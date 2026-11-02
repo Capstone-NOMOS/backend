@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { hashObject } from '../../utils/canonical-json.js';
 import type { AuthoringInput } from '../authoring/apply.js';
 import { AUTHORING_LIMITS } from '../authoring/schema.js';
+import { PLANNING_QUESTION_JSON_SCHEMA, planningQuestionProblems, planningQuestionSchema } from '../question/planning.js';
 
 // PM이 내는 **기능 명세** 초안의 형식(022, 새 계획 흐름 1단계).
 //
@@ -14,10 +15,12 @@ import { AUTHORING_LIMITS } from '../authoring/schema.js';
 export const FEATURE_DRAFT_JSON_SCHEMA: Record<string, unknown> = {
   type: 'object',
   additionalProperties: false,
-  required: ['summary', 'assumptions', 'features'],
+  required: ['summary', 'assumptions', 'questions', 'features'],
   properties: {
     summary: { type: 'string' },
     assumptions: { type: 'array', items: { type: 'string' } },
+    // 033: 혼자 정하면 안 되는 것 — 라우터가 FE·BE·PM에게 보낸다.
+    questions: { type: 'array', items: PLANNING_QUESTION_JSON_SCHEMA },
     features: {
       type: 'array',
       items: {
@@ -39,7 +42,10 @@ export const FEATURE_DRAFT_JSON_SCHEMA: Record<string, unknown> = {
 
 export const featureDraftSchema = z.object({
   summary: z.string().trim().min(1).max(2000),
-  assumptions: z.array(z.string().trim().min(1).max(500)).max(20),
+  // 상한을 넘은 질문을 가정으로 옮기면 늘어난다 — 넉넉히 둔다.
+  assumptions: z.array(z.string().trim().min(1).max(800)).max(60),
+  // 033: 기획 단계 질문. 옛 초안(저장된 dag_snapshot)에는 없다.
+  questions: z.array(planningQuestionSchema).max(40).default([]),
   features: z
     .array(
       z.object({
@@ -91,7 +97,11 @@ export function featureDraftToAuthoring(
 
 // 형식(zod)으로 표현하지 않은 PM 쪽 규칙 — 위반 목록으로 돌려 교정 1회에 싣는다.
 export function featureOnlyProblems(draft: FeatureDraft): string[] {
-  const problems: string[] = [];
+  const problems: string[] = planningQuestionProblems(draft.questions);
+  const keys = new Set(draft.features.map((f) => f.featureKey));
+  draft.questions.forEach((q, i) => {
+    if (q.featureKey !== undefined && !keys.has(q.featureKey)) problems.push(`questions[${i}] featureKey ${q.featureKey}는 초안에 없는 기능이다`);
+  });
   for (const f of draft.features) {
     if (f.needsApi && !f.apiNeeds) problems.push(`features[${f.featureKey}] API가 필요하면 apiNeeds에 어떤 데이터가 오가야 하는지 사람 말로 적는다`);
     if (!f.needsApi && f.apiNeeds) problems.push(`features[${f.featureKey}] API가 필요 없으면 apiNeeds는 null이다`);

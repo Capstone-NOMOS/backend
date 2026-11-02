@@ -2,6 +2,7 @@ import type { PoolClient } from 'pg';
 import { pool, withTransaction } from '../../config/db.js';
 import { AppError } from '../../errors.js';
 import { tasksChanged } from '../dispatch/tasks-changed.js';
+import { autoMark, EXPERIMENT_ATTRIBUTION, type Attribution } from '../experiment/attribution.js';
 import { appendEvent } from '../events/append.js';
 import { findProjectById } from '../project/repository.js';
 import { assertProjectVisibleToUser, type UserContext } from '../project/visibility.js';
@@ -171,6 +172,12 @@ async function assertCanDecide(tx: PoolClient, actor: UserContext, approval: App
   );
 }
 
+async function assertExperimentAction(tx: PoolClient, approval: ApprovalRow): Promise<void> {
+  if (approval.gate !== 'ACTION') throw new AppError('APPROVAL_NOT_FOUND', 'only action approvals are decided automatically (G3 stays with the representative)');
+  const project = await findProjectById(tx, approval.projectId);
+  if (project?.questionMode !== 'experiment') throw new AppError('QUESTION_MODE_INVALID', 'automatic approvals run only in experiment mode');
+}
+
 // reason: 반려 사유(필수), 승인이면 선택 메모(1차 검토 결과에 남는다).
 export async function decide(
   actor: UserContext,
@@ -178,7 +185,21 @@ export async function decide(
   decision: ApprovalDecision,
   reason: string | null,
 ): Promise<ApprovalView> {
+  return decideWith(actor, approvalId, decision, reason);
+}
+
+// attribution(034): 실험 모드의 자동 승인 — 결정 자격 검사 대신 "실험 모드 프로젝트의 ACTION 카드인가"를 본다(decideAsExperiment만 넘긴다).
+// G3(완료 승인)는 받지 않는다 — 승인하면 프로젝트가 끝나 다음 회차 태스크를 넣을 수 없다.
+async function decideWith(
+  actor: UserContext,
+  approvalId: string,
+  decision: ApprovalDecision,
+  reason: string | null,
+  attribution?: Attribution,
+): Promise<ApprovalView> {
   if (decision === 'REJECT' && !reason) throw new AppError('VALIDATION_ERROR', 'a rejection needs a reason');
+  const by = attribution?.onBehalfOf ?? actor.userId;
+  const auto = autoMark(attribution);
 
   const { projectId, changedTasks } = await withTransaction(async (tx) => {
     const approval = await findApprovalForUpdate(tx, approvalId);
@@ -186,7 +207,8 @@ export async function decide(
     if (approval.orgId !== actor.orgId) throw new AppError('CROSS_ORG_ACCESS', 'cannot access another organization');
     // 태스크 행을 잠가 역할을 읽는다(ACTION). G3는 대상이 프로젝트라 태스크가 없다.
     const task = approval.gate === 'ACTION' ? await lockApprovalTask(tx, approval.subjectId) : null;
-    await assertCanDecide(tx, actor, approval, task?.teamRole ?? null);
+    if (attribution) await assertExperimentAction(tx, approval);
+    else await assertCanDecide(tx, actor, approval, task?.teamRole ?? null);
     if (approval.decision !== null) {
       throw new AppError('APPROVAL_ALREADY_DECIDED', `approval was already decided (${approval.decision})`);
     }
@@ -204,8 +226,8 @@ export async function decide(
         orgId: actor.orgId,
         projectId: approval.projectId,
         type: 'RELEASE_DECIDED',
-        onBehalfOf: actor.userId,
-        payload: { approvalId: approval.id, decision, reason, projectStatus: released.status },
+        onBehalfOf: by,
+        payload: { ...auto, approvalId: approval.id, decision, reason, projectStatus: released.status },
       });
       return { projectId: approval.projectId, changedTasks: true };
     }
@@ -251,9 +273,10 @@ export async function decide(
         orgId: actor.orgId,
         projectId: approval.projectId,
         type: 'APPROVAL_RESULT',
-        onBehalfOf: actor.userId,
+        onBehalfOf: by,
         policyHash: project.policyHash,
         payload: {
+          ...auto,
           approvalId: approval.id,
           gate: approval.gate,
           taskId: approval.subjectId,
@@ -275,9 +298,10 @@ export async function decide(
         orgId: actor.orgId,
         projectId: approval.projectId,
         type: 'APPROVAL_REQUESTED',
-        onBehalfOf: actor.userId,
+        onBehalfOf: by,
         policyHash: project.policyHash,
         payload: {
+          ...auto,
           approvalId: final.id,
           gate: 'ACTION',
           taskId: approval.subjectId,
@@ -308,9 +332,10 @@ export async function decide(
       orgId: actor.orgId,
       projectId: approval.projectId,
       type: 'APPROVAL_RESULT',
-      onBehalfOf: actor.userId,
+      onBehalfOf: by,
       policyHash: project.policyHash,
       payload: {
+        ...auto,
         approvalId: approval.id,
         gate: approval.gate,
         taskId: approval.subjectId,
@@ -340,4 +365,10 @@ export async function decide(
   // 응답은 결정한 카드다. 1차 검토 승인이면 새로 생긴 final 카드가 아니라 방금 닫은 role_review 카드를 돌려준다(FE가 버튼을 누른 그 카드).
   const [view] = (await listApprovals(pool, { projectId, status: 'all', limit: 200 })).filter((a) => a.id === approvalId);
   return view!;
+}
+
+// ── 실험 모드 자동 승인(034, domain/experiment가 부른다) ─────────────────────────
+// 1차 검토·최종을 같은 결정 경로로 승인한다(판정·전이·G3 요청이 한 벌). decided_by 칸은 조직 대표(users FK), 명의는 system:experiment.
+export async function decideAsExperiment(representative: UserContext, approvalId: string): Promise<void> {
+  await decideWith(representative, approvalId, 'APPROVE', '실험 모드 자동 승인', EXPERIMENT_ATTRIBUTION);
 }

@@ -1,13 +1,34 @@
 import { randomUUID } from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import type { PoolClient } from 'pg';
-import { pool, withTransaction } from '../../config/db.js';
+import { pool, withTransaction, type Queryable } from '../../config/db.js';
 import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
 import { AppError } from '../../errors.js';
 import { authorInTransaction } from '../authoring/apply.js';
 import { findActor, lockProjectForAuthoring } from '../authoring/repository.js';
 import { requestContractsInTx } from '../contract/service.js';
+import { onPlanningQuestionsSettled } from '../dispatch/planning-questions.js';
+import { experimentNudge } from '../dispatch/experiment-nudge.js';
+import { autoMark, EXPERIMENT_ATTRIBUTION, type Attribution } from '../experiment/attribution.js';
+import {
+  answersBlock,
+  answeredTexts,
+  assumptionOf,
+  closeQuestionsAsAssumed,
+  insertPlanningQuestionsInTx,
+  limitPlanningQuestions,
+  planningQuestionsCommitted,
+  questionsPendingError,
+  repeatedAssumption,
+  routePlanningQuestions,
+  splitRepeated,
+  toAskedQuestion,
+  type RoutedPlanningQuestion,
+} from '../question/planning.js';
+import { listPendingQuestionsOf, listQuestionsOf, listQuestionsOfPlanChain } from '../question/repository.js';
+import type { RoutingInput } from '../question/router.js';
+import { TEAM_ROLES } from '../roles.js';
 import { contractsChanged } from '../dispatch/contracts-changed.js';
 import { tasksChanged } from '../dispatch/tasks-changed.js';
 import { appendEvent } from '../events/append.js';
@@ -16,6 +37,7 @@ import { contractCoverageProblems, dagHashOf, draftToAuthoring, PLAN_DRAFT_JSON_
 import {
   FEATURE_DRAFT_JSON_SCHEMA,
   featureDraftSchema,
+  featureContent,
   featureDraftToAuthoring,
   featureHashOf,
   featureOnlyProblems,
@@ -38,11 +60,13 @@ import { costOfAttempts, estimateInputTokens, maxCallCost, type AttemptUsage } f
 import { buildFeatureUserPrompt, buildUserPrompt, FEATURE_SYSTEM_PROMPT, PM_SYSTEM_PROMPT, type PlanContext } from './prompt.js';
 import {
   chainHasAppliedPlan,
+  countChainAnswerRounds,
   countChainRevisions,
   findPendingPlan,
   findPlan,
   findProjectForPm,
   findTaskSplitBlockers,
+  hasChildPlan,
   insertPendingPlan,
   listAllPendingPlans,
   listPlans,
@@ -53,6 +77,7 @@ import {
   markPlanReady,
   markPlanRejected,
   planCostsUsd,
+  planQuestionCounts,
   pmSpentUsd,
   setInflightMaxCost,
   type PlanErrorReason,
@@ -75,7 +100,7 @@ const OPEN_STATUSES = new Set(['planning', 'active']);
 
 // ── 계획 종류별 차이(022) ────────────────────────────────────────────────
 // 호출·교정·예산·시간 제한·중계·적용 흐름은 한 벌이고, 종류마다 지침·출력 형식·검증·적용 입력만 다르다.
-type Previous = { draft: unknown; feedback?: string; problems?: string[] };
+type Previous = { draft: unknown; feedback?: string; answers?: string; problems?: string[] };
 type KindSpec = {
   system: string;
   schema: Record<string, unknown>;
@@ -148,6 +173,11 @@ export type PlanView = {
   appliedAt: string | null;
   rejectedAt: string | null;
   rejectReason: string | null;
+  // 033: 왜 다시 썼나(feedback 대표의 수정 요청 | answers 질문의 답) — 원본은 null.
+  revisionCause: PlanRow['revisionCause'];
+  // 033: 이 초안의 기획 단계 질문 — 화면의 "답 대기 질문 N개". 질문 목록은 GET /projects/{id}/questions(planId)로 읽는다.
+  questionCount: number;
+  pendingQuestionCount: number;
   // 초안의 태스크마다 누가 받게 되는가. PM이 정하지 않고 **서버가 조회 시점에 계산**한다 —
   // 프로젝트에서 역할당 에이전트는 하나라(uq_project_members_role) teamRole이면 담당이 결정적으로 정해진다.
   // 저장하지 않는 이유: 프로젝트 시작(G1) 전에는 멤버가 바뀔 수 있다. 역할에 아무도 없으면 agent가 null — 적용하면 그 태스크는 아무도 가져가지 않는다.
@@ -172,7 +202,12 @@ function assignmentsOf(draft: PlanDraft | null, assignees: Map<string, RoleAssig
   });
 }
 
-function toView(plan: PlanRow, costUsd: number, assignees: Map<string, RoleAssignee>): PlanView {
+function toView(
+  plan: PlanRow,
+  costUsd: number,
+  assignees: Map<string, RoleAssignee>,
+  questions: { total: number; pending: number } = { total: 0, pending: 0 },
+): PlanView {
   const tasksDraft = plan.kind === 'tasks' ? ((plan.draft as PlanDraft | null) ?? null) : null;
   return {
     id: plan.id,
@@ -191,6 +226,9 @@ function toView(plan: PlanRow, costUsd: number, assignees: Map<string, RoleAssig
     appliedAt: plan.appliedAt,
     rejectedAt: plan.rejectedAt,
     rejectReason: plan.rejectReason,
+    revisionCause: plan.revisionCause,
+    questionCount: questions.total,
+    pendingQuestionCount: questions.pending,
     assignments: assignmentsOf(tasksDraft, assignees),
   };
 }
@@ -243,25 +281,47 @@ async function assertReadyToSplit(tx: PoolClient, projectId: string): Promise<vo
   }
 }
 
+// 자동 요청(답에 따른 재작성·실험 모드 재요청)이 잠금 안에서 다시 보니 필요 없어졌다 — 신호가 겹친 경우. 조용히 그만둔다.
+class AutoRequestNotNeeded extends Error {}
+
 async function openRequest(
   actorUserId: string,
   projectId: string,
-  input: { kind: PlanKind; instruction: string; feedback: string | null; parent: PlanRow | null },
+  // cause answers(033): 기획 단계 질문의 답을 붙여 다시 쓴다 — 사람이 누른 요청이 아니다(명의 system:pm, 대표의 수정 요청 한도에 세지 않는다).
+  // cause retry·experiment_split(034): 실험 모드의 자동 경로(명의 system:experiment — attribution). 대표 확인은 actorUserId(조직 대표)로 그대로 한다.
+  input: {
+    kind: PlanKind;
+    instruction: string;
+    feedback: string | null;
+    parent: PlanRow | null;
+    cause?: 'answers' | 'retry' | 'experiment_split';
+    attribution?: Attribution;
+  },
 ): Promise<PlanView> {
   requireModel();
+  const byAnswers = input.cause === 'answers';
+  const byRetry = input.cause === 'retry';
   const plan = await withTransaction(async (tx) => {
     // 같은 프로젝트의 요청을 한 줄로 세운다 — "진행 중 요청은 하나" 확인과 INSERT 사이에 끼지 못하게(authoring과 같은 잠금).
     const locked = await lockProjectForAuthoring(tx, projectId);
     if (!locked) throw new AppError('PROJECT_NOT_FOUND', `project ${projectId} not found`);
-    await assertRepresentativeOf(tx, actorUserId, locked);
+    if (!byAnswers) await assertRepresentativeOf(tx, actorUserId, locked);
     if (!OPEN_STATUSES.has(locked.status)) {
       throw new AppError('PROJECT_NOT_OPEN', `project is ${locked.status}; the PM plans only while planning or active`);
+    }
+    // 답에 따른 재작성은 같은 잠금 안에서 다시 확인한다 — 답이 동시에 커밋되면 신호가 여러 번 오고, 대기 질문이 남았거나
+    // 이미 다음 판이 열렸으면(앞선 신호·대표의 수정 요청) 열지 않는다.
+    if (byAnswers && input.parent && !(await answersSettled(tx, input.parent.id))) throw new AutoRequestNotNeeded();
+    // 실험 모드 자동 경로는 실험 모드 프로젝트에서만(좁은 입구). 재요청은 실패한 판이 체인의 마지막일 때 한 번만 — 신호가 겹쳐도 두 번 열지 않는다.
+    if (input.attribution && (await findProjectForPm(tx, projectId))?.questionMode !== 'experiment') throw new AppError('QUESTION_MODE_INVALID', 'automatic PM requests run only in experiment mode');
+    if (byRetry && input.parent && ((await findPlan(tx, input.parent.id))?.status !== 'failed' || (await hasChildPlan(tx, input.parent.id)))) {
+      throw new AutoRequestNotNeeded();
     }
     if (await findPendingPlan(tx, projectId)) {
       throw new AppError('PM_PLAN_IN_PROGRESS', 'a PM plan is already being drafted for this project; wait for it to finish');
     }
     // 수정 요청 한도 — 같은 잠금 안에서 센다(동시에 두 번 눌러 한도를 넘지 못하게). 새 계획 요청(새 체인)은 0부터다.
-    if (input.parent) {
+    if (input.parent && !byAnswers && !byRetry) {
       const used = await countChainRevisions(tx, input.parent.rootPlanId);
       if (used >= env.PM_MAX_REVISIONS) {
         throw new AppError(
@@ -285,14 +345,22 @@ async function openRequest(
       feedback: input.feedback,
       parentPlanId: input.parent?.id ?? null,
       rootPlanId: input.parent?.rootPlanId ?? id,
+      revisionCause: input.parent ? (byAnswers ? 'answers' : byRetry ? 'retry' : 'feedback') : null,
     });
     await appendEvent(tx, {
       orgId: project.orgId,
       projectId,
       type: 'PM_PLAN_REQUESTED',
-      onBehalfOf: actorUserId,
+      onBehalfOf: byAnswers ? PM_ACTOR : (input.attribution?.onBehalfOf ?? actorUserId),
       policyHash: project.policyHash,
-      payload: { planId: id, parentPlanId: input.parent?.id ?? null, kind: input.parent ? 'revise' : 'draft', planKind: input.kind },
+      payload: {
+        ...autoMark(input.attribution),
+        planId: id,
+        parentPlanId: input.parent?.id ?? null,
+        kind: input.parent ? 'revise' : 'draft',
+        planKind: input.kind,
+        ...(input.cause ? { cause: input.cause } : {}),
+      },
     });
     return created;
   });
@@ -333,16 +401,17 @@ export async function getPlan(actorUserId: string, projectId: string, planId: st
   await assertCanView(actorUserId, projectId);
   const plan = await findPlan(pool, planId);
   if (!plan || plan.projectId !== projectId) throw new AppError('PLAN_NOT_FOUND', `plan ${planId} not found`);
-  const costs = await planCostsUsd(pool, [plan.id]);
-  return toView(plan, costs.get(plan.id) ?? 0, await listRoleAssignees(pool, projectId));
+  const [costs, questions] = await Promise.all([planCostsUsd(pool, [plan.id]), planQuestionCounts(pool, [plan.id])]);
+  return toView(plan, costs.get(plan.id) ?? 0, await listRoleAssignees(pool, projectId), questions.get(plan.id));
 }
 
 export async function listProjectPlans(actorUserId: string, projectId: string): Promise<PlanView[]> {
   await assertCanView(actorUserId, projectId);
   const plans = await listPlans(pool, projectId);
   const costs = await planCostsUsd(pool, plans.map((p) => p.id));
+  const questions = await planQuestionCounts(pool, plans.map((p) => p.id));
   const assignees = await listRoleAssignees(pool, projectId);
-  return plans.map((p) => toView(p, costs.get(p.id) ?? 0, assignees));
+  return plans.map((p) => toView(p, costs.get(p.id) ?? 0, assignees, questions.get(p.id)));
 }
 
 // ── PM 준비 상태 ─────────────────────────────────────────────────────────
@@ -421,7 +490,26 @@ export async function rejectPlan(
 // 같은 트랜잭션·같은 프로젝트 잠금 안에서 "ready인가, 같은 체인에서 이미 적용됐나"를 다시 본다 — 두 번 누르기·옛 초안 적용 방지.
 // 초안 이후 상황이 바뀌어 검증에 걸리면(422) 전부 롤백되고 계획은 ready로 남는다 — 수정 요청으로 이어가면 된다.
 // approved_at은 건드리지 않는다(G1 승인 = 잠김). 적용은 G1이 아니다.
-export async function applyPlan(actorUserId: string, projectId: string, planId: string): Promise<PlanView> {
+// 기획 단계 질문(033)에 답 대기가 남았으면 409 QUESTIONS_PENDING(details에 질문들) — 답을 받아 다시 쓴 초안을 확정하게 한다.
+// 대표가 acceptAssumptions로 확정하면 남은 질문을 만료(사유 confirmed_with_assumptions)로 닫고 적용한다 — 추천안(첫 선택지)을 가정한 셈이다.
+export async function applyPlan(
+  actorUserId: string,
+  projectId: string,
+  planId: string,
+  options: { acceptAssumptions?: boolean } = {},
+): Promise<PlanView> {
+  return applyPlanWith(actorUserId, projectId, planId, { acceptAssumptions: options.acceptAssumptions === true });
+}
+
+// attribution(034): 실험 모드의 자동 적용 — applyPlanAsExperiment만 넘긴다(라우트는 넘기지 못한다).
+async function applyPlanWith(
+  actorUserId: string,
+  projectId: string,
+  planId: string,
+  options: { acceptAssumptions: boolean; attribution?: Attribution },
+): Promise<PlanView> {
+  const by = options.attribution?.onBehalfOf ?? actorUserId;
+  const auto = autoMark(options.attribution);
   const plan = await findPlan(pool, planId);
   if (!plan || plan.projectId !== projectId) throw new AppError('PLAN_NOT_FOUND', `plan ${planId} not found`);
   if (plan.status !== 'ready' || plan.draft === null) {
@@ -429,18 +517,34 @@ export async function applyPlan(actorUserId: string, projectId: string, planId: 
   }
   const draft = plan.draft;
   let requested: string[] = [];
+  let assumed: string[] = [];
 
   const client = await pool.connect();
   try {
-    await authorInTransaction(client, KINDS[plan.kind].toAuthoring(draft, { projectId, actorUserId, planId }), {
+    const authoring = KINDS[plan.kind].toAuthoring(draft, { projectId, actorUserId, planId });
+    await authorInTransaction(client, options.attribution ? { ...authoring, attribution: options.attribution } : authoring, {
       hooks: {
         beforeValidate: async (tx) => {
+          if (options.attribution && (await findProjectForPm(tx, projectId))?.questionMode !== 'experiment') {
+            throw new AppError('QUESTION_MODE_INVALID', 'automatic apply runs only in experiment mode');
+          }
           const current = await findPlan(tx, planId, { forUpdate: true });
           if (!current || current.status !== 'ready') {
             throw new AppError('PLAN_NOT_APPLICABLE', `only a ready plan can be applied (this one is ${current?.status ?? 'gone'})`);
           }
           if (await chainHasAppliedPlan(tx, current.rootPlanId)) {
             throw new AppError('PLAN_NOT_APPLICABLE', 'another plan in this revision chain has already been applied');
+          }
+          const pending = await listPendingQuestionsOf(tx, { kind: 'plan', planId });
+          if (pending.length > 0 && !options.acceptAssumptions) throw questionsPendingError(pending);
+          if (pending.length > 0) {
+            const project = (await findProjectForPm(tx, projectId))!;
+            assumed = await closeQuestionsAsAssumed(
+              tx,
+              { orgId: project.orgId, projectId, policyHash: project.policyHash, onBehalfOf: by, ...auto },
+              pending,
+              { kind: 'plan', planId },
+            );
           }
         },
         afterWrite: async (tx, result) => {
@@ -450,13 +554,20 @@ export async function applyPlan(actorUserId: string, projectId: string, planId: 
             orgId: project.orgId,
             projectId,
             type: 'PLAN_APPLIED',
-            onBehalfOf: actorUserId,
+            onBehalfOf: by,
             policyHash: project.policyHash,
-            payload: { planId, planKind: plan.kind, specIds: result.specs.map((s) => s.id), taskIds: result.taskIds.map((t) => t.id) },
+            payload: {
+              ...auto,
+              planId,
+              planKind: plan.kind,
+              specIds: result.specs.map((s) => s.id),
+              taskIds: result.taskIds.map((t) => t.id),
+              ...(assumed.length > 0 ? { assumedQuestionIds: assumed } : {}),
+            },
           });
           // 기능 명세 확정(새 흐름 1단계 → 2단계): API가 필요한 기능마다 BE가 쓸 계약 작성 대기를 같은 트랜잭션에 만든다.
           if (plan.kind === 'feature') {
-            requested = await requestContractsInTx(tx, project, result.specs.filter((s) => s.needsApi).map((s) => s.id), actorUserId);
+            requested = await requestContractsInTx(tx, project, result.specs.filter((s) => s.needsApi).map((s) => s.id), by, options.attribution);
           }
         },
       },
@@ -468,6 +579,7 @@ export async function applyPlan(actorUserId: string, projectId: string, planId: 
   tasksChanged(projectId);
   // 계약 작성 대기가 생겼으면 BE 노트북을 깨운다(커밋 뒤).
   if (requested.length > 0) contractsChanged(projectId);
+  experimentNudge(projectId);
   return getPlan(actorUserId, projectId, planId);
 }
 
@@ -658,6 +770,19 @@ async function finishFailed(project: ProjectForPm, planId: string, reason: PlanE
       payload: { planId, reason },
     });
   });
+  experimentNudge(project.id);
+}
+
+// 실험 모드의 재요청(retry, 034)은 실패한 판을 부모로 두지만 "같은 요청"이다 — 재요청 고리를 거슬러 원래 요청의 부모·원인·피드백으로 쓴다.
+async function effectiveRequest(plan: PlanRow): Promise<{ parent: PlanRow | null; cause: PlanRow['revisionCause']; feedback: string | null }> {
+  let current = plan;
+  while (current.revisionCause === 'retry' && current.parentPlanId) {
+    const failed = await findPlan(pool, current.parentPlanId);
+    if (!failed) break;
+    current = failed;
+  }
+  const parent = current.parentPlanId ? await findPlan(pool, current.parentPlanId) : null;
+  return { parent, cause: current.revisionCause, feedback: current.feedback };
 }
 
 async function runPlan(planId: string): Promise<void> {
@@ -667,13 +792,19 @@ async function runPlan(planId: string): Promise<void> {
   const model = getPmModel();
   if (!model) return finishFailed(project, planId, 'api_error', { message: 'PM model is not configured' });
 
-  const parent = plan.parentPlanId ? await findPlan(pool, plan.parentPlanId) : null;
+  const { parent, cause, feedback } = await effectiveRequest(plan);
   const context = await loadPlanContext(pool, project);
   const ctx = { projectId: project.id, actorUserId: plan.requestedBy, planId };
   const instruction = plan.instruction ?? '';
 
   const spec = KINDS[plan.kind];
-  const firstPrompt = spec.buildUser(context, instruction, parent?.draft ? { draft: parent.draft, feedback: plan.feedback ?? '' } : undefined);
+  // 질문의 답으로 다시 쓰는 계획(033)은 feedback 칸에 답을 담아 둔다 — 프롬프트에서는 "받은 답"으로 보인다.
+  const previous: Previous | undefined = parent?.draft
+    ? cause === 'answers'
+      ? { draft: parent.draft, answers: feedback ?? '' }
+      : { draft: parent.draft, feedback: feedback ?? '' }
+    : undefined;
+  const firstPrompt = spec.buildUser(context, instruction, previous);
 
   let repaired = false;
   let outcome = await callModel(model, project, planId, 'draft', firstPrompt, spec);
@@ -684,19 +815,52 @@ async function runPlan(planId: string): Promise<void> {
     const judged = await judge(outcome, ctx, spec, context);
     if (judged.kind === 'failed') return finishFailed(project, planId, judged.reason, judged.detail);
     if (judged.kind === 'ok') {
-      const shaped = spec.shape(judged.draft);
+      // 기능 명세 초안의 질문(033) — 상한을 넘는 것은 가정으로 옮기고, 남은 것은 트랜잭션 밖에서 라우팅해 초안과 같은 트랜잭션에 넣는다.
+      const questioned = plan.kind === 'feature' ? await prepareFeatureQuestions(project, plan, judged.draft as FeatureDraft) : null;
+      const finalDraft = questioned?.draft ?? judged.draft;
+      const shaped = spec.shape(finalDraft);
       const dagHash = shaped.hash;
-      await withTransaction(async (tx) => {
-        if (!(await markPlanReady(tx, planId, judged.draft, shaped.structure, dagHash, shaped.mode))) return;
+      const created = await withTransaction(async (tx) => {
+        if (!(await markPlanReady(tx, planId, finalDraft, shaped.structure, dagHash, shaped.mode))) return null;
+        const questions = questioned
+          ? await insertPlanningQuestionsInTx(
+              tx,
+              {
+                orgId: project.orgId,
+                projectId: project.id,
+                policyHash: project.policyHash,
+                stage: 'feature_spec',
+                planId,
+                contractId: null,
+                askerRole: 'PM',
+                askedByAgentId: null,
+                onBehalfOf: PM_ACTOR,
+              },
+              questioned.routed,
+            )
+          : [];
         await appendEvent(tx, {
           orgId: project.orgId,
           projectId: project.id,
           type: 'PM_PLAN_DRAFTED',
           onBehalfOf: PM_ACTOR,
           policyHash: project.policyHash,
-          payload: { planId, planKind: plan.kind, dagHash, specCount: shaped.specCount, taskCount: shaped.taskCount, repaired },
+          payload: {
+            planId,
+            planKind: plan.kind,
+            dagHash,
+            specCount: shaped.specCount,
+            taskCount: shaped.taskCount,
+            repaired,
+            ...(questioned
+              ? { questionCount: questions.length, assumedQuestionCount: questioned.overflow, ...(questioned.repeated > 0 ? { repeatedQuestionCount: questioned.repeated } : {}) }
+              : {}),
+          },
         });
+        return questions;
       });
+      if (questioned && created) planningQuestionsCommitted(created, questioned.routed, project);
+      experimentNudge(project.id);
       return;
     }
     // 교정은 한 번만. 무한 재시도는 비용과 비결정성만 늘린다.
@@ -784,4 +948,124 @@ export async function submitRelayResult(agent: RelayAgent, jobId: string, result
 export async function failRelayJob(agent: RelayAgent, jobId: string, message: string): Promise<void> {
   await assertRepresentativeAgent(agent);
   failJob(jobId, agent.id, message);
+}
+
+// ── 기능 명세 초안의 질문(033) ────────────────────────────────────────────
+
+// 일반 모드 상한: 초안 하나당 PLANNING_QUESTIONS_MAX개, 답에 따른 재작성 PLANNING_QUESTION_ROUNDS회 — 넘는 질문은 가정(assumptions)으로 옮긴다.
+// 실험 모드는 무제한이다(상한은 PM 예산). 남은 질문은 라우팅까지 마친다(트랜잭션 밖 — 라우터가 LLM이면 수 초).
+async function prepareFeatureQuestions(
+  project: ProjectForPm,
+  plan: PlanRow,
+  draft: FeatureDraft,
+): Promise<{ draft: FeatureDraft; routed: RoutedPlanningQuestion[]; overflow: number; repeated: number }> {
+  const roundsUsed = await countChainAnswerRounds(pool, plan.rootPlanId);
+  // 실험 모드: 체인에서 이미 답이 정해진 질문을 다시 물으면 거른다(이미 받은 답을 가정으로 남긴다 — planning.ts의 splitRepeated).
+  const { fresh, repeated } =
+    project.questionMode === 'experiment'
+      ? splitRepeated(draft.questions, answeredTexts(await listQuestionsOfPlanChain(pool, plan.rootPlanId)))
+      : { fresh: draft.questions, repeated: [] };
+  const { kept, overflow } = limitPlanningQuestions(fresh, { mode: project.questionMode, roundsUsed });
+  const finalDraft: FeatureDraft = {
+    ...draft,
+    questions: kept,
+    assumptions: [...draft.assumptions, ...repeated.map(repeatedAssumption), ...overflow.map(assumptionOf)],
+  };
+  const routed = await routePlanningQuestions(
+    kept.map((q) => {
+      // 어느 기능에 대한 질문인지 — 표시가 없고 기능이 하나뿐이면 그 기능으로 본다.
+      const feature = draft.features.find((f) => f.featureKey === q.featureKey) ?? (draft.features.length === 1 ? draft.features[0] : undefined);
+      const asked = toAskedQuestion(q);
+      const input: RoutingInput = {
+        stage: 'feature_spec',
+        askerRole: 'PM',
+        roles: [...TEAM_ROLES],
+        task: null,
+        spec: feature ? { featureKey: feature.featureKey, title: feature.title, content: featureContent(feature) } : null,
+        repo: null,
+        questions: [asked],
+        contract: null,
+        context: { orgId: project.orgId },
+      };
+      return { question: asked, input };
+    }),
+  );
+  return { draft: finalDraft, routed, overflow: overflow.length, repeated: repeated.length };
+}
+
+// 질문이 전부 답해지면(033) 답을 붙여 **새 단발 호출**로 초안을 다시 쓴다 — 대표의 수정 요청과 같은 체인·같은 경로(cause answers).
+// 다시 쓴 초안에서 또 질문이 나오면 같은 흐름이 반복된다(일반 모드는 PLANNING_QUESTION_ROUNDS회까지).
+// 다시 쓸 수 없으면(이미 다른 초안을 쓰는 중·예산 초과) 로그만 남긴다 — 답은 저장됐고, 대표가 수정 요청으로 이어 간다.
+
+async function answersSettled(db: Queryable, planId: string): Promise<boolean> {
+  const plan = await findPlan(db, planId);
+  if (!plan || plan.status !== 'ready' || plan.draft === null) return false;
+  if ((await listPendingQuestionsOf(db, { kind: 'plan', planId })).length > 0) return false;
+  return !(await hasChildPlan(db, planId));
+}
+
+async function rewriteWithAnswers(planId: string): Promise<void> {
+  if (!(await answersSettled(pool, planId))) return; // 빠른 확인 — 잠금 안에서 한 번 더 본다(openRequest)
+  const plan = (await findPlan(pool, planId))!;
+  const project = (await findProjectForPm(pool, plan.projectId))!;
+  // 실험 모드는 체인 전체의 답을 넣는다 — 되풀이한 질문을 거르는 대신 이미 받은 답을 그대로 다음 입력에 싣는다(splitRepeated).
+  const questions =
+    project.questionMode === 'experiment' ? await listQuestionsOfPlanChain(pool, plan.rootPlanId) : await listQuestionsOf(pool, { kind: 'plan', planId });
+  const answers = answersBlock(questions);
+  if (!answers) return;
+  try {
+    await openRequest(plan.requestedBy, plan.projectId, { kind: plan.kind, instruction: plan.instruction ?? '', feedback: answers, parent: plan, cause: 'answers' });
+  } catch (err) {
+    if (err instanceof AutoRequestNotNeeded) return;
+    logger.warn('질문의 답으로 기능 명세 초안을 다시 쓰지 못했다 — 대표가 수정 요청으로 이어 간다', { planId, error: String(err) });
+  }
+}
+
+onPlanningQuestionsSettled(async (_projectId, subject) => {
+  if (subject.kind === 'plan') await rewriteWithAnswers(subject.planId);
+});
+
+// ── 실험 모드 자동 경로(034, domain/experiment가 부른다) ─────────────────────────
+// 판정·검증은 위의 사람 경로와 한 벌이다 — 명의만 system:experiment(auto: true), 권한 확인은 조직 대표로 한다(실험을 켠 사람).
+// 각 함수는 실험 모드 프로젝트가 아니면 잠금 안에서 거부한다(좁은 입구).
+
+export async function applyPlanAsExperiment(representativeUserId: string, projectId: string, planId: string): Promise<void> {
+  await applyPlanWith(representativeUserId, projectId, planId, { acceptAssumptions: true, attribution: EXPERIMENT_ATTRIBUTION });
+}
+
+// 실패한 초안을 같은 요청으로 다시 낸다(새 체인이 아니다 — 같은 지시·같은 답, revision_cause retry). 이미 다시 냈으면 아무것도 하지 않는다.
+export async function retryPlanAsExperiment(representativeUserId: string, projectId: string, failedPlanId: string): Promise<boolean> {
+  const failed = await findPlan(pool, failedPlanId);
+  if (!failed || failed.projectId !== projectId || failed.status !== 'failed') return false;
+  try {
+    await openRequest(representativeUserId, projectId, {
+      kind: failed.kind,
+      instruction: failed.instruction ?? '',
+      feedback: failed.feedback,
+      parent: failed,
+      cause: 'retry',
+      attribution: EXPERIMENT_ATTRIBUTION,
+    });
+    return true;
+  } catch (err) {
+    if (err instanceof AutoRequestNotNeeded) return false;
+    throw err;
+  }
+}
+
+// 태스크 나누기 자동 요청 — POST /pm/plans와 같은 경로, 지시 없음.
+export async function requestTaskSplitAsExperiment(representativeUserId: string, projectId: string): Promise<void> {
+  await openRequest(representativeUserId, projectId, {
+    kind: 'tasks',
+    instruction: '',
+    feedback: null,
+    parent: null,
+    cause: 'experiment_split',
+    attribution: EXPERIMENT_ATTRIBUTION,
+  });
+}
+
+// 답이 다 왔는데 다시 쓰지 못한 초안(그때 다른 초안이 작성 중이었다 — 프로젝트당 하나) — 감독이 다시 시도한다.
+export async function retryRewriteWithAnswers(planId: string): Promise<void> {
+  await rewriteWithAnswers(planId);
 }

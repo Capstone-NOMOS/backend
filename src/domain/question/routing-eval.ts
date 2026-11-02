@@ -4,7 +4,7 @@ import { AppError } from '../../errors.js';
 import { appendEvent } from '../events/append.js';
 import { findProjectById } from '../project/repository.js';
 import { assertProjectVisibleToUser, type UserContext } from '../project/visibility.js';
-import { findQuestion, listRoutingDatasetRows } from './repository.js';
+import { findQuestion, listRoutingDatasetRows, type AnswerSource } from './repository.js';
 import { shadowRouters, ROUTER_TIMEOUT_MS, type RoutedResult } from './router-registry.js';
 import { ROUTING_STAGES, type RoutingInput, type RoutingInputSnapshot, type RoutingStage } from './router.js';
 import { insertRoutingRun, listEvalQuestions, setGoldTarget, type EvalQuestionRow } from './routing-eval-repository.js';
@@ -21,7 +21,8 @@ const BASELINE = 'baseline:asker';
 const inflight = new Set<Promise<void>>();
 
 // 질문이 커밋된 뒤 부른다. 실제로 보낸 판정(primary)을 남기고, 그림자 라우터를 뒤에서 돌린다.
-export function recordRouting(questionId: string, input: RoutingInput, routed: RoutedResult): void {
+// 기록 작업의 약속을 돌려준다 — 실험 모드의 자동 답(033)이 기록 뒤에 답하려고 기다린다. 실패는 여기서 삼킨다.
+export function recordRouting(questionId: string, input: RoutingInput, routed: RoutedResult): Promise<void> {
   const job = (async () => {
     // 먼저 시도한 라우터가 실패해 규칙으로 대체됐으면, 그 실패도 그 라우터의 기록으로 남긴다(실패율).
     if (routed.fallback !== null) {
@@ -64,6 +65,7 @@ export function recordRouting(questionId: string, input: RoutingInput, routed: R
     .catch((err: unknown) => logger.warn('라우팅 평가 기록 실패 — 질문 흐름에는 영향 없음', { questionId, error: String(err) }))
     .finally(() => inflight.delete(job));
   inflight.add(job);
+  return job;
 }
 
 // 테스트용.
@@ -193,8 +195,9 @@ export async function routingReport(actor: UserContext, projectId: string): Prom
     };
   });
 
+  // 실험 모드 자동 답(033)은 사람이 답한 시간이 아니다 — 빼야 "질문부터 답까지"가 사람 기준으로 남는다.
   const answeredMs = questions
-    .filter((q) => q.answeredAt !== null)
+    .filter((q) => q.answeredAt !== null && q.answerSource !== 'auto_first_option')
     .map((q) => new Date(q.answeredAt!).getTime() - new Date(q.askedAt).getTime());
 
   return {
@@ -225,6 +228,8 @@ export type RoutingDatasetItem = {
   askedAt: string;
   primary: { router: string; target: string };
   goldLabeled: boolean;
+  // 033: 답의 출처 — auto_first_option(실험 모드 자동 답)은 정답이 아니다. 정답은 accept(사람이 붙인 gold)다.
+  answerSource: AnswerSource | null;
 };
 
 export async function exportRoutingDataset(
@@ -244,5 +249,6 @@ export async function exportRoutingDataset(
     askedAt: r.askedAt,
     primary: { router: r.routedBy, target: r.target },
     goldLabeled: r.goldTarget !== null,
+    answerSource: r.answerSource,
   }));
 }

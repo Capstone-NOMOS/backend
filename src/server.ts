@@ -7,6 +7,7 @@ import { recoverInterruptedPlans } from './domain/pm/service.js';
 import { closeOrphanedRuns } from './domain/room/runs.js';
 import { startStallWatchdog } from './domain/task/stall.js';
 import { startQuestionExpirySweep } from './domain/question/service.js';
+import { startExperimentSweep } from './domain/experiment/sweep.js';
 import { attachRealtime } from './realtime/index.js';
 
 // 서버 기동. 로컬(index.ts, npm run dev)과 운영(boot.ts server)이 같은 경로를 탄다.
@@ -21,6 +22,8 @@ export async function startServer(): Promise<void> {
   startStallWatchdog();
   // 아무도 읽지 않은 질문도 기한이 지나면 만료시킨다 — 묻는 쪽 태스크가 "답을 기다림"에 영원히 남지 않게.
   startQuestionExpirySweep();
+  // 실험 모드(034): 자동 답이 빠진 질문·검증 보고 없는 VERIFYING을 정리하고 놓친 자동 진행 신호를 메운다. 기본 모드 프로젝트는 건드리지 않는다.
+  startExperimentSweep();
   const app = createApp();
   await new Promise<void>((resolve) => {
     const server = app.listen(env.PORT, () => {

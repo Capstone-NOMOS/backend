@@ -580,7 +580,7 @@ describe('기능 명세 (POST /pm/features)', () => {
     expect(plan).toMatchObject({ kind: 'feature', status: 'ready', draft: null, featureDraft: FEATURE_DRAFT });
     // 지침은 개발 용어 없이 쓰라고 하고, 출력 형식은 기능 명세 스키마다.
     expect(calls[0]!.system).toContain('개발 용어');
-    expect((calls[0]!.jsonSchema as { required: string[] }).required).toEqual(['summary', 'assumptions', 'features']);
+    expect((calls[0]!.jsonSchema as { required: string[] }).required).toEqual(['summary', 'assumptions', 'questions', 'features']);
     expect(calls[0]!.user).toContain('멤버 목록을 보고 싶다');
 
     const applied = await call('POST', `/projects/${w.projectId}/pm/plans/${plan.id}/apply`, w.rep.token);

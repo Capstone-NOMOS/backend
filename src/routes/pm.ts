@@ -89,14 +89,18 @@ pmRouter.post(
 );
 
 // POST /api/projects/:projectId/pm/plans/:planId/apply — 초안을 그대로 적용(명세·태스크 생성). G1(프로젝트 시작)이 아니다.
+// 기획 단계 질문(033)에 답 대기가 남았으면 409 QUESTIONS_PENDING — acceptAssumptions: true면 남은 질문을 가정으로 닫고 적용한다.
+const applyBody = z.object({ acceptAssumptions: z.boolean().optional() }).strict().optional();
+
 pmRouter.post(
   '/projects/:projectId/pm/plans/:planId/apply',
-  validate({ params: planParams }),
+  validate({ params: planParams, body: applyBody }),
   authenticate,
   requireRepresentative,
   async (req, res) => {
     const { projectId, planId } = req.params as z.infer<typeof planParams>;
-    res.status(200).json({ data: await applyPlan(req.user!.id, projectId, planId) });
+    const body = req.body as z.infer<typeof applyBody>;
+    res.status(200).json({ data: await applyPlan(req.user!.id, projectId, planId, { acceptAssumptions: body?.acceptAssumptions === true }) });
   },
 );
 

@@ -59,6 +59,11 @@ describe('계약 작성 실행', () => {
       summary: '요약',
       openQuestions: ['가정 1'],
     });
+    // 질문 형식(CLI 0.1.18) — 선택지 2개 이상만 질문으로 남긴다(모자라면 서버 형식 검사에 초안 전체가 걸리지 않게 버린다), 같은 질문은 한 번.
+    const page = { question: '목록 한 페이지 크기는?', options: [{ label: '20개' }, { label: '50개' }] };
+    expect(
+      parseContractDraft({ openapiYaml: 'paths: {}', summary: '요약', openQuestions: [page, page, { question: '선택지 하나', options: [{ label: 'A' }] }, { options: [] }] }).openQuestions,
+    ).toEqual([page]);
     expect(parseContractDraft(JSON.stringify({ openapiYaml: 'paths: {}', summary: '요약' })).openQuestions).toEqual([]);
     expect(() => parseContractDraft({ summary: '요약' })).toThrow();
     expect(() => parseContractDraft({ openapiYaml: 'paths: {}', summary: ' ' })).toThrow();

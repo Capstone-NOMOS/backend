@@ -202,12 +202,14 @@ Table projects {
   started_at        timestamptz     [note: 'G1 승인 시각. NOT NULL이면 정책·헌법 변경 불가']
   created_at        timestamptz     [not null, default: `now()`]
   deleted_at        timestamptz     [note: '★ 029: 삭제(대표). 목록·상세·하위 API에서 없는 것으로 본다. 행은 지우지 않는다']
+  question_mode     text            [not null, default: 'normal', note: '★ 033: normal | experiment(질문 상한 없음·라우팅 기록 뒤 첫 선택지 자동 답·상담/PM 답 초안 생략). 시작 전에만 바꾼다']
 
   Note: '''
   status='halted'면 권한 검증 0단계에서 모든 도구 호출 거부
   멈춤은 명령이 아니라 상태 — 브릿지가 오프라인이어도 산출물이 못 들어옴
   CHECK (status <> 'halted' OR halt_reason IS NOT NULL)
   CHECK projects_deleted_closed_chk (deleted_at IS NULL OR status IN ('completed', 'aborted')) — 029: 진행 중이면 같은 트랜잭션에서 먼저 중단한다
+  CHECK projects_question_mode_chk (question_mode IN ('normal','experiment') AND (question_mode = 'normal' OR question_relay)) — 033: 실험 모드는 질문 중계가 켜져 있을 때만
   '''
 }
 
@@ -318,6 +320,7 @@ Table plans {
   structure             jsonb       [note: '★ 014: M6a용 구조(정렬된 명세 키·태스크 튜플·선행 쌍)']
   applied_at            timestamptz [note: '★ 014: 적용 시각(applied일 때만)']
   rejected_at           timestamptz [note: '★ 014: 반려 시각(rejected일 때만)']
+  revision_cause        text        [note: "★ 033: 수정 체인에서 다시 쓴 이유 — feedback(대표 수정 요청, PM_MAX_REVISIONS에 센다) | answers(기획 단계 질문의 답을 붙여 다시 씀, 따로 센다) | ★ 034 retry(실험 모드에서 실패한 초안을 같은 요청으로 다시 냄, EXPERIMENT_PLAN_RETRIES). 원본은 NULL. CHECK plans_revision_cause_chk"]
   reject_reason         text        [note: '★ 014: 반려 사유(선택, 1000자 이하)']
 
   indexes {
@@ -390,7 +393,9 @@ Table contracts {
   feedback         text        [note: '마지막 수정 요청(BE 개발자)']
   schema_yaml      text        [note: 'OpenAPI 조각(paths·components). 서버가 형식을 검사한 뒤에만 들어간다. V1A가 이걸로 대조한다']
   summary          text        [note: '사람이 읽는 요약']
-  open_questions   jsonb       [not null, default: `'[]'`, note: '작성한 에이전트가 정하지 못한 것']
+  open_questions   jsonb       [not null, default: `'[]'`, note: '작성한 에이전트가 정하지 못한 것(문장). ★ 033: 질문 형식으로 낸 것은 agent_questions(stage contract)로도 라우팅된다']
+  question_rounds  integer     [not null, default: 0, note: '★ 033: 질문의 답으로 다시 쓴 회차 수 — attempt에 들어가지만 수정 요청 한도에서는 뺀다. CHECK question_rounds + experiment_retries < attempt']
+  experiment_retries integer   [not null, default: 0, note: '★ 034: 실험 모드에서 실패한 초안을 자동으로 다시 시킨 횟수(EXPERIMENT_CONTRACT_RETRIES) — 수정 요청 한도에서 뺀다']
   drafted_by_agent uuid        [note: '초안을 쓴 BE 에이전트']
   drafted_at       timestamptz
   approved_by      uuid        [note: '확정한 사람(BE 담당, 없으면 대표)']
@@ -999,9 +1004,12 @@ Ref: oauth_sessions.user_id > users.id [delete: cascade]
 Table agent_questions {
   id uuid [pk, default: `gen_random_uuid()`]
   project_id uuid [not null, ref: > projects.id]
-  task_id uuid [not null, ref: > tasks.id]
-  asked_by_agent uuid [not null, ref: > agents.id]
-  asker_role text [not null, note: 'FRONTEND | BACKEND']
+  task_id uuid [ref: > tasks.id, note: '★ 033: implementation만 — 기획 단계 질문은 NULL']
+  asked_by_agent uuid [ref: > agents.id, note: '★ 033: feature_spec(PM이 묻는다)은 NULL']
+  stage text [not null, default: 'implementation', note: '★ 033: implementation | feature_spec | contract']
+  plan_id uuid [ref: > plans.id, note: '★ 033: feature_spec 질문이 나온 기능 명세 초안']
+  contract_id uuid [ref: > contracts.id, note: '★ 033: contract 질문이 나온 계약']
+  asker_role text [not null, note: 'FRONTEND | BACKEND | PM(★ 033 기능 명세 초안)']
   target_role text [not null, note: '답할 역할 — 서버의 질문 라우터가 정한다']
   routed_by text [not null, note: "라우터 구현(domain/question/router.ts). 기본 'role_rule:opposite'"]
   routing jsonb [not null, default: '{}', note: '라우터 판정 상세 {confidence, reason, latencyMs, fallback}']
@@ -1011,8 +1019,8 @@ Table agent_questions {
   drafted_by_agent uuid [ref: > agents.id]
   drafted_at timestamptz
   answers jsonb [note: '키 = 질문 문장 그대로']
-  answer_source text [note: 'agent | human | agent_confirmed | human_override']
-  answered_by uuid [ref: > users.id, note: '사람이 답했을 때만']
+  answer_source text [note: 'agent | human | agent_confirmed | human_override | auto_first_option(★ 033 실험 모드 자동 답)']
+  answered_by uuid [ref: > users.id, note: '사람이 답했을 때만(자동 답은 NULL)']
   answered_at timestamptz
   expires_at timestamptz [not null, note: '기본 3일 — 지나면 expired, 그 질문으로 멈춘 태스크는 ESCALATED']
   created_at timestamptz [not null, default: `now()`]
@@ -1034,6 +1042,12 @@ Table agent_questions {
   ★ 026 gold_target·gold_labeled_by·gold_labeled_at·gold_note — 평가용 정답 담당자(사람이 나중에 붙인다). CHECK agent_questions_gold_chk
   INDEX idx_agent_questions_pending ON (project_id) WHERE status = 'pending'
   INDEX idx_agent_questions_task ON (task_id)
+    ★ 033 기획 단계 질문·실험 모드(DBML 표현 불가)
+    agent_questions_stage_chk — implementation: task_id·asked_by_agent NOT NULL / feature_spec: plan_id NOT NULL, task_id·asked_by_agent NULL, asker_role PM /
+                                contract: contract_id·asked_by_agent NOT NULL, task_id NULL, asker_role BACKEND
+    agent_questions_answered_by_chk (answered_by IS NOT NULL) = (status = 'answered' AND answer_source IS DISTINCT FROM 'auto_first_option')
+    agent_questions_auto_answer_chk answer_source IS DISTINCT FROM 'auto_first_option' OR status = 'answered'
+    idx_agent_questions_plan (plan_id) WHERE plan_id IS NOT NULL · idx_agent_questions_contract (contract_id) WHERE contract_id IS NOT NULL
   '''
 }
 

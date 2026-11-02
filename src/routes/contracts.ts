@@ -10,6 +10,7 @@ import {
   submitContractDraft,
 } from '../domain/contract/service.js';
 import { CONTRACT_YAML_MAX } from '../domain/contract/validate.js';
+import { planningQuestionSchema } from '../domain/question/planning.js';
 import type { UserContext } from '../domain/project/visibility.js';
 import { agentContextOf, authenticateAgent, authenticateAny } from '../middleware/agent-auth.js';
 import { authenticate, orgIdOf } from '../middleware/auth.js';
@@ -35,9 +36,13 @@ contractsRouter.get('/projects/:projectId/contracts', authenticateAny, validate(
 });
 
 // POST /api/contracts/:contractId/approve — 확정(BE 담당, 없으면 대표). 초안일 때만.
-contractsRouter.post('/contracts/:contractId/approve', validate({ params: contractParams }), authenticate, async (req, res) => {
+// 기획 단계 질문(033)에 답 대기가 남았으면 409 QUESTIONS_PENDING — acceptAssumptions: true면 남은 질문을 가정으로 닫고 확정한다.
+const approveBody = z.object({ acceptAssumptions: z.boolean().optional() }).strict().optional();
+
+contractsRouter.post('/contracts/:contractId/approve', validate({ params: contractParams, body: approveBody }), authenticate, async (req, res) => {
   const { contractId } = req.params as z.infer<typeof contractParams>;
-  res.status(200).json({ data: await approveContract(actorOf(req), contractId) });
+  const body = req.body as z.infer<typeof approveBody>;
+  res.status(200).json({ data: await approveContract(actorOf(req), contractId, { acceptAssumptions: body?.acceptAssumptions === true }) });
 });
 
 const reviseBody = z.object({ feedback: z.string().trim().min(1).max(4000).nullable().optional() });
@@ -63,7 +68,8 @@ const draftBody = z.object({
   attempt: z.number().int().min(1),
   openapiYaml: z.string().min(1).max(CONTRACT_YAML_MAX),
   summary: z.string().trim().min(1).max(4000),
-  openQuestions: z.array(z.string().trim().min(1).max(500)).max(20).default([]),
+  // 033: 질문 형식({ question, options(추천안 맨 앞) })이면 라우팅해 FE·BE·PM에게 묻는다. 문자열(CLI 0.1.17 이하)은 지금처럼 기록만 한다.
+  openQuestions: z.array(z.union([z.string().trim().min(1).max(500), planningQuestionSchema])).max(40).default([]),
 });
 
 // POST /api/contracts/:contractId/draft — 초안 제출(BE 에이전트). 형식이 틀리면 422 CONTRACT_INVALID(위반 목록).
