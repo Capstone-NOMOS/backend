@@ -20,7 +20,11 @@ export type Project = {
   createdAt: string;
   // 질문 중계(018). 기본 켜짐, 시작 전까지만 바꿀 수 있다.
   questionRelay: boolean;
+  // 질문 모드(033) — normal | experiment(질문 상한 없음·라우팅 기록 뒤 첫 선택지로 자동 답·상담/PM 답 초안 생략). 시작 전에만 바꾼다.
+  questionMode: QuestionMode;
 };
+
+export type QuestionMode = 'normal' | 'experiment';
 
 // `date` 컬럼은 pg가 JS Date(로컬 자정)로 파싱한다. 그대로 JSON에 실으면 UTC 타임스탬프가 되어
 // KST 서버에서는 하루 빠른 날짜가 나간다 — 입력 '2026-10-31'이 응답 '2026-10-30T15:00:00.000Z'로 보였다.
@@ -51,6 +55,7 @@ function toProject(row: QueryResultRow): Project {
     createdBy: row.created_by,
     createdAt: row.created_at,
     questionRelay: row.question_relay !== false,
+    questionMode: row.question_mode === 'experiment' ? 'experiment' : 'normal',
   };
 }
 
@@ -476,6 +481,16 @@ export async function listLatestInvites(db: Queryable, projectId: string): Promi
 // 질문 중계 스위치(시작 전에만 — 호출부가 확인한다).
 export async function updateQuestionRelay(db: Queryable, projectId: string, enabled: boolean): Promise<Project> {
   const { rows } = await db.query(`UPDATE projects SET question_relay = $2 WHERE id = $1 RETURNING *`, [projectId, enabled]);
+  return toProject(rows[0]!);
+}
+
+// 질문 설정(018 질문 중계 · 033 질문 모드)을 함께 바꾼다 — 둘은 묶여 있다(실험 모드는 중계가 켜져 있을 때만, DB CHECK).
+export async function updateQuestionSettings(db: Queryable, projectId: string, input: { questionRelay: boolean; questionMode: QuestionMode }): Promise<Project> {
+  const { rows } = await db.query(`UPDATE projects SET question_relay = $2, question_mode = $3 WHERE id = $1 RETURNING *`, [
+    projectId,
+    input.questionRelay,
+    input.questionMode,
+  ]);
   return toProject(rows[0]!);
 }
 

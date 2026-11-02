@@ -4,9 +4,9 @@ import { AppError } from '../../errors.js';
 import { appendEvent } from '../events/append.js';
 import { findProjectById } from '../project/repository.js';
 import { assertProjectVisibleToUser, type UserContext } from '../project/visibility.js';
-import { findQuestion } from './repository.js';
+import { findQuestion, listRoutingDatasetRows, type AnswerSource } from './repository.js';
 import { shadowRouters, ROUTER_TIMEOUT_MS, type RoutedResult } from './router-registry.js';
-import type { RoutingInput } from './router.js';
+import { ROUTING_STAGES, type RoutingInput, type RoutingInputSnapshot, type RoutingStage } from './router.js';
 import { insertRoutingRun, listEvalQuestions, setGoldTarget, type EvalQuestionRow } from './routing-eval-repository.js';
 
 // 질문 라우팅 평가(026) — 서비스가 아니라 발표 지표를 위한 기록이다. 서비스 동작(누구에게 보내나)은 바꾸지 않는다.
@@ -21,7 +21,8 @@ const BASELINE = 'baseline:asker';
 const inflight = new Set<Promise<void>>();
 
 // 질문이 커밋된 뒤 부른다. 실제로 보낸 판정(primary)을 남기고, 그림자 라우터를 뒤에서 돌린다.
-export function recordRouting(questionId: string, input: RoutingInput, routed: RoutedResult): void {
+// 기록 작업의 약속을 돌려준다 — 실험 모드의 자동 답(033)이 기록 뒤에 답하려고 기다린다. 실패는 여기서 삼킨다.
+export function recordRouting(questionId: string, input: RoutingInput, routed: RoutedResult): Promise<void> {
   const job = (async () => {
     // 먼저 시도한 라우터가 실패해 규칙으로 대체됐으면, 그 실패도 그 라우터의 기록으로 남긴다(실패율).
     if (routed.fallback !== null) {
@@ -64,6 +65,7 @@ export function recordRouting(questionId: string, input: RoutingInput, routed: R
     .catch((err: unknown) => logger.warn('라우팅 평가 기록 실패 — 질문 흐름에는 영향 없음', { questionId, error: String(err) }))
     .finally(() => inflight.delete(job));
   inflight.add(job);
+  return job;
 }
 
 // 테스트용.
@@ -109,11 +111,20 @@ export type RouterStats = {
   totalCostUsd: number | null;
 };
 
+// 단계별 일치율 — 같은 라우터라도 기능 명세·계약 초안 질문과 구현 중 질문은 난이도가 다르다. 질문이 없는 단계도 0으로 낸다.
+export type StageStats = {
+  stage: RoutingStage;
+  questions: number;
+  labeled: number;
+  routers: { router: string; labeled: number; aligned: number; alignmentRate: number | null }[];
+};
+
 export type RoutingReport = {
   projectId: string;
   questions: number;
   labeled: number;
   routers: RouterStats[];
+  byStage: StageStats[];
   // 질문부터 답까지(실제로 보낸 라우터 기준) — 답이 온 질문만.
   answer: { answered: number; medianMs: number | null };
   rows: (Omit<EvalQuestionRow, 'runs'> & { decisions: Record<string, string | null> })[];
@@ -166,8 +177,27 @@ export async function routingReport(actor: UserContext, projectId: string): Prom
     };
   });
 
+  const stageOf = new Map(questions.map((q) => [q.questionId, q.stage]));
+  const byStage: StageStats[] = ROUTING_STAGES.map((stage) => {
+    const inStage = questions.filter((q) => q.stage === stage);
+    return {
+      stage,
+      questions: inStage.length,
+      labeled: inStage.filter((q) => q.goldTarget !== null).length,
+      routers: [...byRouter.entries()]
+        .map(([router, { samples }]) => {
+          const labeled = samples.filter((s) => s.target !== null && stageOf.get(s.questionId) === stage && gold.get(s.questionId) != null);
+          const aligned = labeled.filter((s) => s.target === gold.get(s.questionId)).length;
+          return { router, labeled: labeled.length, aligned, alignmentRate: labeled.length === 0 ? null : aligned / labeled.length };
+        })
+        .filter((r) => r.labeled > 0)
+        .sort((a, b) => a.router.localeCompare(b.router)),
+    };
+  });
+
+  // 실험 모드 자동 답(033)은 사람이 답한 시간이 아니다 — 빼야 "질문부터 답까지"가 사람 기준으로 남는다.
   const answeredMs = questions
-    .filter((q) => q.answeredAt !== null)
+    .filter((q) => q.answeredAt !== null && q.answerSource !== 'auto_first_option')
     .map((q) => new Date(q.answeredAt!).getTime() - new Date(q.askedAt).getTime());
 
   return {
@@ -175,10 +205,50 @@ export async function routingReport(actor: UserContext, projectId: string): Prom
     questions: questions.length,
     labeled: questions.filter((q) => q.goldTarget !== null).length,
     routers: routers.sort((a, b) => a.mode.localeCompare(b.mode) || a.router.localeCompare(b.router)),
+    byStage,
     answer: { answered: answeredMs.length, medianMs: percentile(answeredMs, 50) },
     rows: questions.map(({ runs, ...q }) => ({
       ...q,
       decisions: Object.fromEntries([[BASELINE, 'SELF'], ...runs.map((r) => [r.router, r.target] as const)]),
     })),
   };
+}
+
+// ── 라우팅 평가 데이터셋 내보내기(032) ─────────────────────────────────────
+// 운영에서 실제로 나온 질문을 라우터가 본 입력 그대로(routing_input) 오프라인 평가 데이터셋 v2 항목으로 낸다 —
+// scripts/eval-question-router.ts가 이 응답 파일을 그대로 읽는다. 프로젝트(에이전트 실행)는 질문을 모을 때 한 번만 돌리고,
+// 라우터 비교는 저장된 입력으로 몇 번이든 한다. 정답(accept)은 사람이 붙인 gold 라벨, 없으면 빈 배열(평가는 건너뛴다).
+// 입력이 저장되기 전(032 이전)의 질문은 다시 조립할 수 없어 빠진다. 읽기라 이벤트를 남기지 않는다.
+export type RoutingDatasetItem = {
+  id: string;
+  stage: RoutingStage;
+  input: RoutingInputSnapshot;
+  accept: string[];
+  source: 'real-run';
+  askedAt: string;
+  primary: { router: string; target: string };
+  goldLabeled: boolean;
+  // 033: 답의 출처 — auto_first_option(실험 모드 자동 답)은 정답이 아니다. 정답은 accept(사람이 붙인 gold)다.
+  answerSource: AnswerSource | null;
+};
+
+export async function exportRoutingDataset(
+  actor: UserContext,
+  projectId: string,
+  filter: { labeledOnly: boolean; stage: RoutingStage | null },
+): Promise<RoutingDatasetItem[]> {
+  if (actor.orgRole !== 'REPRESENTATIVE') throw new AppError('NOT_REPRESENTATIVE', 'only the representative exports the routing dataset');
+  await assertProjectVisibleToUser(pool, actor, projectId);
+  const rows = await listRoutingDatasetRows(pool, projectId, filter);
+  return rows.map((r) => ({
+    id: r.questionId,
+    stage: r.stage,
+    input: r.input,
+    accept: r.goldTarget === null ? [] : [r.goldTarget],
+    source: 'real-run',
+    askedAt: r.askedAt,
+    primary: { router: r.routedBy, target: r.target },
+    goldLabeled: r.goldTarget !== null,
+    answerSource: r.answerSource,
+  }));
 }

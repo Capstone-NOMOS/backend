@@ -39,6 +39,8 @@ export type ErrorCode =
   | 'ROOM_NOT_VISIBLE'
   | 'TASK_NOT_STOPPED'
   | 'QUESTION_RELAY_OFF'
+  | 'QUESTION_MODE_INVALID'
+  | 'QUESTIONS_PENDING'
   | 'TASK_NOT_FOUND'
   | 'TASK_ALREADY_CLAIMED'
   | 'ARTIFACT_NOT_FOUND'
@@ -183,6 +185,10 @@ const STATUS_BY_CODE: Record<ErrorCode, number> = {
   TASK_NOT_STOPPED: 409,
   // 질문 중계를 끈 프로젝트에서 질문을 올렸다.
   QUESTION_RELAY_OFF: 409,
+  // 실험 모드(033)는 질문 중계가 켜져 있을 때만.
+  QUESTION_MODE_INVALID: 422,
+  // 기획 단계 초안(기능 명세·API 계약)에 답 대기 질문이 남았다 — 답을 기다리거나 acceptAssumptions로 가정 확정.
+  QUESTIONS_PENDING: 409,
   TASK_NOT_FOUND: 404,
   // 409 — 권한 문제가 아니라 경합에서 진 것이다. 재시도하면 다른 태스크를 잡으면 된다.
   TASK_ALREADY_CLAIMED: 409,

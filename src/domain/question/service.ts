@@ -9,18 +9,16 @@ import { findProjectById, listProjectMembers } from '../project/repository.js';
 import { assertProjectVisibleToUser, type UserContext } from '../project/visibility.js';
 import type { TeamRole } from '../roles.js';
 import { findRepoById } from '../repo/repository.js';
-import { questionsChanged } from '../dispatch/questions-changed.js';
 import { tasksChanged } from '../dispatch/tasks-changed.js';
-import { blockTaskForQuestion, escalateQuestionTask, findSpecForTask, findTaskById, unblockQuestionTask } from '../task/repository.js';
+import { blockTaskForQuestion, escalateQuestionTask, findSpecForTask, findTaskById } from '../task/repository.js';
 import { routeQuestion } from './router-registry.js';
-import { recordRouting } from './routing-eval.js';
-import { PM_TARGET, type QuestionTarget } from './router.js';
-import { schedulePmDraft } from './pm-draft.js';
+import { afterQuestionAsked } from './after-ask.js';
+import { afterAnswerCommitted, afterAnswerInTx } from './answer-effects.js';
+import { toRoutingSnapshot, type QuestionTarget, type RoutingInput } from './router.js';
 import { ALL_DECISION_STATUSES, ANSWERED_DECISION_STATUSES, selectDecisions, type QuestionDecision } from './decisions.js';
 import { findApprovedContractForSpec } from '../contract/repository.js';
 import type { AgentContext } from '../task/service.js';
 import {
-  countPendingForTask,
   expireIfDue,
   findQuestion,
   insertQuestion,
@@ -113,7 +111,8 @@ export async function askQuestion(ctx: AgentContext, taskId: string, questions: 
     listProjectMembers(pool, ctx.projectId),
   ]);
   const contract = task.specId ? await findApprovedContractForSpec(pool, task.specId) : null;
-  const routingInput = {
+  const routingInput: RoutingInput = {
+    stage: 'implementation',
     askerRole: membership.teamRole,
     roles: [...new Set<TeamRole>([membership.teamRole, ...members.map((m) => m.teamRole)])],
     task: { title: task.title, kind: task.kind },
@@ -138,7 +137,10 @@ export async function askQuestion(ctx: AgentContext, taskId: string, questions: 
     await assertAsker(tx);
     const question = await insertQuestion(tx, {
       projectId: ctx.projectId,
+      stage: 'implementation',
       taskId,
+      planId: null,
+      contractId: null,
       askedByAgentId: ctx.agentId,
       askerRole: membership.teamRole,
       targetRole,
@@ -147,6 +149,8 @@ export async function askQuestion(ctx: AgentContext, taskId: string, questions: 
       status: selfOwned ? 'self_owned' : 'pending',
       questions,
       timeoutMs: env.QUESTION_TIMEOUT_MS,
+      // 라우터가 본 입력 그대로 — 다시 조립하지 않는다(명세·계약은 나중에 바뀐다).
+      routingInput: toRoutingSnapshot(routingInput),
     });
     await appendEvent(tx, {
       orgId: ctx.orgId,
@@ -170,12 +174,8 @@ export async function askQuestion(ctx: AgentContext, taskId: string, questions: 
     });
     return question;
   });
-  // 커밋 뒤 — 대상 역할 에이전트의 Executor를 깨워 상담 실행을 맡긴다. 질문만으로는 가져갈 태스크가 바뀌지 않는다.
-  if (created.status === 'pending') questionsChanged(ctx.projectId, created.targetRole);
-  // 평가 기록(026, 발표 지표) — 실제 판정과 그림자 라우터들의 판정을 남긴다. 질문 흐름을 기다리게 하지 않는다.
-  recordRouting(created.id, routingInput, routed);
-  // PM 소관(요구사항·정책)이면 대표 노트북의 PM 에이전트가 기능 명세·계약을 읽고 답 초안을 쓴다 — 대표가 확인해 확정한다.
-  if (created.status === 'pending' && created.targetRole === PM_TARGET) schedulePmDraft(created.id, ctx.orgId);
+  // 커밋 뒤 — 평가 기록(026)·상담 깨우기·PM 답 초안, 실험 모드(033)면 기록 뒤 첫 선택지로 자동 답(after-ask.ts, 기획 단계 질문과 한 벌).
+  afterQuestionAsked(created, routingInput, routed, { orgId: ctx.orgId, questionMode: project?.questionMode ?? 'normal' });
   return created;
 }
 
@@ -187,13 +187,22 @@ async function settleExpiry(question: AgentQuestion, orgId: string): Promise<Age
   const result = await withTransaction(async (tx) => {
     if (await expireIfDue(tx, question.id)) {
       changed = true;
-      const escalated = await escalateQuestionTask(tx, question.taskId);
+      // 기획 단계 질문(033)은 태스크를 멈추지 않는다 — 올릴 태스크가 없다.
+      const escalated = question.taskId ? await escalateQuestionTask(tx, question.taskId) : false;
       await appendEvent(tx, {
         orgId,
         projectId: question.projectId,
         type: 'QUESTION_EXPIRED',
         onBehalfOf: 'system:question-timeout',
-        payload: { questionId: question.id, taskId: question.taskId, targetRole: question.targetRole, escalated },
+        payload: {
+          questionId: question.id,
+          taskId: question.taskId,
+          stage: question.stage,
+          planId: question.planId,
+          contractId: question.contractId,
+          targetRole: question.targetRole,
+          escalated,
+        },
       });
     }
     return (await findQuestion(tx, question.id))!;
@@ -216,12 +225,6 @@ export function startQuestionExpirySweep(intervalMs = 10 * 60 * 1000): () => voi
   }, intervalMs);
   timer.unref();
   return () => clearInterval(timer);
-}
-
-// 이 태스크에 대기 중인 질문이 더 없으면 멈춘 태스크를 다시 잡을 수 있게 돌려놓는다. 답을 저장한 트랜잭션 안에서 부른다.
-async function resumeIfAnswered(tx: PoolClient, taskId: string): Promise<boolean> {
-  if ((await countPendingForTask(tx, taskId)) > 0) return false;
-  return unblockQuestionTask(tx, taskId);
 }
 
 // 브릿지가 답을 기다리며 부른다. 묻은 에이전트만 본다.
@@ -289,7 +292,7 @@ export async function listMyQuestions(
   actor: UserContext,
   status: QuestionStatus | 'all',
   limit: number,
-): Promise<{ question: AgentQuestion; projectName: string; taskTitle: string }[]> {
+): Promise<{ question: AgentQuestion; projectName: string; taskTitle: string | null }[]> {
   const rows = await listQuestionsForAnswerer(pool, {
     orgId: actor.orgId,
     userId: actor.userId,
@@ -334,7 +337,7 @@ export async function submitDraft(ctx: AgentContext, questionId: string, draft: 
     if (!(await saveDraft(tx, questionId, draft, ctx.agentId, autoAnswered))) {
       throw new AppError('QUESTION_CLOSED', 'question is no longer waiting for a draft');
     }
-    const resumedTask = autoAnswered ? await resumeIfAnswered(tx, question.taskId) : false;
+    const effects = autoAnswered ? await afterAnswerInTx(tx, (await findQuestion(tx, questionId))!) : { resumedTask: false, settled: null };
     await appendEvent(tx, {
       orgId: ctx.orgId,
       projectId: ctx.projectId,
@@ -345,16 +348,19 @@ export async function submitDraft(ctx: AgentContext, questionId: string, draft: 
       payload: {
         questionId,
         taskId: question.taskId,
+        stage: question.stage,
+        planId: question.planId,
+        contractId: question.contractId,
         decidedCount: question.questions.filter((q) => draft.decided[q.question] === true).length,
         questionCount: question.questions.length,
         autoAnswered,
-        resumedTask,
+        resumedTask: effects.resumedTask,
       },
     });
-    return (await findQuestion(tx, questionId))!;
+    return { question: (await findQuestion(tx, questionId))!, effects };
   });
-  tasksChanged(ctx.projectId);
-  return result;
+  afterAnswerCommitted(ctx.projectId, result.effects);
+  return result.question;
 }
 
 // 답은 대상 역할 담당(그 역할에 배정된 에이전트의 주인) 또는 대표가 한다.
@@ -389,7 +395,8 @@ export async function answerQuestion(actor: UserContext, questionId: string, ans
       throw new AppError('QUESTION_CLOSED', 'question was answered or expired concurrently');
     }
     const answered = (await findQuestion(tx, questionId))!;
-    const resumedTask = from === 'pending' ? await resumeIfAnswered(tx, answered.taskId) : false;
+    // 에이전트 답(agent_answered)을 확인·뒤집는 것은 이미 한 번 뒤처리를 거쳤다(태스크 재개·초안 다시 쓰기).
+    const effects = from === 'pending' ? await afterAnswerInTx(tx, answered) : { resumedTask: false, settled: null };
     await appendEvent(tx, {
       orgId: actor.orgId,
       projectId: answered.projectId,
@@ -399,17 +406,20 @@ export async function answerQuestion(actor: UserContext, questionId: string, ans
       payload: {
         questionId,
         taskId: answered.taskId,
+        stage: answered.stage,
+        planId: answered.planId,
+        contractId: answered.contractId,
         targetRole: answered.targetRole,
         answeredByRole: ownsTarget ? 'TARGET_OWNER' : 'REPRESENTATIVE',
         source,
-        resumedTask,
+        resumedTask: effects.resumedTask,
         waitedMs: Date.parse(answered.answeredAt!) - Date.parse(answered.createdAt),
         // 에이전트 답을 뒤집었다 — 묻는 쪽이 이미 그 답으로 구현했을 수 있다. 고치는 태스크를 자동으로 만드는 경로는 아직 없다.
         ...(source === 'human_override' ? { notice: 'REWORK_NOT_IMPLEMENTED' as const } : {}),
       },
     });
-    return answered;
+    return { answered, effects };
   });
-  tasksChanged(result.projectId);
-  return result;
+  afterAnswerCommitted(result.answered.projectId, result.effects);
+  return result.answered;
 }

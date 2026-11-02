@@ -8,7 +8,8 @@ export type AppendEventInput<T extends EventType = EventType> = {
   type: T;
   actorAgentId?: string;
   onBehalfOf: string; // user UUID 또는 'system:planner' 같은 명시적 시스템 주체 (P3, 절대 비울 수 없음)
-  payload: EventPayloadMap[T];
+  // auto(034): 실험 모드에서 서버가 사람 대신 한 일(명의 system:experiment). 사람 지표에서 이 표시로 뺀다 — 모든 이벤트 타입에 붙을 수 있다.
+  payload: EventPayloadMap[T] & { auto?: true };
   idempotencyKey?: string;
 
   // 실험 컬럼. payload가 아니라 열로 두는 이유는 M1~M6 집계가 jsonb 파싱 없이 돌아야 하기 때문이다.
