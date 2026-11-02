@@ -6,7 +6,7 @@ import { findProjectById } from '../project/repository.js';
 import { assertProjectVisibleToUser, type UserContext } from '../project/visibility.js';
 import { findQuestion, listRoutingDatasetRows } from './repository.js';
 import { shadowRouters, ROUTER_TIMEOUT_MS, type RoutedResult } from './router-registry.js';
-import type { RoutingInput, RoutingInputSnapshot } from './router.js';
+import { ROUTING_STAGES, type RoutingInput, type RoutingInputSnapshot, type RoutingStage } from './router.js';
 import { insertRoutingRun, listEvalQuestions, setGoldTarget, type EvalQuestionRow } from './routing-eval-repository.js';
 
 // 질문 라우팅 평가(026) — 서비스가 아니라 발표 지표를 위한 기록이다. 서비스 동작(누구에게 보내나)은 바꾸지 않는다.
@@ -109,11 +109,20 @@ export type RouterStats = {
   totalCostUsd: number | null;
 };
 
+// 단계별 일치율 — 같은 라우터라도 기능 명세·계약 초안 질문과 구현 중 질문은 난이도가 다르다. 질문이 없는 단계도 0으로 낸다.
+export type StageStats = {
+  stage: RoutingStage;
+  questions: number;
+  labeled: number;
+  routers: { router: string; labeled: number; aligned: number; alignmentRate: number | null }[];
+};
+
 export type RoutingReport = {
   projectId: string;
   questions: number;
   labeled: number;
   routers: RouterStats[];
+  byStage: StageStats[];
   // 질문부터 답까지(실제로 보낸 라우터 기준) — 답이 온 질문만.
   answer: { answered: number; medianMs: number | null };
   rows: (Omit<EvalQuestionRow, 'runs'> & { decisions: Record<string, string | null> })[];
@@ -166,6 +175,24 @@ export async function routingReport(actor: UserContext, projectId: string): Prom
     };
   });
 
+  const stageOf = new Map(questions.map((q) => [q.questionId, q.stage]));
+  const byStage: StageStats[] = ROUTING_STAGES.map((stage) => {
+    const inStage = questions.filter((q) => q.stage === stage);
+    return {
+      stage,
+      questions: inStage.length,
+      labeled: inStage.filter((q) => q.goldTarget !== null).length,
+      routers: [...byRouter.entries()]
+        .map(([router, { samples }]) => {
+          const labeled = samples.filter((s) => s.target !== null && stageOf.get(s.questionId) === stage && gold.get(s.questionId) != null);
+          const aligned = labeled.filter((s) => s.target === gold.get(s.questionId)).length;
+          return { router, labeled: labeled.length, aligned, alignmentRate: labeled.length === 0 ? null : aligned / labeled.length };
+        })
+        .filter((r) => r.labeled > 0)
+        .sort((a, b) => a.router.localeCompare(b.router)),
+    };
+  });
+
   const answeredMs = questions
     .filter((q) => q.answeredAt !== null)
     .map((q) => new Date(q.answeredAt!).getTime() - new Date(q.askedAt).getTime());
@@ -175,6 +202,7 @@ export async function routingReport(actor: UserContext, projectId: string): Prom
     questions: questions.length,
     labeled: questions.filter((q) => q.goldTarget !== null).length,
     routers: routers.sort((a, b) => a.mode.localeCompare(b.mode) || a.router.localeCompare(b.router)),
+    byStage,
     answer: { answered: answeredMs.length, medianMs: percentile(answeredMs, 50) },
     rows: questions.map(({ runs, ...q }) => ({
       ...q,
@@ -190,6 +218,7 @@ export async function routingReport(actor: UserContext, projectId: string): Prom
 // 입력이 저장되기 전(032 이전)의 질문은 다시 조립할 수 없어 빠진다. 읽기라 이벤트를 남기지 않는다.
 export type RoutingDatasetItem = {
   id: string;
+  stage: RoutingStage;
   input: RoutingInputSnapshot;
   accept: string[];
   source: 'real-run';
@@ -198,12 +227,17 @@ export type RoutingDatasetItem = {
   gold_labeled: boolean;
 };
 
-export async function exportRoutingDataset(actor: UserContext, projectId: string, labeledOnly: boolean): Promise<RoutingDatasetItem[]> {
+export async function exportRoutingDataset(
+  actor: UserContext,
+  projectId: string,
+  filter: { labeledOnly: boolean; stage: RoutingStage | null },
+): Promise<RoutingDatasetItem[]> {
   if (actor.orgRole !== 'REPRESENTATIVE') throw new AppError('NOT_REPRESENTATIVE', 'only the representative exports the routing dataset');
   await assertProjectVisibleToUser(pool, actor, projectId);
-  const rows = await listRoutingDatasetRows(pool, projectId, labeledOnly);
+  const rows = await listRoutingDatasetRows(pool, projectId, filter);
   return rows.map((r) => ({
     id: r.questionId,
+    stage: r.stage,
     input: r.input,
     accept: r.goldTarget === null ? [] : [r.goldTarget],
     source: 'real-run',

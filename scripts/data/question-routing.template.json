@@ -4,6 +4,7 @@
     {
       "id": "t001",
       "input": {
+        "stage": "implementation",
         "askerRole": "FRONTEND",
         "roles": ["FRONTEND", "BACKEND"],
         "task": { "title": "F-10 스터디 멤버 목록 화면", "kind": "IMPLEMENT" },
@@ -19,6 +20,7 @@
     {
       "id": "t002",
       "input": {
+        "stage": "implementation",
         "askerRole": "FRONTEND",
         "roles": ["FRONTEND", "BACKEND"],
         "task": { "title": "F-10 스터디 멤버 목록 화면", "kind": "IMPLEMENT" },

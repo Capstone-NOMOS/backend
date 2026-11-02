@@ -14,7 +14,7 @@ import { tasksChanged } from '../dispatch/tasks-changed.js';
 import { blockTaskForQuestion, escalateQuestionTask, findSpecForTask, findTaskById, unblockQuestionTask } from '../task/repository.js';
 import { routeQuestion } from './router-registry.js';
 import { recordRouting } from './routing-eval.js';
-import { PM_TARGET, toRoutingSnapshot, type QuestionTarget } from './router.js';
+import { PM_TARGET, toRoutingSnapshot, type QuestionTarget, type RoutingInput } from './router.js';
 import { schedulePmDraft } from './pm-draft.js';
 import { ALL_DECISION_STATUSES, ANSWERED_DECISION_STATUSES, selectDecisions, type QuestionDecision } from './decisions.js';
 import { findApprovedContractForSpec } from '../contract/repository.js';
@@ -113,7 +113,8 @@ export async function askQuestion(ctx: AgentContext, taskId: string, questions: 
     listProjectMembers(pool, ctx.projectId),
   ]);
   const contract = task.specId ? await findApprovedContractForSpec(pool, task.specId) : null;
-  const routingInput = {
+  const routingInput: RoutingInput = {
+    stage: 'implementation',
     askerRole: membership.teamRole,
     roles: [...new Set<TeamRole>([membership.teamRole, ...members.map((m) => m.teamRole)])],
     task: { title: task.title, kind: task.kind },

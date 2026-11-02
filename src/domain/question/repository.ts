@@ -1,7 +1,7 @@
 import type { QueryResultRow } from 'pg';
 import type { Queryable } from '../../config/db.js';
 import type { TeamRole } from '../roles.js';
-import type { QuestionTarget, RoutingInputSnapshot } from './router.js';
+import type { QuestionTarget, RoutingInputSnapshot, RoutingStage } from './router.js';
 
 // 에이전트 질문(018). SQL만 둔다.
 
@@ -303,6 +303,7 @@ export async function listDecisionRows(
 // 정답은 사람이 붙인 gold 라벨. 읽기 전용이다(이벤트 없음).
 export type RoutingDatasetRow = {
   questionId: string;
+  stage: RoutingStage;
   input: RoutingInputSnapshot;
   goldTarget: string | null;
   askedAt: string;
@@ -310,18 +311,26 @@ export type RoutingDatasetRow = {
   target: string;
 };
 
-export async function listRoutingDatasetRows(db: Queryable, projectId: string, labeledOnly: boolean): Promise<RoutingDatasetRow[]> {
+// stage가 없는 스냅샷(단계가 생기기 전 저장분)은 implementation이다 — 그때는 구현 중 질문만 있었다.
+export async function listRoutingDatasetRows(
+  db: Queryable,
+  projectId: string,
+  filter: { labeledOnly: boolean; stage: RoutingStage | null },
+): Promise<RoutingDatasetRow[]> {
   const { rows } = await db.query(
     `SELECT id, routing_input, gold_target, created_at, routed_by,
+            COALESCE(routing_input->>'stage', 'implementation') AS stage,
             CASE WHEN status = 'self_owned' THEN 'SELF' ELSE target_role END AS target
        FROM agent_questions
       WHERE project_id = $1 AND routing_input IS NOT NULL AND (NOT $2 OR gold_target IS NOT NULL)
+        AND ($3::text IS NULL OR COALESCE(routing_input->>'stage', 'implementation') = $3)
       ORDER BY created_at, id`,
-    [projectId, labeledOnly],
+    [projectId, filter.labeledOnly, filter.stage],
   );
   return rows.map((r) => ({
     questionId: r.id as string,
-    input: r.routing_input as RoutingInputSnapshot,
+    stage: r.stage as RoutingStage,
+    input: { ...(r.routing_input as RoutingInputSnapshot), stage: r.stage as RoutingStage },
     goldTarget: (r.gold_target as string | null) ?? null,
     askedAt: iso(r.created_at)!,
     routedBy: r.routed_by as string,

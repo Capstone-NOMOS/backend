@@ -19,24 +19,25 @@ npx tsx scripts/eval-question-router.ts claude:sonnet --data 내파일.json --re
 | `version` | | 데이터셋 버전. **정답을 고치면 올린다** — 결과 파일에 함께 남아 섞이지 않는다 |
 | `items[]` | ✅ | 문항 |
 | ├ `id` | ✅ | 겹치지 않는 아이디(운영 내보내기는 질문 id) |
-| ├ `input.askerRole` | ✅ | 질문한 에이전트의 역할 `FRONTEND` · `BACKEND` |
+| ├ `input.stage` | | 질문이 나온 단계 `implementation`(구현 중) · `feature_spec`(PM이 기능 명세 초안을 쓰는 중) · `contract`(BE가 API 계약 초안을 쓰는 중). 생략하면 `implementation` |
+| ├ `input.askerRole` | ✅ | 묻는 쪽 `FRONTEND` · `BACKEND` · `PM`(기능 명세 초안) |
 | ├ `input.roles` | ✅ | 프로젝트에 있는 역할 |
-| ├ `input.task` | ✅ | `{ title, kind }` |
+| ├ `input.task` | ✅ | `{ title, kind }` 또는 `null`(기획 단계) |
 | ├ `input.spec` | ✅ | `{ featureKey, title, content }` 또는 `null` |
 | ├ `input.repo` | ✅ | `{ fullName }` 또는 `null` |
 | ├ `input.questions` | ✅ | AskUserQuestion 형식 `[{ question, options: [{ label }] }]`(1~4개) |
-| ├ `input.contract` | | 그 기능의 확정한 API 계약 요약 `{ featureKey, summary }` 또는 `null` |
+| ├ `input.contract` | | 그 기능의 확정한 API 계약 요약 `{ featureKey, summary }` — `implementation`에서만, 아니면 `null` |
 | ├ `accept` | ✅ | 정답으로 인정하는 판정: `FRONTEND` · `BACKEND` · `PM` · `SELF`. **애매하면 둘 이상**. 빈 배열이면 평가에서 건너뛴다(라벨 전 내보내기) |
 | ├ `source` | | `real-run`(운영 실행) · `real-transcript`(개발 기록) · `transplanted`(다른 맥락에 옮겨 심음) · `human` · `llm` — 보고서에 출처별 정확도가 나온다 |
 | ├ `difficulty` | | `clear` · `ambiguous` · `trap` |
 | └ `note` | | 메모 |
 
-내보내기 항목에는 `asked_at`·`primary`(실제로 보낸 판정)·`gold_labeled`도 있다 — 평가는 무시한다.
+내보내기 항목에는 `stage`(= `input.stage`)·`asked_at`·`primary`(실제로 보낸 판정)·`gold_labeled`도 있다 — 평가는 `stage`만 확인하고(다르면 형식 오류) 나머지는 무시한다.
 
 ## 구조 — v1 (옛 형식, 계속 읽는다)
 
 `contexts`(상황) + 항목이 `context` 이름을 참조한다(`question-routing.json`의 초기 20문항). 읽을 때 v2 입력으로 바꾼다 —
-`roles`는 데이터셋의 `roles`(생략하면 `["FRONTEND", "BACKEND"]`), `contract`는 `null`, 질문의 `options`는 빈 배열.
+`stage`는 `implementation`, `roles`는 데이터셋의 `roles`(생략하면 `["FRONTEND", "BACKEND"]`), `contract`는 `null`, 질문의 `options`는 빈 배열.
 
 | 칸 | 필수 | 뜻 |
 |---|---|---|
@@ -60,6 +61,7 @@ npx tsx scripts/eval-question-router.ts claude:sonnet --data 내파일.json --re
 |---|---|
 | `accuracy` | 판정이 `accept`에 든 비율 |
 | `bySource` | 출처(`source`)별 정확도 — LLM이 만든 문항은 LLM 라우터가 잘 맞혀 점수가 부풀 수 있어 따로 본다 |
+| `byStage` | 단계(`stage`)별 정확도 |
 | `selfRecall` | 정답이 `SELF`뿐인 문항을 `SELF`로 돌려보낸 비율(자기 소관을 남에게 묻지 않게 하는 능력) |
 | `wronglyKept` | `SELF`가 정답에 없는데 `SELF`로 막은 비율(물어야 할 걸 못 묻게 한 비율 — 낮아야 한다) |
 | `unstable` | `--repeat 2` 이상에서 같은 문항의 판정이 갈린 문항 수 |

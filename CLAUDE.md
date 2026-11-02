@@ -604,6 +604,7 @@ FE의 "받은 편지함"은 두 칸이다(대표 결정 2026-10-29). **둘 다 �
   Decision AI는 `DECISION_ROUTER_URL`(HTTP, `question/http-router.ts`) — 질문·명세가 외부로 나가므로 켜기 전에 팀이 동의한다.
   오프라인 데이터셋 비교(100문항)는 `scripts/eval-question-router.ts`가 같은 프롬프트·해석으로 한다.
   **라우터가 본 입력도 남긴다**(032 `agent_questions.routing_input` = `RoutingInputSnapshot`, 질문 INSERT와 같은 트랜잭션 — 명세·계약이 바뀌므로 다시 조립하지 말 것).
+  입력에는 단계(`stage`: implementation·feature_spec·contract — 지금은 implementation만 생긴다)가 있고, PM이 묻는 단계에서는 SELF가 없다(PM 소관 = 대상 PM, 대표가 확정).
   `GET /projects/:id/routing-dataset`(대표)가 그대로 오프라인 데이터셋 v2로 내보내고, 평가는 그 `input`을 그대로 라우터에 넣는다 — 실행은 질문을 모을 때 한 번, 비교는 몇 번이든.
 - **질문으로 정해진 결정은 다른 태스크에도 간다**(`question/decisions.ts`) — 답은 원래 질문한 태스크에만 갔다(같은 실행·재개 브리핑의 `answeredQuestions`). FE가 "페이지 크기?"를 묻고
   BE 담당이 코드에 없던 "20개"를 정하면 그 API를 만드는 BE 태스크는 몰랐다.

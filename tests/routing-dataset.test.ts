@@ -16,6 +16,7 @@ afterEach(() => {
 });
 
 const INPUT = {
+  stage: 'implementation',
   askerRole: 'FRONTEND',
   roles: ['FRONTEND', 'BACKEND'],
   task: { title: 'T-1 스터디 목록 화면', kind: 'IMPLEMENT' },
@@ -44,7 +45,7 @@ describe('데이터셋 v2', () => {
     const exported = {
       data: {
         items: [
-          { id: 'q1', input: INPUT, accept: ['BACKEND'], source: 'real-run', asked_at: '2026-11-01T00:00:00.000Z', primary: { router: 'llm', target: 'BACKEND' }, gold_labeled: true },
+          { id: 'q1', stage: 'implementation', input: INPUT, accept: ['BACKEND'], source: 'real-run', asked_at: '2026-11-01T00:00:00.000Z', primary: { router: 'llm', target: 'BACKEND' }, gold_labeled: true },
           { id: 'q2', input: { ...INPUT, contract: null }, accept: [], source: 'real-run', asked_at: '2026-11-01T00:00:01.000Z', primary: { router: 'llm', target: 'PM' }, gold_labeled: false },
         ],
       },
@@ -59,7 +60,7 @@ describe('데이터셋 v2', () => {
     expect(seen).toHaveLength(2);
     for (const input of seen) expect(input).toEqual(INPUT);
     const summary = summarize(rows, dataset.items, 2);
-    expect(summary).toMatchObject({ runs: 2, accuracy: '100%', bySource: { 'real-run': { runs: 2, accuracy: '100%' } }, unstable: 0 });
+    expect(summary).toMatchObject({ runs: 2, accuracy: '100%', bySource: { 'real-run': { runs: 2, accuracy: '100%' } }, byStage: { implementation: { runs: 2, accuracy: '100%' } }, unstable: 0 });
   });
 
   it('출처별 정확도를 낸다', async () => {
@@ -74,6 +75,24 @@ describe('데이터셋 v2', () => {
     expect(summary.bySource).toEqual({ human: { runs: 1, accuracy: '100%' }, llm: { runs: 1, accuracy: '0%' } });
   });
 
+  it('단계별 정확도 — PM이 묻는 기능 명세 초안 질문(태스크 없음)도 읽고, stage가 없으면 implementation', async () => {
+    const { stage: _s, ...noStage } = INPUT;
+    const featureInput = { ...INPUT, stage: 'feature_spec', askerRole: 'PM', task: null, repo: null, contract: null };
+    const dataset = parseDataset({
+      items: [
+        { id: 'a', input: noStage, accept: ['BACKEND'] },
+        { id: 'b', input: featureInput, accept: ['PM'], source: 'human' },
+      ],
+    });
+    expect(dataset.items.map((i) => [i.id, i.stage, i.input.stage])).toEqual([['a', 'implementation', 'implementation'], ['b', 'feature_spec', 'feature_spec']]);
+    const { router, seen } = recordingRouter('BACKEND');
+    const summary = summarize(await runEvaluation(dataset.items, router, { repeat: 1, concurrency: 1 }), dataset.items, 1);
+    expect(summary.byStage).toEqual({ implementation: { runs: 1, accuracy: '100%' }, feature_spec: { runs: 1, accuracy: '0%' } });
+    expect(seen.find((i) => i.stage === 'feature_spec')).toMatchObject({ askerRole: 'PM', task: null });
+    // 항목의 stage와 input.stage가 다르면 형식 오류.
+    expect(() => parseDataset({ items: [{ id: 'c', stage: 'contract', input: INPUT, accept: ['BACKEND'] }] })).toThrow(/stage\(contract\)와 input.stage\(implementation\)/);
+  });
+
   it('형식 오류: input 필드 누락·accept에 없는 값·겹치는 id', () => {
     const { questions: _q, ...noQuestions } = INPUT;
     expect(() => parseDataset({ items: [{ id: 'a', input: noQuestions, accept: ['BACKEND'] }] })).toThrow(/items\.0\.input\.questions/);
@@ -83,11 +102,13 @@ describe('데이터셋 v2', () => {
 });
 
 describe('데이터셋 v1 (옛 형식)', () => {
-  it('기존 20문항을 RoutingInputSnapshot으로 바꾼다 — roles는 [FRONTEND, BACKEND], contract는 null', () => {
+  it('기존 20문항을 RoutingInputSnapshot으로 바꾼다 — stage는 implementation, roles는 [FRONTEND, BACKEND], contract는 null', () => {
     const dataset = parseDataset(JSON.parse(readFileSync('scripts/data/question-routing.json', 'utf8')));
     expect(dataset.format).toBe('v1');
     expect(dataset.items).toHaveLength(20);
     for (const item of dataset.items) {
+      expect(item.stage).toBe('implementation');
+      expect(item.input.stage).toBe('implementation');
       expect(item.input.roles).toEqual(['FRONTEND', 'BACKEND']);
       expect(item.input.contract).toBeNull();
       expect(item.input.questions.length).toBeGreaterThan(0);

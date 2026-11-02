@@ -13,7 +13,6 @@
 //
 // 대표 권한(API: 명세·태스크 생성)으로 만든다. 비밀번호는 NOMOS_PASSWORD 환경변수 또는 입력 창(화면에 안 보임).
 // 이미 받은 토큰이 있으면 NOMOS_TOKEN. 서버 코드(env.ts·DB)를 거치지 않는다 — HTTP만 쓴다.
-import { Api, findProjectRepo, loginAsRepresentative, type ProjectDetail } from './lib/nomos-http.js';
 import { buildProbe, parseScenarios, probeStamp, type ProbeScenario } from './lib/question-probe.js';
 
 const DEFAULT_SERVER = 'https://nomos-team.duckdns.org';
@@ -75,9 +74,94 @@ function parseArgs(argv: string[]): Args {
   return { server: server.replace(/\/+$/, ''), project, login, feRepo, beRepo, only: scenarios, dryRun };
 }
 
+// 입력한 글자를 화면에 찍지 않는 비밀번호 입력.
+async function readHidden(prompt: string): Promise<string> {
+  const stdin = process.stdin;
+  if (!stdin.isTTY) throw new Error('비밀번호를 입력받을 터미널이 없다 — NOMOS_PASSWORD 또는 NOMOS_TOKEN을 설정하라');
+  process.stdout.write(prompt);
+  stdin.setRawMode(true);
+  stdin.resume();
+  stdin.setEncoding('utf8');
+  return new Promise((resolve, reject) => {
+    let buf = '';
+    const onData = (chunk: string): void => {
+      for (const ch of chunk) {
+        if (ch === '\r' || ch === '\n') {
+          cleanup();
+          process.stdout.write('\n');
+          resolve(buf);
+          return;
+        }
+        if (ch === '\u0003') {
+          cleanup();
+          reject(new Error('취소했다'));
+          return;
+        }
+        if (ch === '\u007f' || ch === '\b') buf = buf.slice(0, -1);
+        else buf += ch;
+      }
+    };
+    const cleanup = (): void => {
+      stdin.off('data', onData);
+      stdin.setRawMode(false);
+      stdin.pause();
+    };
+    stdin.on('data', onData);
+  });
+}
+
+class Api {
+  constructor(
+    private readonly base: string,
+    private token = '',
+  ) {}
+
+  setToken(token: string): void {
+    this.token = token;
+  }
+
+  async call<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
+    const res = await fetch(`${this.base}/api${path}`, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const text = await res.text();
+    let json: unknown = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      // HTML 오류 페이지 등
+    }
+    if (!res.ok) {
+      const err = (json as { error?: { code?: string; message?: string; details?: unknown } } | null)?.error;
+      const detail = err?.details ? ` ${JSON.stringify(err.details)}` : '';
+      throw new Error(`${method} ${path} → ${res.status} ${err?.code ?? ''} ${err?.message ?? text.slice(0, 200)}${detail}`);
+    }
+    return (json as { data: T }).data;
+  }
+}
+
+type ProjectDetail = {
+  project: { id: string; name: string; status: string; questionRelay: boolean };
+  repos: { id: string; fullName: string }[];
+  members: { teamRole: string; agentId: string | null; agentName: string | null; userId: string }[];
+};
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function resolveRepo(detail: ProjectDetail, raw: string | undefined, flag: string): { id: string; fullName: string } {
   if (!raw) usage(`${flag}가 필요하다 (이 시나리오의 태스크가 들어갈 레포)`);
-  return findProjectRepo(detail, raw, flag);
+  const repo = UUID.test(raw)
+    ? detail.repos.find((r) => r.id === raw)
+    : detail.repos.find((r) => r.fullName.toLowerCase() === raw.toLowerCase());
+  if (!repo) {
+    throw new Error(`${flag} ${raw}: 이 프로젝트의 레포가 아니다. 프로젝트 레포: ${detail.repos.map((r) => r.fullName).join(', ') || '(없음)'}`);
+  }
+  return repo;
 }
 
 async function main(): Promise<void> {
@@ -101,7 +185,15 @@ async function main(): Promise<void> {
     return;
   }
 
-  await loginAsRepresentative(api, args.login, () => usage('--login이 필요하다 (또는 NOMOS_TOKEN)'));
+  const presetToken = process.env.NOMOS_TOKEN;
+  if (presetToken) {
+    api.setToken(presetToken);
+  } else {
+    if (!args.login) usage('--login이 필요하다 (또는 NOMOS_TOKEN)');
+    const password = process.env.NOMOS_PASSWORD ?? (await readHidden(`${args.login} 비밀번호: `));
+    const auth = await api.call<{ accessToken: string }>('POST', '/auth/login', { loginId: args.login, password });
+    api.setToken(auth.accessToken);
+  }
 
   const detail = await api.call<ProjectDetail>('GET', `/projects/${args.project}`);
   out(`프로젝트: ${detail.project.name} (${detail.project.status})`);

@@ -119,6 +119,7 @@ describe('라우팅 입력 저장 (032)', () => {
     const asked = await w.feClient.askQuestions(w.listTaskId, [PAGE]);
     const { rows } = await pool.query(`SELECT routing_input FROM agent_questions WHERE id = $1`, [asked.id]);
     expect(rows[0]!.routing_input).toEqual({
+      stage: 'implementation',
       askerRole: 'FRONTEND',
       roles: ['FRONTEND', 'BACKEND'],
       task: { title: 'T-1 스터디 목록 화면', kind: 'IMPLEMENT' },
@@ -157,7 +158,7 @@ describe('평가 데이터셋 내보내기 (GET /projects/:id/routing-dataset)',
     expect(all.status).toBe(200);
     const items = (all.json.data as { items: { id: string; accept: string[]; gold_labeled: boolean; source: string; primary: { router: string; target: string }; input: unknown }[] }).items;
     expect(items.map((i) => i.id)).toEqual([labeled.id, unlabeled.id]);
-    expect(items[0]).toMatchObject({ accept: ['BACKEND'], gold_labeled: true, source: 'real-run', primary: { router: 'role_rule:opposite', target: 'BACKEND' } });
+    expect(items[0]).toMatchObject({ stage: 'implementation', accept: ['BACKEND'], gold_labeled: true, source: 'real-run', primary: { router: 'role_rule:opposite', target: 'BACKEND' } });
     expect(items[1]).toMatchObject({ accept: [], gold_labeled: false });
     expect(items[0]!.input).toMatchObject({ askerRole: 'FRONTEND', questions: [PAGE] });
     // 읽기는 이벤트를 남기지 않는다.
@@ -165,6 +166,25 @@ describe('평가 데이터셋 내보내기 (GET /projects/:id/routing-dataset)',
 
     const onlyLabeled = await http('GET', `/projects/${w.projectId}/routing-dataset?labeledOnly=true`, repToken);
     expect((onlyLabeled.json.data as { items: { id: string }[] }).items.map((i) => i.id)).toEqual([labeled.id]);
+
+    // stage 필터 — 지금 생기는 질문은 전부 implementation이다.
+    const impl = await http('GET', `/projects/${w.projectId}/routing-dataset?stage=implementation`, repToken);
+    expect((impl.json.data as { items: unknown[] }).items).toHaveLength(2);
+    const spec = await http('GET', `/projects/${w.projectId}/routing-dataset?stage=feature_spec`, repToken);
+    expect((spec.json.data as { items: unknown[] }).items).toEqual([]);
+    expect((await http('GET', `/projects/${w.projectId}/routing-dataset?stage=planning`, repToken)).status).toBe(400);
+
+    // 운영 보고서의 단계별 일치율 — 정답이 붙은 질문 하나가 implementation에 잡힌다.
+    await drainRoutingRecords();
+    const report = (await http('GET', `/projects/${w.projectId}/routing-report`, repToken)).json.data as unknown as {
+      byStage: { stage: string; questions: number; labeled: number; routers: { router: string; labeled: number; aligned: number }[] }[];
+      rows: { questionId: string; stage: string }[];
+    };
+    expect(report.byStage.map((s) => s.stage)).toEqual(['implementation', 'feature_spec', 'contract']);
+    expect(report.byStage[0]).toMatchObject({ stage: 'implementation', questions: 3, labeled: 1 });
+    expect(report.byStage[0]!.routers.find((r) => r.router === 'role_rule:opposite')).toMatchObject({ labeled: 1, aligned: 1 });
+    expect(report.byStage[1]).toMatchObject({ questions: 0, labeled: 0, routers: [] });
+    expect(report.rows.every((r) => r.stage === 'implementation')).toBe(true);
 
     const member = await http('GET', `/projects/${w.projectId}/routing-dataset`, await w.fe.token());
     expect(member.status).toBe(403);

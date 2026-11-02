@@ -2,12 +2,13 @@
 // 서버 코드 중에서는 router.ts(타입)·roles.ts만 쓴다 — 서버 비밀값 없이 노트북에서 돈다.
 //
 // 형식이 둘이다(scripts/data/README-question-routing.md):
-//   v2  항목마다 { id, input: RoutingInputSnapshot, accept, source?, difficulty?, note? } — 운영 라우터가 받는 입력과 같은 모양.
+//   v2  항목마다 { id, stage?, input: RoutingInputSnapshot, accept, source?, difficulty?, note? } — 운영 라우터가 받는 입력과 같은 모양.
+//       단계(input.stage)가 없으면 implementation이다(단계가 생기기 전 항목).
 //       GET /projects/:id/routing-dataset 응답 파일({ data: { items } })을 그대로 읽는다.
-//   v1  contexts(상황) + 항목이 context 이름을 참조(초기 20문항). 읽을 때 RoutingInputSnapshot으로 바꾼다(roles는 데이터셋 값, contract는 null).
+//   v1  contexts(상황) + 항목이 context 이름을 참조(초기 20문항). 읽을 때 RoutingInputSnapshot으로 바꾼다(stage는 implementation, roles는 데이터셋 값, contract는 null).
 // 평가는 항목의 input을 **그대로** 라우터에 넣는다 — 다시 조립하면 운영과 다른 입력으로 비교하게 된다.
 import { z } from 'zod';
-import type { RoutingInputSnapshot, RoutingTarget } from '../../src/domain/question/router.js';
+import { ROUTING_STAGES, type RoutingInputSnapshot, type RoutingStage, type RoutingTarget } from '../../src/domain/question/router.js';
 import { TEAM_ROLES } from '../../src/domain/roles.js';
 import type { EvalRouter } from './question-routers.js';
 
@@ -48,10 +49,13 @@ const v1Schema = z.object({
 const askedQuestionSchema = z
   .object({ question: z.string().min(1), options: z.array(z.object({ label: z.string() }).passthrough()).default([]) })
   .passthrough();
+const stageSchema = z.enum(ROUTING_STAGES);
 export const routingInputSchema = z.object({
-  askerRole: roleSchema,
+  // 단계가 생기기 전 항목에는 없다 — 그때는 구현 중 질문뿐이었다.
+  stage: stageSchema.default('implementation'),
+  askerRole: z.union([roleSchema, z.literal('PM')]),
   roles: z.array(roleSchema).min(1),
-  task: z.object({ title: z.string().min(1), kind: z.string().min(1) }),
+  task: z.object({ title: z.string().min(1), kind: z.string().min(1) }).nullable(),
   spec: z.object({ featureKey: z.string(), title: z.string(), content: z.string() }).nullable(),
   repo: z.object({ fullName: z.string().min(1) }).nullable(),
   questions: z.array(askedQuestionSchema).min(1).max(4),
@@ -60,6 +64,8 @@ export const routingInputSchema = z.object({
 const v2ItemSchema = z
   .object({
     id: z.string().min(1),
+    // 내보내기 항목은 input.stage를 위로 꺼내 둔다. 둘 다 있으면 같아야 한다.
+    stage: stageSchema.optional(),
     input: routingInputSchema,
     // 내보낸 질문 중 정답 라벨이 아직 없는 것은 빈 배열이다 — 평가에서 건너뛴다.
     accept: z.array(targetSchema),
@@ -72,6 +78,7 @@ const v2Schema = z.object({ version: z.union([z.number(), z.string()]).optional(
 
 export type EvalItem = {
   id: string;
+  stage: RoutingStage;
   input: RoutingInputSnapshot;
   accept: RoutingTarget[];
   source: string;
@@ -105,7 +112,9 @@ export function parseDataset(raw: unknown): LoadedDataset {
       const texts = item.questions ?? [item.question!];
       items.push({
         id: item.id,
+        stage: 'implementation',
         input: {
+          stage: 'implementation',
           askerRole: ctx.askerRole,
           roles: data.roles,
           task: ctx.task,
@@ -128,6 +137,9 @@ export function parseDataset(raw: unknown): LoadedDataset {
   const parsed = v2Schema.safeParse(body);
   if (!parsed.success) throw new Error(`데이터셋 형식 오류 (${parsed.error.issues.length}건)\n${formatProblems(parsed.error.issues)}`);
   const problems = duplicateIds(parsed.data.items);
+  for (const item of parsed.data.items) {
+    if (item.stage !== undefined && item.stage !== item.input.stage) problems.push(`  - items.${item.id}: stage(${item.stage})와 input.stage(${item.input.stage})가 다르다`);
+  }
   if (problems.length) throw new Error(`데이터셋 형식 오류 (${problems.length}건)\n${problems.join('\n')}`);
   const items: EvalItem[] = [];
   const unlabeled: string[] = [];
@@ -138,6 +150,7 @@ export function parseDataset(raw: unknown): LoadedDataset {
     }
     items.push({
       id: item.id,
+      stage: item.input.stage,
       input: item.input as RoutingInputSnapshot,
       accept: item.accept,
       source: item.source ?? 'unknown',
@@ -162,6 +175,7 @@ function duplicateIds(items: { id: string }[]): string[] {
 export type EvalRow = {
   id: string;
   run: number;
+  stage: RoutingStage;
   accept: RoutingTarget[];
   source: string;
   target: RoutingTarget | 'ERROR';
@@ -183,9 +197,9 @@ export async function runEvaluation(items: EvalItem[], router: EvalRouter, optio
       try {
         // 저장된 입력을 그대로 넣는다(다시 조립하지 않는다).
         const d = await router.routeWithCost(item.input);
-        rows.push({ id: item.id, run, accept: item.accept, source: item.source, target: d.target, ok: item.accept.includes(d.target), confidence: d.confidence, reason: d.reason, ms: Date.now() - started, costUsd: d.costUsd });
+        rows.push({ id: item.id, run, stage: item.stage, accept: item.accept, source: item.source, target: d.target, ok: item.accept.includes(d.target), confidence: d.confidence, reason: d.reason, ms: Date.now() - started, costUsd: d.costUsd });
       } catch (err) {
-        rows.push({ id: item.id, run, accept: item.accept, source: item.source, target: 'ERROR', ok: false, confidence: null, reason: null, ms: Date.now() - started, costUsd: null, error: err instanceof Error ? err.message : String(err) });
+        rows.push({ id: item.id, run, stage: item.stage, accept: item.accept, source: item.source, target: 'ERROR', ok: false, confidence: null, reason: null, ms: Date.now() - started, costUsd: null, error: err instanceof Error ? err.message : String(err) });
       }
       options.onProgress?.();
     }
@@ -206,12 +220,19 @@ export function summarize(rows: EvalRow[], items: EvalItem[], repeat: number) {
     const rs = rows.filter((r) => r.source === source);
     bySource[source] = { runs: rs.length, accuracy: pct(rs.filter((r) => r.ok).length, rs.length) };
   }
+  // 단계별 정확도 — 구현 중 질문과 기획 단계(기능 명세·계약 초안) 질문은 난이도가 다르다.
+  const byStage: Record<string, { runs: number; accuracy: string }> = {};
+  for (const stage of ROUTING_STAGES) {
+    const rs = rows.filter((r) => r.stage === stage);
+    if (rs.length > 0) byStage[stage] = { runs: rs.length, accuracy: pct(rs.filter((r) => r.ok).length, rs.length) };
+  }
   return {
     runs: rows.length,
     accuracy: pct(rows.filter((r) => r.ok).length, rows.length),
     selfRecall: pct(selfOnly.filter((r) => r.target === 'SELF').length, selfOnly.length),
     wronglyKept: pct(notSelf.filter((r) => r.target === 'SELF').length, notSelf.length),
     bySource,
+    byStage,
     // 같은 문항을 여러 번 돌렸을 때 판정이 갈린 문항 수(--repeat 2 이상에서 의미가 있다)
     unstable: repeat > 1 ? items.filter((i) => new Set(rows.filter((r) => r.id === i.id).map((r) => r.target)).size > 1).length : null,
     errors: rows.filter((r) => r.target === 'ERROR').length,

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { answerQuestion, askQuestion, detachFromQuestion, getQuestionForAgent, listConsultJobs, listProjectDecisions, listProjectQuestions, submitDraft, listMyQuestions } from '../domain/question/service.js';
 import { TEAM_ROLES } from '../domain/roles.js';
 import type { UserContext } from '../domain/project/visibility.js';
+import { ROUTING_STAGES } from '../domain/question/router.js';
 import { labelGold, exportRoutingDataset, routingReport } from '../domain/question/routing-eval.js';
 import { agentContextOf, authenticateAgent } from '../middleware/agent-auth.js';
 import { authenticate, orgIdOf } from '../middleware/auth.js';
@@ -164,8 +165,11 @@ questionsRouter.post(
   },
 );
 
-// GET /api/projects/:projectId/routing-dataset — 라우터가 본 입력 그대로의 오프라인 평가 데이터셋(대표). labeledOnly면 정답 라벨이 있는 것만.
-const datasetQuery = z.object({ labeledOnly: z.enum(['true', 'false']).default('false').transform((v) => v === 'true') });
+// GET /api/projects/:projectId/routing-dataset — 라우터가 본 입력 그대로의 오프라인 평가 데이터셋(대표). labeledOnly면 정답 라벨이 있는 것만, stage면 그 단계만.
+const datasetQuery = z.object({
+  labeledOnly: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
+  stage: z.enum(ROUTING_STAGES).optional(),
+});
 
 questionsRouter.get(
   '/projects/:projectId/routing-dataset',
@@ -173,8 +177,8 @@ questionsRouter.get(
   authenticate,
   async (req, res) => {
     const { projectId } = req.params as { projectId: string };
-    const { labeledOnly } = req.query as unknown as z.infer<typeof datasetQuery>;
-    res.status(200).json({ data: { items: await exportRoutingDataset(actorOf(req), projectId, labeledOnly) } });
+    const { labeledOnly, stage } = req.query as unknown as z.infer<typeof datasetQuery>;
+    res.status(200).json({ data: { items: await exportRoutingDataset(actorOf(req), projectId, { labeledOnly, stage: stage ?? null }) } });
   },
 );
 
