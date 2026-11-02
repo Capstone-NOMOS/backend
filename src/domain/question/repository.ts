@@ -1,7 +1,7 @@
 import type { QueryResultRow } from 'pg';
 import type { Queryable } from '../../config/db.js';
 import type { TeamRole } from '../roles.js';
-import type { QuestionTarget } from './router.js';
+import type { QuestionTarget, RoutingInputSnapshot } from './router.js';
 
 // 에이전트 질문(018). SQL만 둔다.
 
@@ -79,13 +79,15 @@ export async function insertQuestion(
     status: 'pending' | 'self_owned';
     questions: AskedQuestion[];
     timeoutMs: number;
+    // 라우터가 본 입력 그대로(032) — 실험에서 같은 입력으로 라우터들을 다시 비교한다.
+    routingInput: RoutingInputSnapshot;
   },
 ): Promise<AgentQuestion> {
   const { rows } = await db.query(
-    `INSERT INTO agent_questions (project_id, task_id, asked_by_agent, asker_role, target_role, routed_by, routing, status, questions, expires_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now() + make_interval(secs => $10::double precision / 1000))
+    `INSERT INTO agent_questions (project_id, task_id, asked_by_agent, asker_role, target_role, routed_by, routing, status, questions, expires_at, routing_input)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now() + make_interval(secs => $10::double precision / 1000), $11)
      RETURNING *`,
-    [input.projectId, input.taskId, input.askedByAgentId, input.askerRole, input.targetRole, input.routedBy, JSON.stringify(input.routing), input.status, JSON.stringify(input.questions), input.timeoutMs],
+    [input.projectId, input.taskId, input.askedByAgentId, input.askerRole, input.targetRole, input.routedBy, JSON.stringify(input.routing), input.status, JSON.stringify(input.questions), input.timeoutMs, JSON.stringify(input.routingInput)],
   );
   return toQuestion(rows[0]!);
 }
@@ -294,5 +296,35 @@ export async function listDecisionRows(
     draftedByAgentName: (r.drafted_by_agent_name as string | null) ?? null,
     answeredByNickname: (r.answered_by_nickname as string | null) ?? null,
     answeredByIsRepresentative: r.answered_by_is_representative === true,
+  }));
+}
+
+// 라우팅 평가 데이터셋 내보내기(032) — 입력이 저장된 질문만. 실제로 보낸 판정은 질문 행(routed_by·target_role, self_owned면 SELF),
+// 정답은 사람이 붙인 gold 라벨. 읽기 전용이다(이벤트 없음).
+export type RoutingDatasetRow = {
+  questionId: string;
+  input: RoutingInputSnapshot;
+  goldTarget: string | null;
+  askedAt: string;
+  routedBy: string;
+  target: string;
+};
+
+export async function listRoutingDatasetRows(db: Queryable, projectId: string, labeledOnly: boolean): Promise<RoutingDatasetRow[]> {
+  const { rows } = await db.query(
+    `SELECT id, routing_input, gold_target, created_at, routed_by,
+            CASE WHEN status = 'self_owned' THEN 'SELF' ELSE target_role END AS target
+       FROM agent_questions
+      WHERE project_id = $1 AND routing_input IS NOT NULL AND (NOT $2 OR gold_target IS NOT NULL)
+      ORDER BY created_at, id`,
+    [projectId, labeledOnly],
+  );
+  return rows.map((r) => ({
+    questionId: r.id as string,
+    input: r.routing_input as RoutingInputSnapshot,
+    goldTarget: (r.gold_target as string | null) ?? null,
+    askedAt: iso(r.created_at)!,
+    routedBy: r.routed_by as string,
+    target: r.target as string,
   }));
 }

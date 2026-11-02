@@ -216,6 +216,85 @@ components:
         role: { type: string, nullable: true }
         title: { type: string }
         text: { type: string, description: '서버가 만든 한 줄' }
+    RoutingInputSnapshot:
+      type: object
+      description: |
+        질문을 라우팅할 때 라우터가 본 입력 그대로(`src/domain/question/router.ts`의 `RoutingInputSnapshot` — 서버 전용 context는 뺀다).
+        질문을 올리는 순간 저장한다(`agent_questions.routing_input`, 032) — 명세·계약이 나중에 바뀌어도 그때의 맥락이 남는다.
+      additionalProperties: false
+      required: [askerRole, roles, task, spec, repo, questions]
+      properties:
+        askerRole: { type: string, enum: [FRONTEND, BACKEND] }
+        roles: { type: array, items: { type: string, enum: [FRONTEND, BACKEND] }, description: '이 프로젝트에 있는 역할' }
+        task:
+          type: object
+          additionalProperties: false
+          required: [title, kind]
+          properties:
+            title: { type: string }
+            kind: { type: string }
+        spec:
+          type: object
+          nullable: true
+          additionalProperties: false
+          required: [featureKey, title, content]
+          properties:
+            featureKey: { type: string }
+            title: { type: string }
+            content: { type: string }
+        repo:
+          type: object
+          nullable: true
+          additionalProperties: false
+          required: [fullName]
+          properties:
+            fullName: { type: string }
+        questions:
+          type: array
+          description: Claude Code AskUserQuestion 형식 그대로
+          items:
+            type: object
+            additionalProperties: true
+            required: [question, options]
+            properties:
+              question: { type: string }
+              header: { type: string }
+              multiSelect: { type: boolean }
+              options: { type: array, items: { type: object, additionalProperties: true } }
+        contract:
+          type: object
+          nullable: true
+          description: '그 기능의 확정한 API 계약 요약(없으면 null)'
+          additionalProperties: false
+          required: [featureKey, summary]
+          properties:
+            featureKey: { type: string }
+            summary: { type: string, nullable: true }
+    RoutingDatasetItem:
+      type: object
+      description: |
+        오프라인 라우터 평가 데이터셋(v2) 항목 하나 — `scripts/eval-question-router.ts`가 이 응답 파일을 그대로 읽는다.
+        평가는 `input`을 **다시 조립하지 않고 그대로** 라우터에 넣는다. 필드 이름(snake_case 일부)은 데이터셋 파일 형식을 따른다.
+      additionalProperties: false
+      required: [id, input, accept, source, asked_at, primary, gold_labeled]
+      properties:
+        id: { type: string, format: uuid, description: '질문 id' }
+        input: { $ref: '#/components/schemas/RoutingInputSnapshot' }
+        accept:
+          type: array
+          items: { type: string, enum: [FRONTEND, BACKEND, PM, SELF] }
+          description: '정답 담당자 — 사람이 붙인 gold 라벨(POST /questions/{questionId}/gold). 없으면 빈 배열(평가에서 건너뛴다)'
+        source: { type: string, enum: [real-run] }
+        asked_at: { type: string, format: date-time }
+        primary:
+          type: object
+          additionalProperties: false
+          required: [router, target]
+          description: '실제로 질문을 보낸 판정(라우터 이름·대상, 자기 소관이면 SELF)'
+          properties:
+            router: { type: string }
+            target: { type: string, enum: [FRONTEND, BACKEND, PM, SELF] }
+        gold_labeled: { type: boolean }
     Approval:
       type: object
       required: [id, projectId, projectName, gate, stage, reviewer, roleReview, taskId, taskTitle, taskState, artifactId, gateMode, payload, decision, decidedBy, reason, requestedAt, decidedAt]
@@ -1604,6 +1683,33 @@ paths:
                       questionId: { type: string, format: uuid }
                       goldTarget: { type: string, enum: [FRONTEND, BACKEND, PM, SELF] }
 
+  /projects/{projectId}/routing-dataset:
+    get:
+      tags: [질문]
+      summary: 라우팅 평가 데이터셋 내보내기 (대표)
+      description: |
+        이 프로젝트에서 실제로 나온 질문을 **라우터가 본 입력 그대로** 오프라인 평가 데이터셋(v2) 형식으로 낸다. 응답을 파일로 저장해
+        `npx tsx scripts/eval-question-router.ts <라우터> --data <파일>`에 그대로 넣는다 — 같은 입력으로 라우터들을 몇 번이든 다시 비교한다.
+        입력이 저장되기 전(마이그레이션 032 이전)의 질문은 빠진다. `labeledOnly=true`면 정답 라벨이 붙은 질문만. 대표만. 읽기는 이벤트를 남기지 않는다.
+      security: [{ userToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - { name: labeledOnly, in: query, required: false, schema: { type: string, enum: ['true', 'false'], default: 'false' } }
+      responses:
+        '200':
+          description: 질문 시각순
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    additionalProperties: false
+                    required: [items]
+                    properties:
+                      items: { type: array, items: { $ref: '#/components/schemas/RoutingDatasetItem' } }
   /projects/{projectId}/routing-report:
     get:
       tags: [질문]

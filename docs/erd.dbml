@@ -1016,6 +1016,7 @@ Table agent_questions {
   answered_at timestamptz
   expires_at timestamptz [not null, note: '기본 3일 — 지나면 expired, 그 질문으로 멈춘 태스크는 ESCALATED']
   created_at timestamptz [not null, default: `now()`]
+  routing_input jsonb [note: '★ 032: 라우팅 때 라우터가 본 입력 그대로(RoutingInputSnapshot — context 제외). 재조립하지 않는다. 032 이전 질문은 NULL. GET /projects/:id/routing-dataset이 내보낸다']
 
   Note: '''
   실행 중인 에이전트가 다른 역할 소관 결정을 AskUserQuestion으로 물으면 브릿지 권한 도구가 올린다(C안).

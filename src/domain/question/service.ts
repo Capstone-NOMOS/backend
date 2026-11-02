@@ -14,7 +14,7 @@ import { tasksChanged } from '../dispatch/tasks-changed.js';
 import { blockTaskForQuestion, escalateQuestionTask, findSpecForTask, findTaskById, unblockQuestionTask } from '../task/repository.js';
 import { routeQuestion } from './router-registry.js';
 import { recordRouting } from './routing-eval.js';
-import { PM_TARGET, type QuestionTarget } from './router.js';
+import { PM_TARGET, toRoutingSnapshot, type QuestionTarget } from './router.js';
 import { schedulePmDraft } from './pm-draft.js';
 import { ALL_DECISION_STATUSES, ANSWERED_DECISION_STATUSES, selectDecisions, type QuestionDecision } from './decisions.js';
 import { findApprovedContractForSpec } from '../contract/repository.js';
@@ -147,6 +147,8 @@ export async function askQuestion(ctx: AgentContext, taskId: string, questions: 
       status: selfOwned ? 'self_owned' : 'pending',
       questions,
       timeoutMs: env.QUESTION_TIMEOUT_MS,
+      // 라우터가 본 입력 그대로 — 다시 조립하지 않는다(명세·계약은 나중에 바뀐다).
+      routingInput: toRoutingSnapshot(routingInput),
     });
     await appendEvent(tx, {
       orgId: ctx.orgId,

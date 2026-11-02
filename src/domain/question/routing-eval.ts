@@ -4,9 +4,9 @@ import { AppError } from '../../errors.js';
 import { appendEvent } from '../events/append.js';
 import { findProjectById } from '../project/repository.js';
 import { assertProjectVisibleToUser, type UserContext } from '../project/visibility.js';
-import { findQuestion } from './repository.js';
+import { findQuestion, listRoutingDatasetRows } from './repository.js';
 import { shadowRouters, ROUTER_TIMEOUT_MS, type RoutedResult } from './router-registry.js';
-import type { RoutingInput } from './router.js';
+import type { RoutingInput, RoutingInputSnapshot } from './router.js';
 import { insertRoutingRun, listEvalQuestions, setGoldTarget, type EvalQuestionRow } from './routing-eval-repository.js';
 
 // 질문 라우팅 평가(026) — 서비스가 아니라 발표 지표를 위한 기록이다. 서비스 동작(누구에게 보내나)은 바꾸지 않는다.
@@ -181,4 +181,34 @@ export async function routingReport(actor: UserContext, projectId: string): Prom
       decisions: Object.fromEntries([[BASELINE, 'SELF'], ...runs.map((r) => [r.router, r.target] as const)]),
     })),
   };
+}
+
+// ── 라우팅 평가 데이터셋 내보내기(032) ─────────────────────────────────────
+// 운영에서 실제로 나온 질문을 라우터가 본 입력 그대로(routing_input) 오프라인 평가 데이터셋 v2 항목으로 낸다 —
+// scripts/eval-question-router.ts가 이 응답 파일을 그대로 읽는다. 프로젝트(에이전트 실행)는 질문을 모을 때 한 번만 돌리고,
+// 라우터 비교는 저장된 입력으로 몇 번이든 한다. 정답(accept)은 사람이 붙인 gold 라벨, 없으면 빈 배열(평가는 건너뛴다).
+// 입력이 저장되기 전(032 이전)의 질문은 다시 조립할 수 없어 빠진다. 읽기라 이벤트를 남기지 않는다.
+export type RoutingDatasetItem = {
+  id: string;
+  input: RoutingInputSnapshot;
+  accept: string[];
+  source: 'real-run';
+  asked_at: string;
+  primary: { router: string; target: string };
+  gold_labeled: boolean;
+};
+
+export async function exportRoutingDataset(actor: UserContext, projectId: string, labeledOnly: boolean): Promise<RoutingDatasetItem[]> {
+  if (actor.orgRole !== 'REPRESENTATIVE') throw new AppError('NOT_REPRESENTATIVE', 'only the representative exports the routing dataset');
+  await assertProjectVisibleToUser(pool, actor, projectId);
+  const rows = await listRoutingDatasetRows(pool, projectId, labeledOnly);
+  return rows.map((r) => ({
+    id: r.questionId,
+    input: r.input,
+    accept: r.goldTarget === null ? [] : [r.goldTarget],
+    source: 'real-run',
+    asked_at: r.askedAt,
+    primary: { router: r.routedBy, target: r.target },
+    gold_labeled: r.goldTarget !== null,
+  }));
 }

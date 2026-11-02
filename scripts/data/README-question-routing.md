@@ -8,25 +8,42 @@ npx tsx scripts/eval-question-router.ts --check --data 내파일.json      # 형
 npx tsx scripts/eval-question-router.ts claude:sonnet --data 내파일.json --repeat 2
 ```
 
-## 구조
+## 구조 — v2 (기본)
+
+항목마다 **운영 서버의 라우터가 받는 입력과 같은 모양**(`RoutingInputSnapshot`, `src/domain/question/router.ts`)을 그대로 담는다.
+평가는 이 `input`을 **다시 조립하지 않고 그대로** 라우터에 넣는다 — 운영과 같은 입력으로 비교하기 위해서다.
+운영에서 모은 실제 질문은 `GET /api/projects/:id/routing-dataset`(대표) 응답을 파일로 저장해 그대로 넣는다(`{ data: { items } }`도 읽는다).
 
 | 칸 | 필수 | 뜻 |
 |---|---|---|
-| `version` | ✅ | 데이터셋 버전(숫자나 문자열). **정답을 고치면 올린다** — 결과 파일에 함께 남아 섞이지 않는다 |
-| `roles` | | 프로젝트의 역할. 생략하면 `["FRONTEND", "BACKEND"]` |
-| `contexts.<이름>` | ✅ | 질문이 나온 상황. 여러 문항이 같은 상황을 공유한다 |
-| ├ `askerRole` | ✅ | 질문한 에이전트의 역할 |
-| ├ `task.title` | ✅ | 태스크 제목 (`kind`는 생략하면 IMPLEMENT) |
-| ├ `repo.fullName` | | 레포 이름. 없으면 `null` |
-| └ `spec` | | `{ featureKey, title, content }` 명세. 없으면 `null` |
+| `version` | | 데이터셋 버전. **정답을 고치면 올린다** — 결과 파일에 함께 남아 섞이지 않는다 |
 | `items[]` | ✅ | 문항 |
-| ├ `id` | ✅ | 겹치지 않는 아이디 |
-| ├ `context` | ✅ | 위 `contexts`의 이름 |
-| ├ `question` / `questions` | ✅ 둘 중 하나 | 질문 하나면 `question`, 한 번의 AskUserQuestion에 여러 개였으면 `questions`(최대 4) |
-| ├ `accept` | ✅ | 정답으로 인정하는 판정: `FRONTEND` · `BACKEND` · `SELF`(묻는 쪽 자기 소관). **애매하면 둘 이상** |
-| ├ `source` | | `real`(실제 에이전트 질문) · `synthetic`(만든 것) 등 |
-| ├ `labeledBy` | | 정답을 붙인 사람 |
+| ├ `id` | ✅ | 겹치지 않는 아이디(운영 내보내기는 질문 id) |
+| ├ `input.askerRole` | ✅ | 질문한 에이전트의 역할 `FRONTEND` · `BACKEND` |
+| ├ `input.roles` | ✅ | 프로젝트에 있는 역할 |
+| ├ `input.task` | ✅ | `{ title, kind }` |
+| ├ `input.spec` | ✅ | `{ featureKey, title, content }` 또는 `null` |
+| ├ `input.repo` | ✅ | `{ fullName }` 또는 `null` |
+| ├ `input.questions` | ✅ | AskUserQuestion 형식 `[{ question, options: [{ label }] }]`(1~4개) |
+| ├ `input.contract` | | 그 기능의 확정한 API 계약 요약 `{ featureKey, summary }` 또는 `null` |
+| ├ `accept` | ✅ | 정답으로 인정하는 판정: `FRONTEND` · `BACKEND` · `PM` · `SELF`. **애매하면 둘 이상**. 빈 배열이면 평가에서 건너뛴다(라벨 전 내보내기) |
+| ├ `source` | | `real-run`(운영 실행) · `real-transcript`(개발 기록) · `transplanted`(다른 맥락에 옮겨 심음) · `human` · `llm` — 보고서에 출처별 정확도가 나온다 |
+| ├ `difficulty` | | `clear` · `ambiguous` · `trap` |
 | └ `note` | | 메모 |
+
+내보내기 항목에는 `asked_at`·`primary`(실제로 보낸 판정)·`gold_labeled`도 있다 — 평가는 무시한다.
+
+## 구조 — v1 (옛 형식, 계속 읽는다)
+
+`contexts`(상황) + 항목이 `context` 이름을 참조한다(`question-routing.json`의 초기 20문항). 읽을 때 v2 입력으로 바꾼다 —
+`roles`는 데이터셋의 `roles`(생략하면 `["FRONTEND", "BACKEND"]`), `contract`는 `null`, 질문의 `options`는 빈 배열.
+
+| 칸 | 필수 | 뜻 |
+|---|---|---|
+| `version` | ✅ | 데이터셋 버전 |
+| `roles` | | 프로젝트의 역할 |
+| `contexts.<이름>` | ✅ | `{ askerRole, task: { title, kind? }, repo?, spec? }` |
+| `items[]` | ✅ | `{ id, context, question | questions, accept, source?, labeledBy?, note? }` |
 
 ## 정답을 붙이는 기준
 
@@ -42,6 +59,7 @@ npx tsx scripts/eval-question-router.ts claude:sonnet --data 내파일.json --re
 | 지표 | 뜻 |
 |---|---|
 | `accuracy` | 판정이 `accept`에 든 비율 |
+| `bySource` | 출처(`source`)별 정확도 — LLM이 만든 문항은 LLM 라우터가 잘 맞혀 점수가 부풀 수 있어 따로 본다 |
 | `selfRecall` | 정답이 `SELF`뿐인 문항을 `SELF`로 돌려보낸 비율(자기 소관을 남에게 묻지 않게 하는 능력) |
 | `wronglyKept` | `SELF`가 정답에 없는데 `SELF`로 막은 비율(물어야 할 걸 못 묻게 한 비율 — 낮아야 한다) |
 | `unstable` | `--repeat 2` 이상에서 같은 문항의 판정이 갈린 문항 수 |

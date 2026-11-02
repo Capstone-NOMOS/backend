@@ -1,6 +1,6 @@
 # 질문 라우팅 실험 계획
 
-> 상태: 계획(2026-10-29). 스크립트는 아직 없다 — 아래 "만들 것"이 남은 일이다.
+> 상태: 계획(2026-10-29) · 맥락 저장·내보내기·질문 모으기 스크립트 추가(2026-11-02). 나머지는 아래 "만들 것".
 > 관련 문서: [`plan-router-api.md`](plan-router-api.md)(라우팅을 서버 API로 분리 — 이 실험의 전제).
 
 ## 1. 무엇을 비교하나
@@ -19,7 +19,7 @@
 |---|---|---|
 | 라우팅 정확도 | 판정이 정답(`accept`)에 들어간 비율 | 전체 + **정답 담당자별(FE·BE·PM·SELF)** + **혼동표**(정답 × 판정) + **출처별**(아래 2절) |
 | 비용 | 질문 하나 판정의 USD | LLM은 토큰 × 가격표(`pm/pricing.ts`). Decision AI는 응답의 `costUsd` — 없으면 "비용 없음"으로 나온다 |
-| 지연 | 요청 시작 ~ 응답 끝(ms) | **LLM은 API 모드로 잰다**(아래 5절). 중계 모드는 노트북 대기·CLI 기동이 섞인다 |
+| 지연 | 요청 시작 ~ 응답 끝(ms) | **LLM은 API 모드로 잰다**(아래 7절). 중계 모드는 노트북 대기·CLI 기동이 섞인다 |
 | 실패율 | 라우터가 실패해 대표에게 넘어간 비율(`fallback:representative`) | |
 
 ## 2. 질문 데이터셋
@@ -80,11 +80,46 @@ a-2와 같다. 발표 시연("에이전트가 실제로 막히면 묻는다")용
 | 질문이 담당자 화면에 뜨고 답이 돌아오는가 | 2 |
 | 에이전트가 실제로 묻는다 | 3 소수 |
 
-## 4. 만들 것 (순서대로)
+## 4. 맥락 저장과 재사용
+
+**프로젝트(에이전트 실행)는 질문을 모을 때 한 번만 돌리고, 라우터 비교는 저장된 입력으로 몇 번이든 한다.**
+
+- 라우터가 보는 맥락은 `RoutingInput`(`src/domain/question/router.ts`) 하나다 — 묻는 역할·프로젝트 역할·태스크(제목·종류)·명세(키·제목·본문)·레포·질문·확정한 계약 요약.
+  서버 전용 `context`(orgId)를 뺀 모양이 **`RoutingInputSnapshot`**이고, 서버 저장·내보내기·오프라인 평가가 이 타입 하나를 쓴다.
+- **저장**(마이그레이션 032): 질문을 올리는 순간(질문 INSERT와 같은 트랜잭션) 라우터에 넣은 입력을 `agent_questions.routing_input`에 그대로 남긴다.
+  명세·계약은 나중에 바뀌므로 다시 조립하면 그때의 맥락이 아니다 — 그래서 조립하지 않고 저장한다. 032 이전 질문은 입력이 없어 빠진다.
+- **내보내기**: `GET /api/projects/:id/routing-dataset`(대표, `?labeledOnly=true`면 정답 라벨이 붙은 것만) — 데이터셋 v2 항목
+  `{ id, input, accept(gold 라벨, 없으면 []), source: 'real-run', asked_at, primary: { router, target }, gold_labeled }`.
+  응답을 파일로 저장해 그대로 넣는다:
+  ```bash
+  curl -H "Authorization: Bearer $TOKEN" "$SERVER/api/projects/$ID/routing-dataset?labeledOnly=true" > scripts/data/run-1.json
+  npx tsx scripts/eval-question-router.ts claude:sonnet --data scripts/data/run-1.json --repeat 2
+  npx tsx scripts/eval-question-router.ts https://<decision-ai>/route --data scripts/data/run-1.json
+  ```
+- **오프라인 데이터셋 v2**는 항목마다 같은 `input`을 담는다(형식은 `scripts/data/README-question-routing.md`). 평가는 `input`을 **그대로** 라우터에 넣는다 —
+  운영과 다른 입력으로 비교하지 않게. 옛 형식(v1, contexts 참조 — 초기 20문항)도 읽고, 읽을 때 v2 입력으로 바꾼다(roles는 FE·BE, contract는 null).
+  보고서에 출처(`source`)별 정확도(`bySource`)가 나온다. `--check`는 두 형식 모두 검사한다.
+
+## 5. 질문 발생률 — 빈칸 심기·시범 실행으로 필요한 실행 수 계산
+
+목표 문항 수(2절)를 채우려면 실행을 몇 번 해야 하는지 먼저 잰다.
+
+1. **시나리오 파일**(예시 `scripts/examples/harvest.example.json`): 기능마다 빈칸을 심은 명세(`content` — **누가 정하는지 쓰지 않는다**),
+   심은 빈칸 목록 `plantedGaps: [{ note, expectedOwner }]`(실험자 메모 — **서버로 보내지 않는다**), FE·BE 태스크.
+2. **투입**: `npm run harvest:questions -- --project <id> --login <대표> --scenario <파일> --fe-repo <..> --be-repo <..>`
+   — 대표 권한 HTTP로 명세(`needsApi: false` — 계약 단계를 건너뛴다. 계약이 있으면 BE 질문이 사라진다)와 같은 명세의 FE·BE 태스크를 만든다.
+   실행마다 꼬리표가 붙어(제목·기능 키 중복 방지) 같은 시나리오를 여러 번 넣을 수 있다. `--only`, `--dry-run`.
+3. **시범 실행**: 기능 몇 개를 한 번씩 돌리고(각자 구독), 에이전트가 물으면 화면에서 답해 계속 진행시킨다(후속 질문이 나온다). 정답 라벨은 `POST /questions/:id/gold`.
+4. **집계**: `npm run harvest:questions -- --report --project <id> --scenario <파일> --login <대표>`
+   → 기능별 심은 빈칸 수 · 투입 횟수 · 나온 질문 수(내보내기 API로 읽는다) · **발생률 = 질문 문장 수 ÷ (심은 빈칸 × 투입 횟수)** · 실제로 보낸 곳.
+5. **필요한 실행 수** ≈ 목표 문항 수 ÷ (기능당 심은 빈칸 × 발생률). 예: 빈칸 3개·발생률 50%면 투입 1회당 질문 1.5개 → 120문항에 80회.
+   발생률이 낮은 기능(에이전트가 가정하고 넘어간다)은 빈칸을 더 드러나게 고쳐 다시 시범한다. 같은 질문 반복은 내보낸 뒤 중복을 지운다.
+
+## 6. 만들 것 (순서대로)
 
 1. **개발 기록 캐기 스크립트**(a-1) — 각자 노트북에서 실행, 후보를 데이터셋 형식으로.
-2. **"계약 없는 FE·BE 동시 실행" 시나리오 묶음 + 일괄 투입 스크립트**(a-2) — `probe:questions` 확장, 힌트 없음. 실제 레포·기능 목록이 필요하다(미정).
-3. **운영 질문 내보내기 스크립트**(a-3).
+2. ~~"계약 없는 FE·BE 동시 실행" 일괄 투입 스크립트~~(a-2) — `npm run harvest:questions`(5절). 시나리오 묶음(실제 레포·기능 목록)은 미정.
+3. ~~운영 질문 내보내기~~(a-3) — `GET /projects/:id/routing-dataset`(4절).
 4. **오프라인 평가 보강** — `api:<모델>` 라우터, 담당자별 정확도·혼동표·출처별 점수, 데이터셋 형식 확장(PM 정답, `source`·`difficulty`) — 기존 20문항 호환. ([`plan-router-api.md`](plan-router-api.md)의 구현 범위에 포함)
 5. **방법 2 주입 스크립트** — 봇 계정 준비·질문 주입·정답 라벨·보고서 출력.
    ```bash
@@ -92,7 +127,7 @@ a-2와 같다. 발표 시연("에이전트가 실제로 막히면 묻는다")용
    ```
 6. **Decision AI 응답 규칙 합의**: `{ target, confidence?, reason?, costUsd? }` (`http-router.ts`가 이미 이 형식을 읽는다).
 
-## 5. 공정성 조건
+## 7. 공정성 조건
 
 - **LLM은 API 모드로 잰다.** 지금 운영(중계)에서는 라우팅이 대표 노트북의 `pm-worker`로 가서(3초 폴링 + Claude CLI 기동) 지연이 부풀고 비용이 "API로 했다면"의 환산값이다.
   → [`plan-router-api.md`](plan-router-api.md)로 라우팅만 서버 API로 분리한 뒤 잰다.
@@ -100,14 +135,14 @@ a-2와 같다. 발표 시연("에이전트가 실제로 막히면 묻는다")용
 - Decision AI가 `costUsd`를 주지 않으면 비용 계산 방식(호스팅 비용 ÷ 요청 수 등)을 먼저 정하고 보고서에 적는다.
 - 오분류는 지금 되돌릴 길이 없다("다른 담당자에게 넘기기" 미구현) — 질문-답 왕복 시간 지표는 이번 범위에서 빼거나 오분류를 따로 센다.
 
-## 6. 비용 어림 (코드의 가격표 기준 — 결제 전에 실제 가격 확인)
+## 8. 비용 어림 (코드의 가격표 기준 — 결제 전에 실제 가격 확인)
 
 Sonnet 5.5: 입력 $2 · 출력 $10 / 100만 토큰(`pm/pricing.ts`).
 - 질문 1개 판정: 입력 2~3천 + 출력 ~200 토큰 → 약 $0.01 미만
 - 오프라인 150문항 × 몇 회 + 운영 주입 수백 문항(그림자 포함 2배): 합쳐 수 달러 → **$10~20 충전이면 충분**
 - a-2(실제 실행)는 API가 아니라 각자 구독 사용량이 든다.
 
-## 7. 미정 사항
+## 9. 미정 사항
 
 - Decision AI 담당자와 비용 산정 방식
 - Anthropic API 키(결제 전 — [`plan-router-api.md`](plan-router-api.md) 3절)

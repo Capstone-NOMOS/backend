@@ -20,7 +20,8 @@
     "check:cli-package": "tsx scripts/check-cli-package.ts",
     "verify:settings": "tsx scripts/verify-workspace-settings.ts",
     "seed:tasks": "tsx scripts/seed-remote-tasks.ts",
-    "probe:questions": "tsx scripts/question-probe.ts"
+    "probe:questions": "tsx scripts/question-probe.ts",
+    "harvest:questions": "tsx scripts/question-harvest.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.129.0",

@@ -27,6 +27,15 @@ export type RoutingInput = {
   context?: { orgId: string };
 };
 
+// 저장·재사용용 — 서버 전용 context를 뺀 라우팅 입력(032 agent_questions.routing_input). 서버·오프라인 평가·내보내기가 이 타입 하나를 쓴다:
+// 운영에서 라우팅할 때 본 입력을 그대로 남기고, 오프라인 평가는 그 입력을 다시 조립하지 않고 그대로 라우터에 넣는다.
+export type RoutingInputSnapshot = Omit<RoutingInput, 'context'>;
+
+export function toRoutingSnapshot(input: RoutingInput): RoutingInputSnapshot {
+  const { context: _context, ...snapshot } = input;
+  return snapshot;
+}
+
 export type RoutingDecision = {
   target: RoutingTarget;
   // 0~1. 규칙처럼 확신도가 의미 없는 구현은 null.

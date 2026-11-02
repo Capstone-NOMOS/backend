@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { answerQuestion, askQuestion, detachFromQuestion, getQuestionForAgent, listConsultJobs, listProjectDecisions, listProjectQuestions, submitDraft, listMyQuestions } from '../domain/question/service.js';
 import { TEAM_ROLES } from '../domain/roles.js';
 import type { UserContext } from '../domain/project/visibility.js';
-import { labelGold, routingReport } from '../domain/question/routing-eval.js';
+import { labelGold, exportRoutingDataset, routingReport } from '../domain/question/routing-eval.js';
 import { agentContextOf, authenticateAgent } from '../middleware/agent-auth.js';
 import { authenticate, orgIdOf } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
@@ -161,6 +161,20 @@ questionsRouter.post(
     const { questionId } = req.params as z.infer<typeof questionParams>;
     const { target, note } = req.body as z.infer<typeof goldBody>;
     res.status(200).json({ data: await labelGold(actorOf(req), questionId, target, note ?? null) });
+  },
+);
+
+// GET /api/projects/:projectId/routing-dataset — 라우터가 본 입력 그대로의 오프라인 평가 데이터셋(대표). labeledOnly면 정답 라벨이 있는 것만.
+const datasetQuery = z.object({ labeledOnly: z.enum(['true', 'false']).default('false').transform((v) => v === 'true') });
+
+questionsRouter.get(
+  '/projects/:projectId/routing-dataset',
+  validate({ params: z.object({ projectId: z.string().uuid() }), query: datasetQuery }),
+  authenticate,
+  async (req, res) => {
+    const { projectId } = req.params as { projectId: string };
+    const { labeledOnly } = req.query as unknown as z.infer<typeof datasetQuery>;
+    res.status(200).json({ data: { items: await exportRoutingDataset(actorOf(req), projectId, labeledOnly) } });
   },
 );
 
