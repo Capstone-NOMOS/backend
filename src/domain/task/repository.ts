@@ -365,6 +365,17 @@ export async function closeTaskByHuman(db: Queryable, taskId: string, state: 'DO
   return rows[0] ? toTask(rows[0]) : null;
 }
 
+// 역할 담당이 직접 완료한 결과를 대표 최종 승인에 올린다(human-control.ts) — 사람이 붙잡지 않은 상태에서만, 담당을 비운다.
+export async function submitTaskForApprovalByHuman(db: Queryable, taskId: string): Promise<Task | null> {
+  const { rows } = await db.query(
+    `UPDATE tasks SET state = 'AWAITING_APPROVAL', blocked_reason = NULL, assignee_agent_id = NULL, updated_at = now()
+      WHERE id = $1 AND state = ANY($2::text[])
+      RETURNING *`,
+    [taskId, HUMAN_CLOSABLE],
+  );
+  return rows[0] ? toTask(rows[0]) : null;
+}
+
 // 이 태스크를 선행으로 둔 끝나지 않은 태스크 — 취소 이벤트에 남긴다(취소된 선행은 막지 않으므로 그 태스크들이 풀린다).
 export async function listOpenDependents(db: Queryable, taskId: string): Promise<string[]> {
   const { rows } = await db.query(

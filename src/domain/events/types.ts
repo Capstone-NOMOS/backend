@@ -227,7 +227,7 @@ export type ApprovalRequestedPayload = {
   stage?: 'role_review' | 'final';
   reviewerUserId?: string | null;
   // 역할 담당 검토를 건너뛰고 바로 final인 이유.
-  roleReviewSkipped?: 'no_owner' | 'owner_is_representative';
+  roleReviewSkipped?: 'no_owner' | 'owner_is_representative' | 'manual_completion';
   // 1차 검토를 통과해 생긴 final 카드면 그 role_review 카드.
   roleReviewApprovalId?: string;
 };
@@ -545,6 +545,9 @@ export type TaskCompletedManuallyPayload = {
   previousState: string;
   v3: string;
   note: string | null;
+  // 역할 담당이 직접 완료하면 대표의 최종 승인을 거친다 — 그 카드와 그때의 태스크 상태(AWAITING_APPROVAL). 대표가 하면 DONE. 옛 이벤트에는 없다(DONE).
+  taskState?: 'DONE' | 'AWAITING_APPROVAL';
+  approvalId?: string;
 };
 
 export type TaskResumedPayload = {
@@ -554,6 +557,8 @@ export type TaskResumedPayload = {
   from?: 'AGENT_STOPPED' | 'ESCALATED';
   // ESCALATED에서 재개하면 retry_count를 0으로 돌린다 — 그 전 횟수.
   previousRetryCount?: number;
+  // 누가 재개했나(그 역할 담당 또는 대표). 옛 이벤트에는 없다(그때는 대표뿐이었다).
+  resumedBy?: 'representative' | 'role_owner';
 };
 
 export type AgentRunEndedPayload = {

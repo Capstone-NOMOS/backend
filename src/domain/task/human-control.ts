@@ -1,6 +1,6 @@
 import { pool, withTransaction } from '../../config/db.js';
 import { AppError } from '../../errors.js';
-import { requestReleaseIfComplete } from '../approval/service.js';
+import { requestActionApproval, requestReleaseIfComplete } from '../approval/service.js';
 import { tasksChanged } from '../dispatch/tasks-changed.js';
 import { appendEvent } from '../events/append.js';
 import { findProjectById, listProjectMembers } from '../project/repository.js';
@@ -8,14 +8,16 @@ import type { UserContext } from '../project/visibility.js';
 import { expirePendingForTask } from '../question/repository.js';
 import { insertVerification } from '../verification/repository.js';
 import { inspectManualCommit } from '../verification/service.js';
-import { closeTaskByHuman, findTaskById, insertArtifact, listOpenDependents, type Task } from './repository.js';
+import { closeTaskByHuman, findTaskById, insertArtifact, listOpenDependents, submitTaskForApprovalByHuman, type Task } from './repository.js';
 
 // 사람이 조정하는 출구(027, 대표 결정 2026-10-24) — 재실행으로 풀리지 않는 태스크를 사람이 닫는다.
 //
 //   취소(대표): 잘못 나눈·필요 없어진 태스크. CANCELLED로 닫고 기록은 남긴다. 통합 확인(G3)과 뒤 태스크의 선행에서 "끝난 것"으로 센다 —
 //              안 그러면 그 태스크 하나 때문에 프로젝트가 영원히 끝나지 않는다. 대신할 일은 새 태스크로 만든다.
 //   직접 완료(그 역할 담당 또는 대표): 에이전트가 끝내 못 한 일을 개발자가 태스크 브랜치에 직접 커밋하고 넘긴다.
-//              에이전트 제출과 **같은 V3**(실제 diff·신고 대조·경로 소유권)를 통과해야 DONE이다. 실패면 아무것도 바뀌지 않는다(422).
+//              에이전트 제출과 **같은 V3**(실제 diff·신고 대조·경로 소유권)를 통과해야 한다. 실패면 아무것도 바뀌지 않는다(422).
+//              대표가 하면 바로 DONE. **역할 담당이 하면 대표의 최종 승인 카드**(roleReviewSkipped manual_completion)로 AWAITING_APPROVAL —
+//              멈춘 태스크는 담당이 해결하고 대표가 승인한다(대표 결정 2026-11-03). 반려되면 에이전트 반려와 같은 재시도 경로다.
 //              서버가 커밋을 못 읽으면(SKIPPED) 받지 않는다(409 MANUAL_COMPLETION_UNVERIFIABLE) — 확인 안 된 sha로 DONE이 되지 않게.
 //
 // 둘 다 사람이 붙잡지 않은 상태(READY·BLOCKED·ESCALATED)에서만 — 에이전트가 작업 중인 태스크를 밑에서 닫지 않는다(409 TASK_IN_PROGRESS).
@@ -95,11 +97,19 @@ export async function completeTaskManually(
     );
   }
 
+  const byRepresentative = actor.orgRole === 'REPRESENTATIVE';
   const closed = await withTransaction(async (tx) => {
     const artifact = await insertArtifact(tx, { taskId, commitSha: input.commitSha, changedPaths: input.changedPaths, triggeredActions: [], gateMode: 'HUMAN' });
     await insertVerification(tx, { ...v3, artifactId: artifact.id });
-    const next = await closeTaskByHuman(tx, taskId, 'DONE');
+    const next = byRepresentative ? await closeTaskByHuman(tx, taskId, 'DONE') : await submitTaskForApprovalByHuman(tx, taskId);
     if (!next) throw new AppError('TASK_IN_PROGRESS', 'the task changed while completing — reload and try again');
+    const approval = byRepresentative
+      ? null
+      : await requestActionApproval(
+          tx,
+          { orgId: actor.orgId, projectId: task.projectId, onBehalfOf: actor.userId, policyHash },
+          { task, artifact, stages: [{ stage: 'V3', result: v3.result }], manualCompletion: { byUserId: actor.userId, note: input.note } },
+        );
     await appendEvent(tx, {
       orgId: actor.orgId,
       projectId: task.projectId,
@@ -115,9 +125,12 @@ export async function completeTaskManually(
         previousState: task.state,
         v3: v3.result,
         note: input.note,
+        taskState: byRepresentative ? 'DONE' : 'AWAITING_APPROVAL',
+        ...(approval ? { approvalId: approval.id } : {}),
       },
     });
-    await requestReleaseIfComplete(tx, { orgId: actor.orgId, projectId: task.projectId });
+    // 대표 승인을 기다리면 아직 끝나지 않았다 — 통합 확인 요청은 승인 때(approval/service.ts) 한다.
+    if (byRepresentative) await requestReleaseIfComplete(tx, { orgId: actor.orgId, projectId: task.projectId });
     return next;
   });
   tasksChanged(task.projectId);

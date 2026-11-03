@@ -303,3 +303,20 @@ export async function insertReleaseApproval(db: Queryable, projectId: string, pa
 export async function markProjectCompleted(db: Queryable, projectId: string): Promise<void> {
   await db.query(`UPDATE projects SET status = 'completed' WHERE id = $1 AND status = 'active'`, [projectId]);
 }
+
+// 여러 프로젝트의 역할 담당을 한 번에(받은 편지함 — 프로젝트마다 묻지 않는다). 키는 `${projectId}:${teamRole}`.
+export async function listRoleOwnersForProjects(
+  db: Queryable,
+  projectIds: string[],
+): Promise<Map<string, { userId: string; isRepresentative: boolean }>> {
+  if (projectIds.length === 0) return new Map();
+  const { rows } = await db.query(
+    `SELECT m.project_id, m.team_role, m.user_id, u.org_role
+       FROM project_members m JOIN users u ON u.id = m.user_id
+      WHERE m.project_id = ANY($1::uuid[])`,
+    [projectIds],
+  );
+  return new Map(
+    rows.map((r) => [`${r.project_id as string}:${r.team_role as string}`, { userId: r.user_id as string, isRepresentative: r.org_role === 'REPRESENTATIVE' }]),
+  );
+}

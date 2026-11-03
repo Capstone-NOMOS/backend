@@ -44,11 +44,12 @@ import {
 //   제출 뒤 에이전트 실행은 끝나 있어 IN_PROGRESS를 이어받을 주체가 없다. 반려 사유는 다음 시도의 브리핑(lastRejection)으로 간다.
 // - PM_REVIEW 카드도 대표가 처리한다(PM 리뷰 미구현). 그 결정은 reviewer: 'human_fallback'으로 구분해 남긴다 — PM 리뷰가 생기면 지표를 나눠 센다.
 
-export type ActionApprovalInput = { task: Task; artifact: Artifact; stages: StageOutcome[] };
+// manualCompletion: 역할 담당이 직접 완료(human-control.ts)해 올린 카드 — 담당 본인의 결과라 1차 검토 없이 대표 최종이다.
+export type ActionApprovalInput = { task: Task; artifact: Artifact; stages: StageOutcome[]; manualCompletion?: { byUserId: string; note: string | null } };
 
 type EventContext = { orgId: string; projectId: string; onBehalfOf: string; policyHash: string; agentId?: string };
 
-export type RoleReviewSkipped = 'no_owner' | 'owner_is_representative';
+export type RoleReviewSkipped = 'no_owner' | 'owner_is_representative' | 'manual_completion';
 
 // settle 안에서 부른다 — 트랜잭션은 호출부 것이다. 카드를 만드는 곳은 여기 한 곳이다(1차 검토 뒤 final 카드도 같은 스냅샷을 옮긴다).
 export async function requestActionApproval(
@@ -59,7 +60,13 @@ export async function requestActionApproval(
   const { task, artifact } = input;
   // 역할 담당(사람)이 있고 대표가 아니면 그 사람이 먼저 본다 — 에이전트 연결이 끊겨 있어도(agent_id NULL) 담당은 사람이라 그대로 간다.
   const owner = await findRoleOwner(tx, task.projectId, task.teamRole);
-  const skipped: RoleReviewSkipped | null = owner === null ? 'no_owner' : owner.isRepresentative ? 'owner_is_representative' : null;
+  const skipped: RoleReviewSkipped | null = input.manualCompletion
+    ? 'manual_completion'
+    : owner === null
+      ? 'no_owner'
+      : owner.isRepresentative
+        ? 'owner_is_representative'
+        : null;
   const stage: ApprovalStage = skipped === null ? 'role_review' : 'final';
   const reviewerUserId = skipped === null ? owner!.userId : null;
   const approval = await insertApproval(tx, {
@@ -82,6 +89,7 @@ export async function requestActionApproval(
       submittedByAgentId: task.assigneeAgentId,
       teamRole: task.teamRole,
       ...(skipped === null ? {} : { roleReviewSkipped: skipped }),
+      ...(input.manualCompletion ? { manualCompletion: input.manualCompletion } : {}),
     },
   });
   await appendEvent(tx, {
