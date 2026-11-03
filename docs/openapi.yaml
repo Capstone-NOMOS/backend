@@ -1370,7 +1370,7 @@ components:
         ownerRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true }
     TaskBriefing:
       type: object
-      required: [task, repo, spec, contract, notes, notesBlock, writablePaths, claudeSettings, specTests, policyHash, lastRejection, answeredQuestions, decisions, humanMessages, questionRelay, predecessors]
+      required: [task, repo, spec, contract, notes, notesBlock, writablePaths, claudeSettings, specTests, policyHash, lastRejection, answeredQuestions, decisions, humanMessages, questionRelay, predecessors, base]
       properties:
         task: { $ref: '#/components/schemas/Task' }
         repo:
@@ -1423,6 +1423,18 @@ components:
               title: { type: string }
               branchName: { type: string, nullable: true }
               commitSha: { type: string }
+        base:
+          type: object
+          nullable: true
+          additionalProperties: false
+          description: >-
+            서버가 만든 시작 기준점(036) — 기본 브랜치 최신 + predecessors를 합친 커밋을 `nomos/base/<태스크 id>` 브랜치에 둔다.
+            있으면 Executor는 여기서 분기만 하고, V3는 이 커밋과 제출 커밋을 그대로 비교한다(두 선행이 같은 파일을 바꿔도 정확하다).
+            선행이 없거나 만들지 못했으면(선행끼리 충돌·GitHub 실패) null — Executor가 predecessors를 직접 합친다.
+          required: [branchName, commitSha]
+          properties:
+            branchName: { type: string }
+            commitSha: { type: string }
         humanMessages:
           type: array
           description: '그 역할 담당·대표가 룸에서 보낸 메시지 중 아직 전달되지 않은 것(그 역할 태스크의 마지막 실행 시작 이후, 최근 20개, 오래된 것부터). 실행 중에는 끼워 넣지 않고 다음 실행에 여기로 온다'

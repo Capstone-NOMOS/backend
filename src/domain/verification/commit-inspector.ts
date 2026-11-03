@@ -48,6 +48,28 @@ async function mergeBase(dir: string, commitSha: string, baseBranch: string | nu
   }
 }
 
+// 레포의 bare mirror를 만들거나 최신으로 맞추고 그 경로를 돌려준다. V3 검사기와 시작 기준점 만들기(task/task-base.ts)가 같이 쓴다.
+export async function syncMirror(root: string, repoId: string, cloneUrl: string): Promise<string> {
+  const dir = path.join(root, `${repoId}.git`);
+  if (!existsSync(dir)) {
+    await mkdir(path.dirname(dir), { recursive: true });
+    // '--' 뒤에 둔다. clone_url은 validateCloneUrl이 이미 거르지만(-로 시작 금지), 옵션 주입을 한 겹 더 막는다.
+    await run('git', ['clone', '--mirror', '--', cloneUrl, dir]);
+  } else {
+    // clone_url은 PATCH /repos/:repoId로 바뀔 수 있다. 기존 mirror는 옛 주소를 들고 있으므로 매번 맞춘다 —
+    // 안 그러면 바뀐 뒤에도 옛 원격에서 받아 와 새 커밋을 "없는 커밋(FAIL)"으로 판정한다.
+    await run('git', ['--git-dir', dir, 'remote', 'set-url', 'origin', '--', cloneUrl]);
+    // mirror의 갱신은 fetch가 아니라 remote update다. refspec이 이미 mirror용으로 박혀 있다.
+    try {
+      await run('git', ['--git-dir', dir, 'remote', 'update', '--prune']);
+    } catch (err) {
+      // 갱신 실패는 치명적이지 않다 — 찾는 커밋이 이미 있으면 그대로 진행한다.
+      logger.warn('mirror 갱신 실패, 기존 오브젝트로 진행', { repoId, err: String(err) });
+    }
+  }
+  return dir;
+}
+
 // bare mirror를 레포마다 하나씩 들고 fetch로 갱신한다. 작업 트리를 만들지 않으므로
 // 동시에 여러 커밋을 검사해도 서로 간섭하지 않는다 (checkout이 없다).
 export function gitMirrorInspector(root: string = mirrorRoot()): CommitInspector {
@@ -58,24 +80,7 @@ export function gitMirrorInspector(root: string = mirrorRoot()): CommitInspector
       if (cloneUrl === null) {
         throw new InspectionSkipped('repos.clone_url 미설정 — 커밋 diff를 읽을 수 없다');
       }
-      const dir = path.join(root, `${repoId}.git`);
-
-      if (!existsSync(dir)) {
-        await mkdir(path.dirname(dir), { recursive: true });
-        // '--' 뒤에 둔다. clone_url은 validateCloneUrl이 이미 거르지만(-로 시작 금지), 옵션 주입을 한 겹 더 막는다.
-        await run('git', ['clone', '--mirror', '--', cloneUrl, dir]);
-      } else {
-        // clone_url은 PATCH /repos/:repoId로 바뀔 수 있다. 기존 mirror는 옛 주소를 들고 있으므로 매번 맞춘다 —
-        // 안 그러면 바뀐 뒤에도 옛 원격에서 받아 와 새 커밋을 "없는 커밋(FAIL)"으로 판정한다.
-        await run('git', ['--git-dir', dir, 'remote', 'set-url', 'origin', '--', cloneUrl]);
-        // mirror의 갱신은 fetch가 아니라 remote update다. refspec이 이미 mirror용으로 박혀 있다.
-        try {
-          await run('git', ['--git-dir', dir, 'remote', 'update', '--prune']);
-        } catch (err) {
-          // 갱신 실패는 치명적이지 않다 — 찾는 커밋이 이미 있으면 그대로 진행한다.
-          logger.warn('mirror 갱신 실패, 기존 오브젝트로 진행', { repoId, err: String(err) });
-        }
-      }
+      const dir = await syncMirror(root, repoId, cloneUrl);
 
       try {
         await run('git', ['--git-dir', dir, 'cat-file', '-e', `${commitSha}^{commit}`]);

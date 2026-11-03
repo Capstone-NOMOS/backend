@@ -109,6 +109,20 @@ export type PredecessorMerge = { merged: PredecessorCommit[]; failed: { predeces
 const SHA = /^[0-9a-f]{7,64}$/i;
 const BRANCH = /^[A-Za-z0-9._/-]+$/;
 
+// 원격 브랜치의 커밋을 이 레포로 받아 둔다(서버가 만든 시작 기준점, 선행 브랜치). 이미 있거나 받았으면 true.
+export function fetchCommit(repoPath: string, branchName: string | null, commitSha: string): boolean {
+  if (!SHA.test(commitSha)) return false;
+  if (refExists(repoPath, `${commitSha}^{commit}`)) return true;
+  if (branchName && BRANCH.test(branchName) && !branchName.startsWith('-')) {
+    try {
+      execFileSync('git', ['fetch', '--quiet', 'origin', `refs/heads/${branchName}`], { cwd: repoPath, stdio: 'ignore' });
+    } catch {
+      // origin이 없거나(로컬 레포) 브랜치가 없다.
+    }
+  }
+  return refExists(repoPath, `${commitSha}^{commit}`);
+}
+
 // 새로 딴 태스크 브랜치에 선행 커밋을 오래된 것부터 합친다(앞서면 빨리 감기, 아니면 병합 커밋). 모델이 아니라 Executor가 한다 —
 // 모델의 git은 merge·cherry-pick이 막혀 있다. 커밋이 없으면 선행 브랜치를 받아 온다. 충돌이나 실패는 되돌리고 건너뛴다 —
 // 실행을 막으면 태스크가 READY로 남아 같은 실패를 되풀이하므로, 프롬프트에 "합치지 못했다"를 적고 모델이 멈출지 판단하게 한다.
@@ -120,14 +134,7 @@ export function mergePredecessors(dir: string, predecessors: readonly Predecesso
       result.failed.push({ predecessor: p, reason: '커밋 형식이 아니다' });
       continue;
     }
-    if (!refExists(dir, `${p.commitSha}^{commit}`) && p.branchName && BRANCH.test(p.branchName) && !p.branchName.startsWith('-')) {
-      try {
-        execFileSync('git', ['fetch', '--quiet', 'origin', `refs/heads/${p.branchName}`], { cwd: dir, stdio: 'ignore' });
-      } catch {
-        // origin이 없거나(로컬 레포) 브랜치가 지워졌다 — 아래에서 커밋이 없다고 기록한다.
-      }
-    }
-    if (!refExists(dir, `${p.commitSha}^{commit}`)) {
+    if (!fetchCommit(dir, p.branchName, p.commitSha)) {
       result.failed.push({ predecessor: p, reason: `커밋 ${p.commitSha.slice(0, 12)}을 찾지 못했다(선행 브랜치 ${p.branchName ?? '?'}가 push되지 않았거나 지워졌다)` });
       continue;
     }

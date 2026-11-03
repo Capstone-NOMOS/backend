@@ -47,7 +47,7 @@ import { runLint, runSpecTests, type SpecTest, type StageReport } from './verify
 import { ensureRepo } from './repo-checkout.js';
 import { runConsult } from './consult.js';
 import { runContractBatch, runContractDraft, type ContractDraft } from './contract.js';
-import { cleanWorkspaces, headSha, mergePredecessors, prepareWorkspace, type PredecessorCommit, type PredecessorMerge } from './workspace.js';
+import { cleanWorkspaces, fetchCommit, headSha, mergePredecessors, prepareWorkspace, type PredecessorCommit, type PredecessorMerge } from './workspace.js';
 
 // 푸시가 오지 않아도 이 간격으로 한 번씩 다시 본다(끊겼을 때는 이 간격으로 폴링한다).
 const POLL_INTERVAL_MS = 10_000;
@@ -109,6 +109,8 @@ type Briefing = {
   questionRelay?: boolean;
   // 같은 레포의 끝난 선행 태스크와 마지막 제출 커밋(CLI 0.1.20·서버 같은 배포부터, 옛 서버면 없다) — 새 태스크 브랜치에 합치고 시작한다.
   predecessors?: PredecessorCommit[];
+  // 서버가 만든 시작 기준점(서버 036, 옛 서버면 없다) — 있으면 여기서 분기만 한다(선행을 직접 합치지 않는다).
+  base?: { branchName: string; commitSha: string } | null;
   notesBlock: string;
   writablePaths: { pathPattern: string }[];
   claudeSettings: unknown;
@@ -234,20 +236,27 @@ async function handleTask(client: NomosClient, projectId: string, task: TaskSumm
 
   // cloneUrl이 없는 옛 서버(브리핑에 필드 자체가 없음)도 github.com/{fullName}으로 받는다.
   const checkout = ensureRepo({ fullName: briefing.repo.fullName, cloneUrl: briefing.repo.cloneUrl ?? null }, { log });
+  // 서버가 만든 시작 기준점이 있으면 거기서 분기한다(선행 코드가 이미 합쳐져 있다). 받지 못하면 기본 브랜치에서 따고 선행을 직접 합친다.
+  const serverBase = briefing.base && fetchCommit(checkout.path, briefing.base.branchName, briefing.base.commitSha) ? briefing.base : null;
+  if (briefing.base && !serverBase) log(`서버 기준점 ${briefing.base.branchName}을 받지 못했다 — 선행을 직접 합친다`);
   const workspace = prepareWorkspace({
     repoPath: checkout.path,
     projectId,
     taskId: task.id,
     branchName: briefing.task.branchName,
-    // CLI가 관리하는 클론은 방금 fetch한 origin/<기본 브랜치>에서 분기한다.
-    baseBranch: checkout.baseRef(briefing.repo.defaultBranch),
+    // CLI가 관리하는 클론은 방금 fetch한 origin/<기본 브랜치>에서 분기한다. 서버 기준점이 있으면 그 커밋에서.
+    baseBranch: serverBase?.commitSha ?? checkout.baseRef(briefing.repo.defaultBranch),
     settings: briefing.claudeSettings,
     policyHash: briefing.policyHash,
   });
   log(`작업공간 ${workspace.dir} (브랜치 ${workspace.branch})`);
   // 선행 작업 위에서 시작한다 — 새로 딴 브랜치일 때만(이어 가는 브랜치에는 이미 들어 있다).
   let predecessorMerge: PredecessorMerge | undefined;
-  if (workspace.startedFresh && (briefing.predecessors?.length ?? 0) > 0) {
+  if (workspace.startedFresh && serverBase && (briefing.predecessors?.length ?? 0) > 0) {
+    // 서버가 이미 합쳤다 — 프롬프트에 "선행 코드가 들어 있다"만 알린다.
+    predecessorMerge = { merged: briefing.predecessors!, failed: [] };
+    log(`  서버 기준점에서 시작: ${serverBase.branchName} (${serverBase.commitSha.slice(0, 12)}) — 선행 ${briefing.predecessors!.length}개 포함`);
+  } else if (workspace.startedFresh && (briefing.predecessors?.length ?? 0) > 0) {
     predecessorMerge = mergePredecessors(workspace.dir, briefing.predecessors!);
     for (const p of predecessorMerge.merged) log(`  선행 합침: ${p.title} (${p.commitSha.slice(0, 12)})`);
     for (const f of predecessorMerge.failed) log(`  선행 합치지 못함: ${f.predecessor.title} — ${f.reason}`);

@@ -445,6 +445,7 @@ Table tasks {
   state              text        [not null, default: 'READY']
   blocked_reason     text        [note: '★ DISPUTE | DEPENDENCY | QUESTION. state=BLOCKED와 짝 (M2 분모는 DISPUTE만)']
   branch_name        text        [note: 'task/T-042-fe']
+  base_commit        text        [note: '036 시작 기준점 — 서버가 기본 브랜치 + 같은 레포의 끝난 선행 커밋을 합친 커밋(nomos/base/<id>). V3 비교 기준. NULL = 선행 없음·만들지 못함. CHECK 40자 hex']
   retry_count        integer     [not null, default: 0, note: '3회 → ESCALATED']
   ping_pong_count    integer     [not null, default: 0, note: '3회 → 대표']
   blocked_by_task_id uuid

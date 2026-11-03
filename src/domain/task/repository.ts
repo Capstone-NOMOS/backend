@@ -480,3 +480,14 @@ export async function listPredecessorBases(db: Queryable, taskId: string): Promi
     commitSha: r.commit_sha as string,
   }));
 }
+
+// 시작 기준점(036, task-base.ts). 한 번 적으면 바꾸지 않는다 — 동시에 두 번 만들었으면 먼저 적은 쪽이 남는다(돌려준 값이 그 값이다).
+export async function findTaskBaseCommit(db: Queryable, taskId: string): Promise<string | null> {
+  const { rows } = await db.query(`SELECT base_commit FROM tasks WHERE id = $1`, [taskId]);
+  return (rows[0]?.base_commit as string | null | undefined) ?? null;
+}
+
+export async function setTaskBaseCommit(db: Queryable, taskId: string, commitSha: string): Promise<string> {
+  await db.query(`UPDATE tasks SET base_commit = $2 WHERE id = $1 AND base_commit IS NULL`, [taskId, commitSha]);
+  return (await findTaskBaseCommit(db, taskId)) ?? commitSha;
+}

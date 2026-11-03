@@ -7,7 +7,8 @@ import { pool } from '../src/config/db.js';
 import { createTask } from '../src/domain/authoring/service.js';
 import { createProject } from '../src/domain/project/service.js';
 import { connectRepos } from '../src/domain/repo/service.js';
-import { insertArtifact, listPredecessorBases } from '../src/domain/task/repository.js';
+import { findTaskBaseCommit, insertArtifact, listPredecessorBases } from '../src/domain/task/repository.js';
+import { ensureTaskBase, mirrorBaseBuilder, setBaseBuilder, type BaseBuilder } from '../src/domain/task/task-base.js';
 import { gitMirrorInspector } from '../src/domain/verification/commit-inspector.js';
 import { buildTaskPrompt } from '../src/executor/prompt.js';
 import { mergePredecessors, prepareWorkspace, type PredecessorCommit } from '../src/executor/workspace.js';
@@ -171,5 +172,112 @@ describe('listPredecessorBases — 브리핑과 V3가 쓰는 한 벌', () => {
       { taskId: b.id, title: 'B 저장소', branchName: `task/${b.id}`, commitSha: 'b1'.repeat(20) },
     ]);
     expect(await listPredecessorBases(pool, a.id)).toEqual([]);
+  });
+});
+
+// 서버가 만든 시작 기준점(036) — 두 선행이 같은 파일(라우터 등록 파일)을 바꿔도 V3가 정확하다. 교집합 방식(#86)은 그 파일을 잡았다.
+describe('시작 기준점 — 서버가 선행을 합친 커밋', () => {
+  const WSGI = Array.from({ length: 12 }, (_, i) => `line ${i}`).join('\n') + '\n';
+  let shared: { a: PredecessorCommit; b: PredecessorCommit };
+
+  beforeAll(() => {
+    git(origin, 'checkout', '-q', 'main');
+    writeFileSync(path.join(origin, 'wsgi.py'), WSGI);
+    git(origin, 'add', 'wsgi.py');
+    git(origin, ...ID, 'commit', '-q', '-m', 'wsgi');
+    const edit = (branch: string, line: number, file: string) => {
+      git(origin, 'checkout', '-q', '-B', branch, 'main');
+      const lines = WSGI.split('\n');
+      lines[line] = `route ${branch}`;
+      writeFileSync(path.join(origin, 'wsgi.py'), lines.join('\n'));
+      writeFileSync(path.join(origin, file), `${branch}\n`);
+      git(origin, 'add', 'wsgi.py', file);
+      git(origin, ...ID, 'commit', '-q', '-m', branch);
+      const sha = git(origin, 'rev-parse', 'HEAD');
+      git(origin, 'checkout', '-q', 'main');
+      return sha;
+    };
+    // 둘 다 wsgi.py에 자기 라우트를 등록한다(줄이 떨어져 있어 충돌은 없다).
+    shared = {
+      a: { taskId: 'sa', title: 'F-01 목록', branchName: 'task/sa', commitSha: edit('task/sa', 1, 'list.py') },
+      b: { taskId: 'sb', title: 'F-02 상세', branchName: 'task/sb', commitSha: edit('task/sb', 10, 'detail.py') },
+    };
+    git(clone, 'fetch', '-q', 'origin');
+  });
+
+  const buildInput = (taskId: string, predecessors: PredecessorCommit[]) => ({
+    taskId, orgId: 'o1', repoId: 'rb', fullName: 'acme/api', cloneUrl: origin, defaultBranch: 'main', predecessors,
+  });
+
+  it('mirror 구현: 기본 브랜치 + 선행을 합친 커밋을 nomos/base/<id>로 레포에 두고, V3는 그 커밋과 비교해 이 태스크 파일만 센다', async () => {
+    const built = await mirrorBaseBuilder(mirrors).build(buildInput('t9', [shared.a, shared.b]));
+    if (!('commitSha' in built)) throw new Error('expected a base commit');
+    expect(git(origin, 'rev-parse', 'refs/heads/nomos/base/t9')).toBe(built.commitSha);
+
+    // Executor: 기준점에서 분기만 한다(합치지 않는다).
+    git(clone, 'fetch', '-q', 'origin', 'refs/heads/nomos/base/t9');
+    const ws = prepareWorkspace({ repoPath: clone, projectId: 'p1', taskId: 't9', branchName: 'task/t9', baseBranch: built.commitSha, settings: {}, policyHash: 'h' });
+    const wsgi = readFileSync(path.join(ws.dir, 'wsgi.py'), 'utf8');
+    expect(wsgi).toContain('route task/sa');
+    expect(wsgi).toContain('route task/sb');
+    writeFileSync(path.join(ws.dir, 'route.py'), 'x\n');
+    git(ws.dir, 'add', 'route.py');
+    git(ws.dir, ...ID, 'commit', '-q', '-m', 'F-03');
+    git(ws.dir, 'push', '-q', 'origin', 'task/t9');
+    const head = git(ws.dir, 'rev-parse', 'HEAD');
+
+    const inspector = gitMirrorInspector(mirrors);
+    const input = { repoId: 'rb', orgId: 'o1', cloneUrl: origin, githubRepoId: null, commitSha: head, baseBranch: 'main' };
+    expect(await inspector.changedPaths({ ...input, baseCommits: [built.commitSha] })).toEqual(['route.py']);
+    // 교집합 방식은 두 선행이 같이 바꾼 wsgi.py를 이 태스크의 변경으로 잡는다 — 이 기능을 만든 이유.
+    expect((await inspector.changedPaths({ ...input, baseCommits: [shared.a.commitSha, shared.b.commitSha] })).sort()).toEqual(['route.py', 'wsgi.py']);
+  });
+
+  it('mirror 구현: 선행끼리 충돌하면 그 선행을 알린다(기준점 없음)', async () => {
+    expect(await mirrorBaseBuilder(mirrors).build(buildInput('t10', [preds.a, preds.conflicting]))).toEqual({ conflict: preds.conflicting });
+  });
+});
+
+describe('ensureTaskBase — 한 번 만들어 적고 다시 쓴다', () => {
+  beforeEach(() => truncateAll());
+
+  it('선행이 있으면 만들어 tasks.base_commit에 적고, 다음 브리핑은 다시 만들지 않는다 · 충돌·실패는 null(적지 않는다)', async () => {
+    const { userId, orgId } = await createTestOrg('rep');
+    const [api] = await connectRepos({ orgId, actorUserId: userId, actorOrgRole: 'REPRESENTATIVE', repos: [{ fullName: 'acme/api', ownerRole: 'BACKEND' }] });
+    const { project } = await createProject(orgId, userId, { name: 'p', autonomyPreset: 'L2', pmBudgetUsd: 1, repoIds: [api!.id] });
+    const task = (title: string, dependsOn: string[]) => createTask(userId, project.id, { title, teamRole: null, kind: 'INTEGRATION', repoId: api!.id, specId: null, dependsOn });
+    const a = await task('A', []);
+    const solo = await task('S', []);
+    const c = await task('C', [a.id]);
+    // DONE으로 가는 서비스 경로는 제출·검증 전체라 선행의 상태와 제출 커밋만 직접 둔다.
+    await pool.query(`UPDATE tasks SET state = 'DONE' WHERE id = $1`, [a.id]);
+    await insertArtifact(pool, { taskId: a.id, commitSha: 'a'.repeat(40), changedPaths: ['x'], triggeredActions: [], gateMode: 'AUTO' });
+
+    let calls = 0;
+    const fake = (result: Awaited<ReturnType<BaseBuilder['build']>> | Error): BaseBuilder => ({
+      kind: 'fake',
+      async build() {
+        calls += 1;
+        if (result instanceof Error) throw result;
+        return result;
+      },
+    });
+    try {
+      setBaseBuilder(fake(new Error('GitHub 403')));
+      expect(await ensureTaskBase(c)).toBeNull();
+      setBaseBuilder(fake({ conflict: { taskId: a.id, title: 'A', branchName: null, commitSha: 'a'.repeat(40) } }));
+      expect(await ensureTaskBase(c)).toBeNull();
+      expect(await findTaskBaseCommit(pool, c.id)).toBeNull();
+
+      setBaseBuilder(fake({ commitSha: 'b'.repeat(40) }));
+      expect(await ensureTaskBase(c)).toEqual({ branchName: `nomos/base/${c.id}`, commitSha: 'b'.repeat(40) });
+      calls = 0;
+      expect(await ensureTaskBase(c)).toEqual({ branchName: `nomos/base/${c.id}`, commitSha: 'b'.repeat(40) });
+      expect(calls).toBe(0);
+      expect(await ensureTaskBase(solo)).toBeNull(); // 선행 없음
+      expect(calls).toBe(0);
+    } finally {
+      setBaseBuilder(null);
+    }
   });
 });

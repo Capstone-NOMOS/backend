@@ -5,6 +5,7 @@ import { completeGithubDeviceFlow } from '../src/domain/oauth/service.js';
 import { connectRepos } from '../src/domain/repo/service.js';
 import { githubInspector } from '../src/domain/verification/github-inspector.js';
 import { CommitNotFoundError, InspectionSkipped } from '../src/domain/verification/inspection.js';
+import { githubBaseBuilder } from '../src/domain/task/task-base.js';
 import { createTestOrg } from './fixtures.js';
 import { resetSchema, testPool, truncateAll } from './test-db.js';
 
@@ -280,5 +281,53 @@ describe('githubInspector — 선행 커밋 기준', () => {
     await expect(gone.inspector.changedPaths({ ...input, baseCommits: [A] })).rejects.toSatisfy(
       (err) => err instanceof InspectionSkipped && err.reason.includes('선행 태스크의 커밋'),
     );
+  });
+});
+
+// 시작 기준점(036)의 GitHub 구현 — 대표 토큰으로 nomos/base/<id>를 기본 브랜치 머리에 만들고 merges API로 선행을 합친다.
+describe('githubBaseBuilder', () => {
+  const A = 'a'.repeat(40);
+  const B = 'b'.repeat(40);
+  const MAIN = 'c'.repeat(40);
+  const REPO = `${API}/repos/acme/study-api`;
+  const pred = (taskId: string, commitSha: string) => ({ taskId, title: taskId, branchName: `task/${taskId}`, commitSha });
+
+  function scripted(responses: { method: string; url: string; status: number; body?: unknown }[]) {
+    const calls: { method: string; url: string; body: unknown }[] = [];
+    const fetchImpl = async (url: string, init?: RequestInit): Promise<Response> => {
+      const method = init?.method ?? 'GET';
+      calls.push({ method, url, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      const next = responses.shift();
+      if (!next || next.method !== method || next.url !== url) return new Response(`unexpected ${method} ${url}`, { status: 500 });
+      return new Response(next.body === undefined ? null : JSON.stringify(next.body), { status: next.status });
+    };
+    return { calls, builder: githubBaseBuilder({ fetchImpl, apiBase: API }) };
+  }
+
+  it('기본 브랜치 머리에 브랜치를 만들고 선행을 차례로 합친다 — 이미 들어 있으면(204) 건너뛴다', async () => {
+    const { orgId, input } = await setup();
+    const { calls, builder } = scripted([
+      { method: 'GET', url: `${REPO}/git/ref/heads/main`, status: 200, body: { object: { sha: MAIN } } },
+      { method: 'POST', url: `${REPO}/git/refs`, status: 201 },
+      { method: 'POST', url: `${REPO}/merges`, status: 201, body: { sha: A } },
+      { method: 'POST', url: `${REPO}/merges`, status: 204 },
+    ]);
+    const built = await builder.build({ taskId: 't1', orgId, repoId: input.repoId, fullName: 'acme/study-api', cloneUrl: null, defaultBranch: 'main', predecessors: [pred('p1', A), pred('p2', B)] });
+    expect(built).toEqual({ commitSha: A });
+    expect(calls[1]!.body).toEqual({ ref: 'refs/heads/nomos/base/t1', sha: MAIN });
+    expect(calls[2]!.body).toMatchObject({ base: 'nomos/base/t1', head: A });
+  });
+
+  it('브랜치가 이미 있으면 기본 브랜치 머리로 되돌리고, 충돌(409)이면 그 선행을 알린다', async () => {
+    const { orgId, input } = await setup();
+    const { calls, builder } = scripted([
+      { method: 'GET', url: `${REPO}/git/ref/heads/main`, status: 200, body: { object: { sha: MAIN } } },
+      { method: 'POST', url: `${REPO}/git/refs`, status: 422 },
+      { method: 'PATCH', url: `${REPO}/git/refs/heads/nomos/base/t2`, status: 200 },
+      { method: 'POST', url: `${REPO}/merges`, status: 409 },
+    ]);
+    const built = await builder.build({ taskId: 't2', orgId, repoId: input.repoId, fullName: 'acme/study-api', cloneUrl: null, defaultBranch: 'main', predecessors: [pred('p1', A)] });
+    expect(built).toEqual({ conflict: pred('p1', A) });
+    expect(calls[2]!.body).toEqual({ sha: MAIN, force: true });
   });
 });
