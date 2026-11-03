@@ -19,6 +19,8 @@ export type PromptBriefing = {
   // 질문 중계(프로젝트 스위치). 꺼져 있으면(옛 서버면 필드 없음 → 꺼짐) AskUserQuestion 규칙 대신 "가정함" 규칙을 준다.
   questionRelay?: boolean;
   writablePaths: { pathPattern: string }[];
+  // Executor가 새 태스크 브랜치에 합친 선행 작업(workspace.ts의 mergePredecessors). 없으면 기본 브랜치에서 시작했다.
+  predecessorMerge?: { merged: { title: string; commitSha: string }[]; failed: { predecessor: { title: string }; reason: string }[] };
 };
 
 // 작업 환경(운영 테스트 4-4). 거부된 명령을 바꿔 가며 재시도하느라 턴을 쓰지 않게, 쓸 수 있는 것과 없는 것을 미리 말한다.
@@ -99,6 +101,26 @@ export function buildTaskPrompt(briefing: PromptBriefing, branch: string, enviro
     );
   }
   // 사람(그 역할 담당·대표)이 룸에서 보낸 메시지 — 이번 실행이 시작되기 전에 온 것만 들어온다(실행 중에는 끼워 넣지 않는다).
+  // 선행 작업 위에서 시작했다 — 선행이 만든 코드가 이미 이 브랜치에 있다. 못 합친 선행은 다시 만들지 말고 멈추게 한다
+  // (남의 작업을 지어내면 V3·리뷰에서 엉뚱한 diff가 된다 — 운영 실험의 BE도 그래서 멈췄다).
+  const pm = briefing.predecessorMerge;
+  if (pm && (pm.merged.length > 0 || pm.failed.length > 0)) {
+    sections.push(
+      [
+        '# 선행 작업 위에서 시작한다',
+        ...(pm.merged.length > 0
+          ? ['이 브랜치에 선행 태스크의 코드가 이미 합쳐져 있다 — 그 위에 이어서 구현한다(다시 만들지 않는다):', ...pm.merged.map((m) => `- ${m.title} (${m.commitSha.slice(0, 12)})`)]
+          : []),
+        ...(pm.failed.length > 0
+          ? [
+              '합치지 못한 선행 태스크가 있다 — 그 코드는 이 브랜치에 없다:',
+              ...pm.failed.map((f) => `- ${f.predecessor.title}: ${f.reason}`),
+              '그 코드가 꼭 필요하면 직접 다시 만들지 말고, 커밋하지 말고 멈춘 뒤 마지막 메시지에 무엇이 없어서 막혔는지 적는다.',
+            ]
+          : []),
+      ].join('\n'),
+    );
+  }
   if (briefing.humanMessages && briefing.humanMessages.length > 0) {
     sections.push(
       [

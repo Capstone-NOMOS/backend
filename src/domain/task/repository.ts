@@ -449,3 +449,34 @@ export async function escalateArtifactActions(
   );
   return toArtifact(rows[0]!);
 }
+
+// 이 태스크가 그 위에서 시작해야 하는 선행 작업 — 같은 레포의 끝난(DONE) 선행 태스크(선행의 선행까지)와 그 마지막 제출 커밋.
+// 태스크 브랜치는 기본 브랜치에 합쳐지지 않으므로, 선행 코드 위에서 이어 가려면 Executor가 이 커밋들을 합쳐서 시작한다.
+// V3는 같은 목록을 비교 기준으로 쓴다(선행이 만든 파일을 이 태스크의 변경으로 세지 않게) — 브리핑과 V3가 **이 함수 한 벌**을 쓴다.
+// 다른 레포의 선행은 사슬을 따라가기만 하고 결과에서 뺀다(코드를 합칠 수 없다 — 그쪽은 계약으로 맞춘다).
+// 마지막 제출 = attempt가 가장 큰 산출물(DONE으로 만든 제출, 직접 완료 포함). 오래된 선행부터.
+export type PredecessorBase = { taskId: string; title: string; branchName: string | null; commitSha: string };
+
+export async function listPredecessorBases(db: Queryable, taskId: string): Promise<PredecessorBase[]> {
+  const { rows } = await db.query(
+    `WITH RECURSIVE preds(id) AS (
+       SELECT depends_on FROM task_deps WHERE task_id = $1
+       UNION
+       SELECT d.depends_on FROM task_deps d JOIN preds p ON d.task_id = p.id
+     )
+     SELECT t.id, t.title, t.branch_name, a.commit_sha
+       FROM preds p
+       JOIN tasks t ON t.id = p.id
+       JOIN tasks me ON me.id = $1
+       JOIN LATERAL (SELECT commit_sha FROM artifacts WHERE task_id = t.id ORDER BY attempt DESC LIMIT 1) a ON true
+      WHERE t.repo_id = me.repo_id AND t.state = 'DONE'
+      ORDER BY t.created_at, t.id`,
+    [taskId],
+  );
+  return rows.map((r) => ({
+    taskId: r.id as string,
+    title: r.title as string,
+    branchName: (r.branch_name as string | null) ?? null,
+    commitSha: r.commit_sha as string,
+  }));
+}

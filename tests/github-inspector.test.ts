@@ -254,3 +254,31 @@ describe('githubInspector — 태스크 브랜치 비교(baseBranch)', () => {
     ).rejects.toBeInstanceOf(InspectionSkipped);
   });
 });
+
+// 선행 태스크 위에서 시작한 태스크(InspectInput.baseCommits) — 선행 커밋마다 compare해 교집합만 이 태스크의 변경이다.
+describe('githubInspector — 선행 커밋 기준', () => {
+  const A = 'aaaa1111aaaa';
+  const B = 'bbbb2222bbbb';
+  const cmp = (base: string) => `${API}/repositories/${REPO_ID}/compare/${base}...${SHA}`;
+
+  it('선행 A·B 기준 비교의 교집합 — 선행이 만든 파일은 빠진다', async () => {
+    const { input } = await setup();
+    const { calls, inspector } = fakeGithub({
+      [COMMIT_URL]: { status: 200, body: { files: [] } },
+      [cmp(A)]: { status: 200, body: { status: 'ahead', files: [{ filename: 'route.py' }, { filename: 'repo.py' }] } },
+      [cmp(B)]: { status: 200, body: { status: 'ahead', files: [{ filename: 'route.py' }, { filename: 'app.py' }] } },
+    });
+    expect(await inspector.changedPaths({ ...input, baseBranch: 'main', baseCommits: [A, B] })).toEqual(['route.py']);
+    expect(calls.map((c) => c.url)).toEqual([COMMIT_URL, cmp(A), cmp(B)]);
+  });
+
+  it('제출 커밋이 없으면 FAIL(없는 커밋), 선행 커밋과 비교가 안 되면 SKIPPED', async () => {
+    const { input } = await setup();
+    const missing = fakeGithub({ [COMMIT_URL]: { status: 422 } });
+    await expect(missing.inspector.changedPaths({ ...input, baseCommits: [A] })).rejects.toBeInstanceOf(CommitNotFoundError);
+    const gone = fakeGithub({ [COMMIT_URL]: { status: 200, body: { files: [] } }, [cmp(A)]: { status: 404 } });
+    await expect(gone.inspector.changedPaths({ ...input, baseCommits: [A] })).rejects.toSatisfy(
+      (err) => err instanceof InspectionSkipped && err.reason.includes('선행 태스크의 커밋'),
+    );
+  });
+});

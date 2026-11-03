@@ -46,7 +46,7 @@ import { runLint, runSpecTests, type SpecTest, type StageReport } from './verify
 import { ensureRepo } from './repo-checkout.js';
 import { runConsult } from './consult.js';
 import { runContractBatch, runContractDraft, type ContractDraft } from './contract.js';
-import { cleanWorkspaces, headSha, prepareWorkspace } from './workspace.js';
+import { cleanWorkspaces, headSha, mergePredecessors, prepareWorkspace, type PredecessorCommit, type PredecessorMerge } from './workspace.js';
 
 // 푸시가 오지 않아도 이 간격으로 한 번씩 다시 본다(끊겼을 때는 이 간격으로 폴링한다).
 const POLL_INTERVAL_MS = 10_000;
@@ -106,6 +106,8 @@ type Briefing = {
   decisions?: { id: string; question: string; answer: string | null; askerRole: string; targetRole: string; decidedByName: string | null; answeredAt: string | null }[];
   humanMessages?: { text: string; fromNickname: string | null; fromRepresentative: boolean; ts: string }[];
   questionRelay?: boolean;
+  // 같은 레포의 끝난 선행 태스크와 마지막 제출 커밋(CLI 0.1.20·서버 같은 배포부터, 옛 서버면 없다) — 새 태스크 브랜치에 합치고 시작한다.
+  predecessors?: PredecessorCommit[];
   notesBlock: string;
   writablePaths: { pathPattern: string }[];
   claudeSettings: unknown;
@@ -242,6 +244,13 @@ async function handleTask(client: NomosClient, projectId: string, task: TaskSumm
     policyHash: briefing.policyHash,
   });
   log(`작업공간 ${workspace.dir} (브랜치 ${workspace.branch})`);
+  // 선행 작업 위에서 시작한다 — 새로 딴 브랜치일 때만(이어 가는 브랜치에는 이미 들어 있다).
+  let predecessorMerge: PredecessorMerge | undefined;
+  if (workspace.startedFresh && (briefing.predecessors?.length ?? 0) > 0) {
+    predecessorMerge = mergePredecessors(workspace.dir, briefing.predecessors!);
+    for (const p of predecessorMerge.merged) log(`  선행 합침: ${p.title} (${p.commitSha.slice(0, 12)})`);
+    for (const f of predecessorMerge.failed) log(`  선행 합치지 못함: ${f.predecessor.title} — ${f.reason}`);
+  }
   activeWorkspaces.set(task.id, { dir: workspace.dir, repo: briefing.repo.fullName });
   // 프롬프트에 넣는 노트·결정 = 제출 때 "받은 것"으로 함께 보낼 노트·결정. MCP 서버(submit_artifact)가 읽는다.
   writeBriefingNotes(workspace.dir, task.id, (briefing.notes ?? []).map((n) => n.id), (briefing.decisions ?? []).map((d) => d.id));
@@ -278,7 +287,7 @@ async function handleTask(client: NomosClient, projectId: string, task: TaskSumm
   const before = headSha(workspace.dir);
   const result = await runClaude({
     workspaceDir: workspace.dir,
-    prompt: buildTaskPrompt(briefing, workspace.branch, { allowedCommands: ALLOWED_BASH_PREFIXES, setup: setup.steps }),
+    prompt: buildTaskPrompt({ ...briefing, predecessorMerge }, workspace.branch, { allowedCommands: ALLOWED_BASH_PREFIXES, setup: setup.steps }),
     mcpConfigPath,
     pathPrepend: setup.venvBin,
     // 질문 중계가 꺼진 프로젝트(또는 옛 서버)면 권한 도구를 붙이지 않는다 — AskUserQuestion이 없어진다.

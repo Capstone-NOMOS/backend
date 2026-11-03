@@ -33,10 +33,12 @@ import {
   findSpecForTask,
   listArtifactsForTask,
   listLockedSpecTests,
+  listPredecessorBases,
   listTasks,
   markTaskVerifying,
   setTaskBranch,
   type Artifact,
+  type PredecessorBase,
   type SpecTest,
   type Task,
   type TaskSpec,
@@ -489,6 +491,9 @@ export type TaskBriefing = {
   humanMessages: PendingRoomMessage[];
   // 질문 중계(018). 꺼져 있으면 Executor가 권한 도구(AskUserQuestion)를 붙이지 않고, 다른 역할 소관은 GOTCHA "가정함"으로 남기게 한다.
   questionRelay: boolean;
+  // 이 태스크가 그 위에서 시작할 선행 작업(같은 레포의 끝난 선행과 마지막 제출 커밋) — Executor가 새 태스크 브랜치에 합치고 시작한다.
+  // V3도 같은 목록(listPredecessorBases)을 비교 기준으로 쓴다. 옛 CLI는 이 필드를 몰라 기본 브랜치에서 시작한다(V3는 그래도 맞게 센다).
+  predecessors: PredecessorBase[];
 };
 
 export async function getTaskBriefing(ctx: AgentContext, taskId: string): Promise<TaskBriefing> {
@@ -547,6 +552,7 @@ export async function getTaskBriefing(ctx: AgentContext, taskId: string): Promis
       claudeSettings: buildClaudePermissions(rules),
       specTests: task.specId === null ? [] : await listLockedSpecTests(tx, task.specId),
       policyHash: ctx.policyHash,
+      predecessors: await listPredecessorBases(tx, taskId),
     };
   });
 }

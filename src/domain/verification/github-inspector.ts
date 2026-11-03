@@ -2,7 +2,7 @@ import type { Queryable } from '../../config/db.js';
 import { decryptSecret } from '../../utils/secret-box.js';
 import { parseNextLink } from '../github/client.js';
 import { findRepresentativeGithubToken } from '../oauth/repository.js';
-import { CommitNotFoundError, InspectionSkipped, MAX_MANIFEST_BYTES, type CommitInspector } from './inspection.js';
+import { CommitNotFoundError, InspectionSkipped, intersectChanged, MAX_MANIFEST_BYTES, type CommitInspector } from './inspection.js';
 
 // GitHub 커밋 API로 "바뀐 파일 목록"만 읽는다. patch(코드 내용)는 응답에 오더라도 쓰지 않고 저장하지도 않는다.
 //
@@ -85,13 +85,48 @@ export function githubInspector(options: { db: Queryable; fetchImpl?: FetchLike;
     return { files: body.files ?? [], mergeBase: body.merge_base_commit?.sha ?? null };
   }
 
+  // 선행 커밋 기준 비교(InspectInput.baseCommits) — (분기점 ... 제출 커밋)의 파일. 제출 커밋이 이미 선행 커밋 안에 있으면 바꾼 것이 없다.
+  // 비교가 안 되면(커밋을 못 찾음) 못 본 것이다 — 선행 커밋은 서버가 DB에서 고른 것이라 에이전트 잘못이 아니다.
+  async function filesSince(token: string, githubRepoId: number, baseSha: string, commitSha: string): Promise<string[]> {
+    const res = await get(`${api}/repositories/${githubRepoId}/compare/${encodeURIComponent(baseSha)}...${encodeURIComponent(commitSha)}`, token);
+    if (res.status === 404 || res.status === 422) {
+      throw new InspectionSkipped(`선행 태스크의 커밋 ${baseSha.slice(0, 12)}과 비교할 수 없다(GitHub ${res.status}) — 선행 브랜치가 지워졌을 수 있다`);
+    }
+    const skipped = skipFor(res);
+    if (skipped) throw skipped;
+    if (!res.ok) throw new Error(`GitHub 응답 ${res.status}`);
+    const body = (await res.json()) as { status?: string; files?: CommitFile[] };
+    if (body.status === 'behind' || body.status === 'identical') return [];
+    if ((body.files?.length ?? 0) >= COMPARE_FILE_LIMIT) {
+      throw new InspectionSkipped(`태스크 브랜치의 파일이 GitHub 비교 한도(${COMPARE_FILE_LIMIT}개)에 닿아 전체 diff를 확인할 수 없다`);
+    }
+    const paths = new Set<string>();
+    addFiles(paths, body.files);
+    return [...paths];
+  }
+
   return {
     kind: 'github',
-    async changedPaths({ orgId, githubRepoId, commitSha, baseBranch }) {
+    async changedPaths({ orgId, githubRepoId, commitSha, baseBranch, baseCommits }) {
       if (githubRepoId === null) {
         throw new InspectionSkipped('repos.github_repo_id 미설정 — GitHub에서 커밋을 찾을 수 없다');
       }
       const token = await tokenFor(orgId);
+      if (baseCommits && baseCommits.length > 0) {
+        // 제출 커밋이 있는지부터 — 없는 커밋은 FAIL이다(비교 404는 선행 쪽 사정과 섞인다).
+        const head = await get(`${api}/repositories/${githubRepoId}/commits/${encodeURIComponent(commitSha)}`, token);
+        if (head.status === 422) throw new CommitNotFoundError(commitSha);
+        if (head.status === 404) {
+          const repo = await get(`${api}/repositories/${githubRepoId}`, token);
+          if (repo.ok) throw new CommitNotFoundError(commitSha);
+          throw skipFor(repo) ?? new InspectionSkipped(`GitHub 토큰으로 레포에 접근할 수 없다 (github_repo_id ${githubRepoId})`);
+        }
+        const headSkipped = skipFor(head);
+        if (headSkipped) throw headSkipped;
+        const lists: string[][] = [];
+        for (const b of baseCommits) lists.push(await filesSince(token, githubRepoId, b, commitSha));
+        return intersectChanged(lists);
+      }
 
       const paths = new Set<string>();
       if (baseBranch !== null) {
@@ -134,11 +169,13 @@ export function githubInspector(options: { db: Queryable; fetchImpl?: FetchLike;
     },
 
     // 직전 시점은 분기점(compare의 merge_base_commit), 못 찾으면 부모(커밋 API). 내용은 contents API(raw)에서. 404면 그 시점에 파일이 없었다.
-    async fileVersions({ orgId, githubRepoId, commitSha, baseBranch }, filePath) {
+    async fileVersions({ orgId, githubRepoId, commitSha, baseBranch, baseCommits }, filePath) {
       if (githubRepoId === null) throw new InspectionSkipped('repos.github_repo_id 미설정');
       const token = await tokenFor(orgId);
       let parent: string | null = null;
-      const compared = baseBranch === null ? null : await compare(token, githubRepoId, baseBranch, commitSha);
+      // 선행 위에서 시작했으면 직전 시점은 첫 선행 커밋과의 분기점(mirror 구현과 같다).
+      const baseRef = baseCommits?.[0] ?? baseBranch;
+      const compared = baseRef === null ? null : await compare(token, githubRepoId, baseRef, commitSha);
       if (compared?.mergeBase) {
         parent = compared.mergeBase;
       } else {
