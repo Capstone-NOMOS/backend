@@ -55,6 +55,9 @@ export type RoutingDecision = {
   routedBy: string;
   // 이 판정의 모델 비용(USD). 규칙처럼 비용이 없거나 모르면 null — 발표 지표 "요청당 비용".
   costUsd?: number | null;
+  // 판정자에게 요청이 도달해 답이 나오기까지(ms, 035) — 모델 API 호출 시간. 라우터 비교의 공정한 "판정 시간"이다.
+  // 서버가 라우터를 부른 순간부터 재는 지연(latencyMs, 중계면 대기열·CLI 기동 포함)과 따로 둔다. 모르면 null.
+  modelLatencyMs?: number | null;
 };
 
 export type QuestionRouter = {

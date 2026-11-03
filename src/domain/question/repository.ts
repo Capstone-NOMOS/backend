@@ -15,7 +15,8 @@ export type AnswerSource = 'agent' | 'human' | 'agent_confirmed' | 'human_overri
 export const AUTO_ANSWER_SOURCE = 'auto_first_option' as const;
 
 // costUsd: 판정의 모델 비용(025, LLM 라우터). 옛 행·규칙 라우터에는 없다.
-export type RoutingDetail = { confidence: number | null; reason: string | null; latencyMs: number; fallback: string | null; costUsd?: number | null };
+// modelLatencyMs(035): 판정자에게 도달 ~ 답(모델 API 호출 시간). latencyMs는 서버가 라우터를 부른 순간부터(중계면 대기열·CLI 기동 포함).
+export type RoutingDetail = { confidence: number | null; reason: string | null; latencyMs: number; fallback: string | null; costUsd?: number | null; modelLatencyMs?: number | null };
 
 // 상담 실행의 초안. decided[질문] = 코드·명세가 이미 정한 답인가(아니면 제안일 뿐이다).
 export type QuestionDraft = { answers: Record<string, string>; decided: Record<string, boolean>; basis: Record<string, string[]> };

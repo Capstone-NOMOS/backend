@@ -28,7 +28,7 @@ export function recordRouting(questionId: string, input: RoutingInput, routed: R
     if (routed.fallback !== null) {
       await insertRoutingRun(pool, {
         questionId, router: routed.attempted, mode: 'primary', target: null, confidence: null,
-        latencyMs: routed.latencyMs, costUsd: null, error: routed.fallback,
+        latencyMs: routed.latencyMs, modelLatencyMs: null, costUsd: null, error: routed.fallback,
       });
     }
     await insertRoutingRun(pool, {
@@ -38,6 +38,7 @@ export function recordRouting(questionId: string, input: RoutingInput, routed: R
       target: routed.target,
       confidence: routed.confidence,
       latencyMs: routed.fallback === null ? routed.latencyMs : 0,
+      modelLatencyMs: routed.fallback === null ? (routed.modelLatencyMs ?? null) : null,
       costUsd: routed.costUsd ?? null,
       error: null,
     });
@@ -51,12 +52,12 @@ export function recordRouting(questionId: string, input: RoutingInput, routed: R
           ]);
           await insertRoutingRun(pool, {
             questionId, router: decision.routedBy, mode: 'shadow', target: decision.target, confidence: decision.confidence,
-            latencyMs: Date.now() - started, costUsd: decision.costUsd ?? null, error: null,
+            latencyMs: Date.now() - started, modelLatencyMs: decision.modelLatencyMs ?? null, costUsd: decision.costUsd ?? null, error: null,
           });
         } catch (err) {
           await insertRoutingRun(pool, {
             questionId, router: router.name, mode: 'shadow', target: null, confidence: null,
-            latencyMs: Date.now() - started, costUsd: null, error: (err instanceof Error ? err.message : String(err)).slice(0, 300),
+            latencyMs: Date.now() - started, modelLatencyMs: null, costUsd: null, error: (err instanceof Error ? err.message : String(err)).slice(0, 300),
           });
         }
       }),
@@ -107,6 +108,10 @@ export type RouterStats = {
   alignmentRate: number | null;
   avgLatencyMs: number | null;
   p95LatencyMs: number | null;
+  // 035 판정 시간(판정자에게 도달 ~ 답) — 라우터 비교는 이 값으로 한다. 잰 판정만 센다(modelLatencySamples). 옛 CLI 중계 등 모르면 빠진다.
+  avgModelLatencyMs: number | null;
+  p95ModelLatencyMs: number | null;
+  modelLatencySamples: number;
   avgCostUsd: number | null;
   totalCostUsd: number | null;
 };
@@ -143,7 +148,7 @@ export async function routingReport(actor: UserContext, projectId: string): Prom
   await assertProjectVisibleToUser(pool, actor, projectId);
   const questions = await listEvalQuestions(pool, projectId);
 
-  type Sample = { questionId: string; target: string | null; latencyMs: number; costUsd: number | null; error: string | null };
+  type Sample = { questionId: string; target: string | null; latencyMs: number; modelLatencyMs: number | null; costUsd: number | null; error: string | null };
   const byRouter = new Map<string, { mode: RouterStats['mode']; samples: Sample[] }>();
   const add = (router: string, mode: RouterStats['mode'], s: Sample) => {
     const entry = byRouter.get(router) ?? { mode, samples: [] };
@@ -151,7 +156,7 @@ export async function routingReport(actor: UserContext, projectId: string): Prom
     byRouter.set(router, entry);
   };
   for (const q of questions) {
-    add(BASELINE, 'baseline', { questionId: q.questionId, target: 'SELF', latencyMs: 0, costUsd: 0, error: null });
+    add(BASELINE, 'baseline', { questionId: q.questionId, target: 'SELF', latencyMs: 0, modelLatencyMs: null, costUsd: 0, error: null });
     for (const r of q.runs) add(r.router, r.mode as 'primary' | 'shadow', { questionId: q.questionId, ...r });
   }
   const gold = new Map(questions.map((q) => [q.questionId, q.goldTarget]));
@@ -161,6 +166,7 @@ export async function routingReport(actor: UserContext, projectId: string): Prom
     const labeled = decided.filter((s) => gold.get(s.questionId) != null);
     const aligned = labeled.filter((s) => s.target === gold.get(s.questionId)).length;
     const latencies = decided.map((s) => s.latencyMs);
+    const modelLatencies = decided.map((s) => s.modelLatencyMs).filter((v): v is number => v !== null);
     const costs = decided.map((s) => s.costUsd).filter((c): c is number => c !== null);
     return {
       router,
@@ -172,6 +178,9 @@ export async function routingReport(actor: UserContext, projectId: string): Prom
       alignmentRate: labeled.length === 0 ? null : aligned / labeled.length,
       avgLatencyMs: avg(latencies) === null ? null : Math.round(avg(latencies)!),
       p95LatencyMs: percentile(latencies, 95),
+      avgModelLatencyMs: avg(modelLatencies) === null ? null : Math.round(avg(modelLatencies)!),
+      p95ModelLatencyMs: percentile(modelLatencies, 95),
+      modelLatencySamples: modelLatencies.length,
       avgCostUsd: avg(costs),
       totalCostUsd: costs.length === 0 ? null : costs.reduce((s, c) => s + c, 0),
     };

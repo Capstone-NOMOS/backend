@@ -32,6 +32,9 @@ export type PmJobResult = {
   servedModel: string | null;
   text: string;
   usage: { inputTokens: number; outputTokens: number; cacheWriteTokens: number; cacheReadTokens: number };
+  // 모델 API 호출에 쓴 시간(Claude Code의 duration_api_ms) — 질문 라우팅의 "판정 시간"(서버 035). CLI 기동·대기열은 빠진다.
+  // 서버가 모르는 필드를 거부하므로(옛 서버) 서버 035 이후에 배포한다. 없으면 null.
+  modelLatencyMs: number | null;
 };
 
 // `claude -p --output-format json`의 출력 중 쓰는 칸만.
@@ -41,6 +44,7 @@ export type ClaudeJsonOutput = {
   result?: string;
   structured_output?: unknown;
   stop_reason?: string | null;
+  duration_api_ms?: number;
   usage?: {
     input_tokens?: number;
     output_tokens?: number;
@@ -95,6 +99,7 @@ export function toJobResult(out: ClaudeJsonOutput, requestedModel: string): PmJo
       cacheWriteTokens: out.usage?.cache_creation_input_tokens ?? 0,
       cacheReadTokens: out.usage?.cache_read_input_tokens ?? 0,
     },
+    modelLatencyMs: typeof out.duration_api_ms === 'number' && out.duration_api_ms >= 0 ? Math.round(out.duration_api_ms) : null,
   };
 }
 
@@ -161,7 +166,7 @@ export async function handleNextPmJob(
     log(`실패(${sec}s): ${result.error}`);
     await client.failPmJob(job.id, result.error.slice(0, 2000));
   } else {
-    log(`완료(${sec}s, 출력 ${result.usage.outputTokens} 토큰) — 서버로 보냄`);
+    log(`완료(${sec}s${result.modelLatencyMs !== null ? `, 모델 ${(result.modelLatencyMs / 1000).toFixed(1)}s` : ''}, 출력 ${result.usage.outputTokens} 토큰) — 서버로 보냄`);
     await client.submitPmJobResult(job.id, result);
   }
   return true;

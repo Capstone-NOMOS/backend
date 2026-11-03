@@ -183,6 +183,8 @@ export type EvalRow = {
   confidence: number | null;
   reason: string | null;
   ms: number;
+  // 판정 시간(서버 035와 같은 정의) — 판정자에게 도달 ~ 답. claude CLI는 duration_api_ms, openai·jev는 API 호출 시간. 모르면 null.
+  modelMs: number | null;
   costUsd: number | null;
   error?: string;
 };
@@ -197,15 +199,26 @@ export async function runEvaluation(items: EvalItem[], router: EvalRouter, optio
       try {
         // 저장된 입력을 그대로 넣는다(다시 조립하지 않는다).
         const d = await router.routeWithCost(item.input);
-        rows.push({ id: item.id, run, stage: item.stage, accept: item.accept, source: item.source, target: d.target, ok: item.accept.includes(d.target), confidence: d.confidence, reason: d.reason, ms: Date.now() - started, costUsd: d.costUsd });
+        rows.push({ id: item.id, run, stage: item.stage, accept: item.accept, source: item.source, target: d.target, ok: item.accept.includes(d.target), confidence: d.confidence, reason: d.reason, ms: Date.now() - started, modelMs: d.modelLatencyMs ?? null, costUsd: d.costUsd });
       } catch (err) {
-        rows.push({ id: item.id, run, stage: item.stage, accept: item.accept, source: item.source, target: 'ERROR', ok: false, confidence: null, reason: null, ms: Date.now() - started, costUsd: null, error: err instanceof Error ? err.message : String(err) });
+        rows.push({ id: item.id, run, stage: item.stage, accept: item.accept, source: item.source, target: 'ERROR', ok: false, confidence: null, reason: null, ms: Date.now() - started, modelMs: null, costUsd: null, error: err instanceof Error ? err.message : String(err) });
       }
       options.onProgress?.();
     }
   };
   await Promise.all(Array.from({ length: options.concurrency }, worker));
   return rows.sort((a, b) => a.id.localeCompare(b.id) || a.run - b.run);
+}
+
+function modelLatencySummary(rows: EvalRow[]): { modelMsSamples: number; avgModelMs: number | null; medianModelMs: number | null; p95ModelMs: number | null } {
+  const ms = rows.map((r) => r.modelMs).filter((v): v is number => v !== null).sort((a, b) => a - b);
+  const at = (p: number) => (ms.length === 0 ? null : ms[Math.min(ms.length - 1, Math.ceil(p * ms.length) - 1)]!);
+  return {
+    modelMsSamples: ms.length,
+    avgModelMs: ms.length ? Math.round(ms.reduce((s, v) => s + v, 0) / ms.length) : null,
+    medianModelMs: at(0.5),
+    p95ModelMs: at(0.95),
+  };
 }
 
 const pct = (n: number, d: number) => (d === 0 ? '-' : `${Math.round((100 * n) / d)}%`);
@@ -237,6 +250,8 @@ export function summarize(rows: EvalRow[], items: EvalItem[], repeat: number) {
     unstable: repeat > 1 ? items.filter((i) => new Set(rows.filter((r) => r.id === i.id).map((r) => r.target)).size > 1).length : null,
     errors: rows.filter((r) => r.target === 'ERROR').length,
     avgMs: rows.length ? Math.round(rows.reduce((s, r) => s + r.ms, 0) / rows.length) : 0,
+    // 판정 시간 — 라우터 비교는 이 값으로(같은 노트북에서 재면 측정 위치도 같다). 동시 실행이면 서로 느려지니 --concurrency 1로 잰다.
+    ...modelLatencySummary(rows),
     totalCostUsd: costs.length ? +costs.reduce((s, c) => s + c, 0).toFixed(4) : null,
   };
 }

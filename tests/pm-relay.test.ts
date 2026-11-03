@@ -14,7 +14,7 @@ import { createOrganization } from '../src/domain/org/service.js';
 import type { PlanDraft } from '../src/domain/pm/draft.js';
 import { setPmModel } from '../src/domain/pm/model.js';
 import { PM_SYSTEM_PROMPT } from '../src/domain/pm/prompt.js';
-import { clearRelayJobs, relayModel, takeNextJob, waitForNextJob } from '../src/domain/pm/relay.js';
+import { clearRelayJobs, completeJob, relayModel, takeNextJob, waitForNextJob } from '../src/domain/pm/relay.js';
 import { drainPmJobs } from '../src/domain/pm/service.js';
 import { createProject } from '../src/domain/project/service.js';
 import { connectRepos } from '../src/domain/repo/service.js';
@@ -259,6 +259,11 @@ describe('claude 출력 → 결과', () => {
     expect(plain).toMatchObject({ text: '{"a":1}', servedModel: 'claude-sonnet-5-5', stopReason: null });
     expect(toJobResult({ result: '' }, 'm')).toEqual({ error: 'claude returned no output' });
   });
+
+  it('판정 시간은 Claude Code의 duration_api_ms다 — CLI 기동은 빠진다, 없으면 null(지어내지 않는다)', () => {
+    expect(toJobResult({ result: '{"a":1}', duration_api_ms: 1834.6 }, 'm')).toMatchObject({ modelLatencyMs: 1835 });
+    expect(toJobResult({ result: '{"a":1}' }, 'm')).toMatchObject({ modelLatencyMs: null });
+  });
 });
 
 describe('PM 준비 상태 (GET /projects/:id/pm/status)', () => {
@@ -324,6 +329,20 @@ describe('중계 대기열 — long-poll과 라우팅 우선', () => {
     setTimeout(() => enqueue('draft'), 20);
     expect(await waiting).toBeNull();
     expect(takeNextJob(ORG, 'worker')?.purpose).toBe('draft');
+  });
+
+  it('노트북이 보낸 판정 시간이 모델 응답으로 넘어간다(질문 라우팅의 model_latency_ms)', async () => {
+    const controller = new AbortController();
+    const response = relayModel.generate({
+      model: 'm', effort: 'low', maxTokens: 10, system: 's', user: 'u', jsonSchema: {},
+      signal: controller.signal, context: { orgId: ORG, planId: null, purpose: 'route' },
+    });
+    const job = takeNextJob(ORG, 'worker')!;
+    completeJob(job.id, 'worker', {
+      stopReason: 'end_turn', servedModel: 'm', text: '{}', modelLatencyMs: 1500,
+      usage: { inputTokens: 1, outputTokens: 1, cacheWriteTokens: 0, cacheReadTokens: 0 },
+    });
+    expect((await response).modelLatencyMs).toBe(1500);
   });
 
   it('질문 라우팅을 먼저 꺼낸다 — 기획 초안 뒤에 줄 서지 않게', () => {

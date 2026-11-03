@@ -182,6 +182,7 @@ export async function insertPlanningQuestionsInTx(tx: PoolClient, ctx: PlanningQ
         latencyMs: item.routed.latencyMs,
         fallback: item.routed.fallback,
         costUsd: item.routed.costUsd ?? null,
+        modelLatencyMs: item.routed.modelLatencyMs ?? null,
       },
       status: selfOwned ? 'self_owned' : 'pending',
       questions: [item.question],
@@ -208,6 +209,7 @@ export async function insertPlanningQuestionsInTx(tx: PoolClient, ctx: PlanningQ
         latencyMs: item.routed.latencyMs,
         fallback: item.routed.fallback,
         costUsd: item.routed.costUsd ?? null,
+        modelLatencyMs: item.routed.modelLatencyMs ?? null,
         questionCount: 1,
       },
     });

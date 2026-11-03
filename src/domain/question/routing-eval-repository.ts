@@ -10,15 +10,17 @@ export type RoutingRunInput = {
   target: string | null;
   confidence: number | null;
   latencyMs: number;
+  // 035 판정자에게 도달 ~ 답(모델 API 호출 시간). 모르면 null(옛 CLI·실패·대체).
+  modelLatencyMs: number | null;
   costUsd: number | null;
   error: string | null;
 };
 
 export async function insertRoutingRun(db: Queryable, run: RoutingRunInput): Promise<void> {
   await db.query(
-    `INSERT INTO question_routing_runs (question_id, router, mode, target, confidence, latency_ms, cost_usd, error)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-    [run.questionId, run.router, run.mode, run.target, run.confidence, run.latencyMs, run.costUsd, run.error],
+    `INSERT INTO question_routing_runs (question_id, router, mode, target, confidence, latency_ms, model_latency_ms, cost_usd, error)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [run.questionId, run.router, run.mode, run.target, run.confidence, run.latencyMs, run.modelLatencyMs, run.costUsd, run.error],
   );
 }
 
@@ -48,7 +50,7 @@ export type EvalQuestionRow = {
   stage: RoutingStage;
   // 033: auto_first_option(실험 모드 자동 답)은 "답까지 걸린 시간" 지표에서 뺀다.
   answerSource: string | null;
-  runs: { router: string; mode: string; target: string | null; confidence: number | null; latencyMs: number; costUsd: number | null; error: string | null }[];
+  runs: { router: string; mode: string; target: string | null; confidence: number | null; latencyMs: number; modelLatencyMs: number | null; costUsd: number | null; error: string | null }[];
 };
 
 export async function listEvalQuestions(db: Queryable, projectId: string): Promise<EvalQuestionRow[]> {
@@ -56,7 +58,7 @@ export async function listEvalQuestions(db: Queryable, projectId: string): Promi
     `SELECT q.id, q.created_at, q.asker_role, q.status, q.questions->0->>'question' AS first_question, q.gold_target, q.answered_at, q.answer_source, COALESCE(q.routing_input->>'stage', 'implementation') AS stage,
             coalesce(json_agg(json_build_object(
               'router', r.router, 'mode', r.mode, 'target', r.target, 'confidence', r.confidence,
-              'latencyMs', r.latency_ms, 'costUsd', r.cost_usd, 'error', r.error) ORDER BY r.id) FILTER (WHERE r.id IS NOT NULL), '[]') AS runs
+              'latencyMs', r.latency_ms, 'modelLatencyMs', r.model_latency_ms, 'costUsd', r.cost_usd, 'error', r.error) ORDER BY r.id) FILTER (WHERE r.id IS NOT NULL), '[]') AS runs
        FROM agent_questions q LEFT JOIN question_routing_runs r ON r.question_id = q.id
       WHERE q.project_id = $1
       GROUP BY q.id

@@ -31,8 +31,9 @@ const flag = (name: string) => {
 const checkOnly = argv.includes('--check');
 const dataFile = path.resolve(flag('--data') ?? 'scripts/data/question-routing.json');
 const repeat = Number(flag('--repeat') ?? 1) || 1;
-const routerSpec = argv.find((a, i) => !a.startsWith('--') && !['--data', '--repeat'].includes(argv[i - 1] ?? '')) ?? 'opposite';
-const concurrency = 4;
+const routerSpec = argv.find((a, i) => !a.startsWith('--') && !['--data', '--repeat', '--concurrency'].includes(argv[i - 1] ?? '')) ?? 'opposite';
+// 판정 시간을 비교할 때는 --concurrency 1 — 동시에 돌리면 노트북·네트워크를 나눠 써 서로 느려진다(특히 claude CLI 여러 개).
+const concurrency = Number(flag('--concurrency') ?? 4) || 4;
 
 let dataset: LoadedDataset;
 try {

@@ -132,6 +132,8 @@ export type RelayResult = {
   servedModel: string | null;
   text: string;
   usage: Omit<AttemptUsage, 'model'>;
+  // 노트북의 Claude Code가 모델 API 호출에 쓴 시간(duration_api_ms) — CLI 0.1.19부터 보낸다. 옛 CLI는 없다.
+  modelLatencyMs?: number | null;
 };
 
 // 가져간 에이전트만 결과를 낼 수 있다. 결과는 API 응답과 같은 모양으로 PM 흐름에 그대로 넘어간다.
@@ -145,6 +147,7 @@ export function completeJob(jobId: string, agentId: string, result: RelayResult)
     servedModel: model,
     text: result.text,
     attempts: [{ model, ...result.usage }],
+    modelLatencyMs: result.modelLatencyMs ?? null,
   });
 }
 
