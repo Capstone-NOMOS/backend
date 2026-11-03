@@ -80,7 +80,7 @@ roomsRouter.post(
 
 const resumeBodySchema = z.object({ note: z.string().trim().max(500).nullable().optional() });
 
-// POST /api/tasks/:taskId/resume — 멈춘 태스크(BLOCKED·AGENT_STOPPED) 재개(대표 전용). READY로 돌아가 같은 역할의 에이전트가 다시 가져간다.
+// POST /api/tasks/:taskId/resume — 멈춘 태스크(BLOCKED·AGENT_STOPPED)·재시도 소진(ESCALATED) 재개(그 역할 담당 또는 대표 — stall.ts의 stuckTaskHandler). READY로 돌아가 같은 역할의 에이전트가 다시 가져간다.
 // 재시도 횟수는 그대로다 — 권한·환경 탓은 에이전트 실패가 아니다.
 roomsRouter.post(
   '/tasks/:taskId/resume',

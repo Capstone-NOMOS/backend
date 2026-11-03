@@ -176,7 +176,7 @@ function eventText(row: FeedRow): { speaker: RoomMessage['speaker']; text: strin
       };
       const denied = Array.isArray(p.deniedCommands) && p.deniedCommands.length > 0 ? ` / 거부된 명령: ${(p.deniedCommands as unknown[]).map(str).join(', ')}` : '';
       const said = str(p.lastMessage) ? ` / 에이전트: "${str(p.lastMessage).slice(0, 200)}"` : '';
-      return { speaker: 'pm', text: `멈췄습니다 — ${why[str(p.cause)] ?? '제출하지 않았습니다'}${said}${denied} → 대표 확인 후 재개가 필요합니다` };
+      return { speaker: 'pm', text: `멈췄습니다 — ${why[str(p.cause)] ?? '제출하지 않았습니다'}${said}${denied} → 담당 확인 후 재개가 필요합니다` };
     }
     case 'QUESTION_ASKED': {
       // 기획 단계 질문(033) — 기능 명세·API 계약 초안을 쓰다가 물었다(태스크가 없어 프로젝트의 모든 룸에 나온다).

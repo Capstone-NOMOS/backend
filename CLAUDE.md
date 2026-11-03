@@ -597,7 +597,7 @@ FE의 "받은 편지함"은 두 칸이다(대표 결정 2026-10-29). **둘 다 �
   상태 변화가 아니라 화면 상태이고(노트 읽기와 같은 이유), 쓰면 events가 조회 로그가 된다.
 - **처리할 일(`GET /me/inbox`) = 지금 상태에서 계산한다** — 처리하면 저절로 빠진다. 종류마다 **그 일을 처리하는 API의 조회·판정 함수를 그대로 쓴다**:
   1차 검토는 `GET /me/approvals`와 같은 `listApprovals`, 최종·G3는 조직 대기열, 질문은 `listMyQuestions`(answerQuestion의 자격), 계약은 `contractApproverRole`(확정 API와 한 벌),
-  멈춘 태스크는 `listResumableTasks`(재개 함수와 같은 상태). 정의가 두 벌이면 받은 편지함에 보이는데 누르면 403이 된다. 진행 중 프로젝트만.
+  멈춘 태스크는 `listResumableTasks`(재개 함수와 같은 상태) + 받는 사람은 `stuckTaskHandler`(재개 권한과 한 벌 — 그 역할 담당, 없거나 대표 본인이면 대표). 정의가 두 벌이면 받은 편지함에 보이는데 누르면 403이 된다. 진행 중 프로젝트만.
   **종류마다 쿼리는 프로젝트 수와 상관없이 한 번이다**(`listContractsForProjects`·`findBackendOwners`·`listLatestPlansByKind`·`listAgentlessRolesOfUser`) —
   프로젝트마다 묻던 첫 구현은 프로젝트 하나당 쿼리 3번씩 늘었다. 테스트가 프로젝트를 늘려도 쿼리 수가 같은지 확인한다 — 새 종류를 넣을 때 프로젝트 루프 안에서 묻지 말 것.
 - 화면 신호는 조직 토픽 `inbox`(`realtime/topics.ts`) — 알림이 되는 이벤트와 처리할 일이 바뀌는 이벤트에서 조직 전부에 간다. 데이터가 없다(누구 것인지는 다시 읽어서 안다).
@@ -737,7 +737,7 @@ FE의 "받은 편지함"은 두 칸이다(대표 결정 2026-10-29). **둘 다 �
   화면이 `GET /projects/:id/questions`의 같은 id로 질문 카드(선택지·초안·답)를 그린다. 질문 데이터를 피드에 싣지 않는다(가시성 판정이 두 벌이 된다).
 - **제출 없이 끝난 태스크는 BLOCKED(`AGENT_STOPPED`)로 멈춘다**(`task/stall.ts`, 종료 보고와 같은 트랜잭션). CLAIMED로 두면 아무도 다시 못 가져가고(운영 테스트의 영구 정체),
   READY로 되돌려 재시도를 깎으면 권한·환경 탓(쉘 거부·선행 코드 없음)을 에이전트 실패로 센다(대표 결정). **retry_count는 검증 실패·반려만 쓴다.**
-  사유는 `TASK_BLOCKED`에 — 모델의 마지막 말과 Executor가 실행 기록에서 뽑은 **거부된 쉘 명령**(대표가 무엇을 풀어야 하는지). 대표가 `POST /tasks/:id/resume`으로 재개하면 READY(담당 비움),
+  사유는 `TASK_BLOCKED`에 — 모델의 마지막 말과 Executor가 실행 기록에서 뽑은 **거부된 쉘 명령**(무엇을 풀어야 하는지). 그 역할 담당(없으면 대표)이 `POST /tasks/:id/resume`으로 재개하면 READY(담당 비움),
   `task_dispatches`의 resumes가 달라져 "다시 실행해 주세요 (재개)"가 다시 나간다. Executor가 꺼져 종료 보고조차 없으면 감시(`startStallWatchdog`, `startServer`에서만)가
   45분 동안 실행 보고·도구 사용이 없는 수령을 같은 방식으로 멈춘다(`system:watchdog`). `tasks.claimed_at`(마지막 수령 시각)이 그 기준이자 화면의 "수령 후 경과"다.
 - **그 역할 에이전트의 연결 해제·재연결도 룸 줄이다**: `MEMBER_AGENT_DETACHED`·`MEMBER_AGENT_ATTACHED`를 `payload.teamRole`로 그 역할 룸에 낸다(speaker nomos,
@@ -806,7 +806,12 @@ FE의 "받은 편지함"은 두 칸이다(대표 결정 2026-10-29). **둘 다 �
   - **취소**(`POST /tasks/:id/cancel`, 대표, 사유 필수): `CANCELLED`로 남는다. **G3의 "모든 태스크 완료"와 뒤 태스크의 선행에서 끝난 것으로 센다** — 안 그러면 잘못 나눈 태스크 하나로
     프로젝트가 영원히 끝나지 않는다. 그 태스크의 대기 질문은 만료로 닫고, 풀린 뒤 태스크를 `TASK_CANCELLED.payload.unblockedDependents`에 남긴다. 상태를 `<> 'DONE'`으로 거르는 곳은 `NOT IN ('DONE','CANCELLED')`로 쓸 것.
   - **직접 완료**(`POST /tasks/:id/manual-completion`, 그 역할 담당 또는 대표): 개발자가 직접 커밋한 sha와 태스크 브랜치 경로를 내면 에이전트 제출과 **같은 V3**(`inspectManualCommit`)를 돌린다.
-    FAIL이면 아무것도 쓰지 않고 422 `MANUAL_COMPLETION_INVALID`, 통과하면 산출물(gate HUMAN)·V3 결과·DONE·`TASK_COMPLETED_MANUALLY`(지표에서 사람이 처리한 것으로 따로 센다).
+    FAIL이면 아무것도 쓰지 않고 422 `MANUAL_COMPLETION_INVALID`, 통과하면 산출물(gate HUMAN)·V3 결과·`TASK_COMPLETED_MANUALLY`(지표에서 사람이 처리한 것으로 따로 센다).
+    **대표가 하면 DONE, 역할 담당이 하면 AWAITING_APPROVAL + 대표 최종 카드**(`roleReviewSkipped = manual_completion` — 담당 본인의 결과라 1차 검토 없이 final). 반려는 에이전트 반려와 같은 재시도 경로.
+    이벤트 `taskState`로 가른다 — AWAITING_APPROVAL이면 task_done 알림이 아니다(승인 결과가 알림이 된다), 통합 확인 요청도 승인 때.
+  - **멈춘 태스크(BLOCKED·AGENT_STOPPED, ESCALATED)는 그 역할 담당이 처리한다**(대표 결정 2026-11-03 — 대표는 직접 일을 끝낼 수 없고 원인도 담당이 안다).
+    판정은 `task/stall.ts`의 `stuckTaskHandler` 한 벌: 재개 권한(`resumeTask`, 아니면 403 `NOT_TASK_OWNER`)과 받은 편지함 `stuck_task`가 같이 쓴다. 담당이 없거나 대표 본인이면 대표.
+    대표는 담당이 있어도 대신 재개할 수 있지만 처리할 일로는 띄우지 않는다. 담당은 재개하거나 직접 완료하고(→ 대표 승인), 취소는 범위를 버리는 결정이라 대표만.
 - **해제·삭제(021)는 행을 지우지 않는다** — events·태스크·노트가 가리키고(P5), 다시 연결할 수 있어야 한다.
   - 에이전트 연결 해제(`DELETE /agents/:agentId`, 주인·대표): `agents.disconnected_at` + refresh token 폐기 + 진행 중 프로젝트에서 빠짐. 남은 access token은 `agent-auth`가
     401 `AGENT_DISCONNECTED`로 거부하고, 태스크 스트림은 `dispatch/agent-revoked` 신호로 바로 끊는다. 같은 사용자·이름으로 다시 connect하면 `upsertAgent`가 되살린다.

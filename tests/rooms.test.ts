@@ -206,11 +206,11 @@ describe('룸 피드 — 실행해 주세요부터 검증 결과까지', () => {
     let { messages } = await feed(w.rep.token, w.projectId, 'BACKEND');
     expect(messages.slice(0, 2).map((m) => m.text).reverse()).toEqual([
       '실행을 마쳤습니다 (48초, 제출 없음)',
-      '멈췄습니다 — 제출하지 않고 끝났습니다 / 에이전트: "git merge 권한이 없어 통합 확인을 할 수 없습니다" / 거부된 명령: git fetch --all, npm --version → 대표 확인 후 재개가 필요합니다',
+      '멈췄습니다 — 제출하지 않고 끝났습니다 / 에이전트: "git merge 권한이 없어 통합 확인을 할 수 없습니다" / 거부된 명령: git fetch --all, npm --version → 담당 확인 후 재개가 필요합니다',
     ]);
 
-    // 팀원은 재개할 수 없고, 대표가 재개하면 READY + 담당 비움 + "다시 실행해 주세요 (재개)".
-    expect((await http('POST', `/tasks/${w.beTaskId}/resume`, w.be.token, {})).status).toBe(403);
+    // 다른 역할 팀원은 재개할 수 없다(그 역할 담당·대표만 — 담당의 재개는 tests/human-control.test.ts). 대표가 재개하면 READY + 담당 비움 + "다시 실행해 주세요 (재개)".
+    expect(await http('POST', `/tasks/${w.beTaskId}/resume`, w.fe.token, {})).toMatchObject({ status: 403, error: { code: 'NOT_TASK_OWNER' } });
     const resumed = await http('POST', `/tasks/${w.beTaskId}/resume`, w.rep.token, { note: '허용 명령을 늘렸습니다' });
     expect(resumed.data).toMatchObject({ state: 'READY', assigneeAgentId: null, blockedReason: null, retryCount: 0 });
     ({ messages } = await feed(w.rep.token, w.projectId, 'BACKEND'));

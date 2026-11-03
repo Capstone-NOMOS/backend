@@ -179,12 +179,14 @@ describe('알림 — 태스크 완료', () => {
 
     setCommitInspector({ kind: 'fake', async changedPaths() { return ['src/layout.tsx']; } });
     const manual = await http('POST', `/tasks/${w.layoutTaskId}/manual-completion`, await w.fe.token(), { commitSha: 'def5678', changedPaths: ['src/layout.tsx'] });
-    expect(manual.status).toBe(200);
-    // 직접 완료한 FE 담당 자신에게는 알리지 않고, 대표에게는 알린다.
+    expect(manual).toMatchObject({ status: 200, json: { data: { state: 'AWAITING_APPROVAL' } } });
+    // 담당의 직접 완료는 대표 승인을 기다린다 — 아직 끝난 게 아니라 알림이 아니고, 대표의 처리할 일(최종 승인)이다.
     expect(await types(w.fe)).toEqual([]);
-    const repDone = (await notifications(w.rep)).notifications;
-    expect(repDone.map((n) => n.taskId)).toEqual([w.layoutTaskId, w.beTaskId]);
-    expect(repDone[0]!.text).toBe('공통 레이아웃 — FE 담당 지수가 직접 완료했습니다');
+    expect((await notifications(w.rep)).notifications.map((n) => n.taskId)).toEqual([w.beTaskId]);
+    const card = (await inbox(w.rep)).items.find((i) => i.kind === 'approval_final')!;
+    expect((await http('POST', `/approvals/${card.approvalId}/approve`, await w.rep.token(), {})).status).toBe(200);
+    // 대표가 승인하면 task_done — 승인한 대표 자신에게는 알리지 않고 FE 담당에게 알린다.
+    expect(await types(w.fe)).toEqual(['task_done']);
   });
 });
 
@@ -390,15 +392,17 @@ describe('처리할 일 (GET /me/inbox)', () => {
     expect(await kinds(w.be)).toEqual([]);
   });
 
-  it('멈춘 태스크는 대표에게(재개하면 빠진다), 에이전트가 없는 내 역할은 그 담당에게', async () => {
+  it('멈춘 태스크는 그 역할 담당에게 — 대표에게는 띄우지 않는다(재개하면 빠진다), 에이전트가 없는 내 역할은 그 담당에게', async () => {
     const w = await world();
     await w.beClient.startRun(w.beTaskId);
     await w.beClient.claimTask(w.beTaskId);
     await w.beClient.endRun(w.beTaskId, { outcome: 'completed', committed: false, durationMs: 1000, exitCode: 0 });
-    expect((await inbox(w.rep)).items).toMatchObject([{ kind: 'stuck_task', taskId: w.beTaskId, agentId: w.beAgentId }]);
-    expect(await kinds(w.be)).toEqual([]);
-    expect((await http('POST', `/tasks/${w.beTaskId}/resume`, await w.rep.token(), {})).status).toBe(200);
+    expect((await inbox(w.be)).items).toMatchObject([{ kind: 'stuck_task', taskId: w.beTaskId, agentId: w.beAgentId, role: 'BACKEND' }]);
+    // 대표는 직접 일을 끝낼 수 없다 — 담당이 있으면 대표의 처리할 일이 아니다(대신 재개는 할 수 있다).
     expect(await kinds(w.rep)).toEqual([]);
+    expect(await kinds(w.fe)).toEqual([]);
+    expect((await http('POST', `/tasks/${w.beTaskId}/resume`, await w.be.token(), {})).status).toBe(200);
+    expect(await kinds(w.be)).toEqual([]);
 
     expect((await http('DELETE', `/agents/${w.beAgentId}`, await w.be.token())).status).toBe(200);
     expect((await inbox(w.be)).items).toMatchObject([{ kind: 'agent_needed', role: 'BACKEND' }]);

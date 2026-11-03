@@ -97,17 +97,44 @@ describe('태스크 취소 (대표)', () => {
 });
 
 describe('사람이 직접 완료 (그 역할 담당 또는 대표)', () => {
-  it('에이전트 제출과 같은 V3를 통과하면 DONE — 산출물(HUMAN)·V3 결과·이벤트가 남는다', async () => {
+  it('역할 담당이 V3를 통과시키면 대표의 최종 승인 카드로 간다 — 대표가 승인해야 DONE(산출물 HUMAN·V3 결과·이벤트)', async () => {
     const w = await world();
     setCommitInspector({ kind: 'fake', async changedPaths() { return ['src/a.ts', 'src/b.ts']; } });
     const fromFe = await http('POST', `/tasks/${w.t1}/manual-completion`, w.fe.token, { commitSha: 'abcdef1', changedPaths: ['src/a.ts', 'src/b.ts'] });
     expect(fromFe.error?.code).toBe('NOT_TASK_OWNER');
     const res = await http('POST', `/tasks/${w.t1}/manual-completion`, w.be.token, { commitSha: 'abcdef1', changedPaths: ['src/a.ts', 'src/b.ts'], note: '직접 고침' });
-    expect(res).toMatchObject({ status: 200, data: { state: 'DONE' } });
+    expect(res).toMatchObject({ status: 200, data: { state: 'AWAITING_APPROVAL' } });
+    // 담당 본인의 결과라 1차 검토 없이 대표 최종 카드다.
+    const card = await testPool.query(`SELECT id, stage, payload FROM approvals WHERE subject_id = $1 AND decision IS NULL`, [w.t1]);
+    expect(card.rows[0]).toMatchObject({ stage: 'final', payload: { roleReviewSkipped: 'manual_completion', manualCompletion: { byUserId: w.be.userId, note: '직접 고침' } } });
+    expect((await http('POST', `/approvals/${card.rows[0].id}/approve`, w.be.token, {})).status).toBe(403);
+    expect((await http('POST', `/approvals/${card.rows[0].id}/approve`, w.rep.token, {})).status).toBe(200);
+    expect(await stateOf(w.t1)).toBe('DONE');
     const art = await testPool.query(`SELECT a.gate_mode, v.stage, v.result FROM artifacts a JOIN verifications v ON v.artifact_id = a.id WHERE a.task_id = $1`, [w.t1]);
     expect(art.rows).toEqual([{ gate_mode: 'HUMAN', stage: 'V3', result: 'PASS' }]);
     const ev = await testPool.query(`SELECT on_behalf_of, payload FROM events WHERE type = 'TASK_COMPLETED_MANUALLY'`);
-    expect(ev.rows[0]).toMatchObject({ on_behalf_of: w.be.userId, payload: { v3: 'PASS', note: '직접 고침' } });
+    expect(ev.rows[0]).toMatchObject({ on_behalf_of: w.be.userId, payload: { v3: 'PASS', note: '직접 고침', taskState: 'AWAITING_APPROVAL', approvalId: card.rows[0].id } });
+  });
+
+  it('대표가 직접 완료하면 바로 DONE이다(대표가 최종 승인자)', async () => {
+    const w = await world();
+    setCommitInspector({ kind: 'fake', async changedPaths() { return ['src/a.ts']; } });
+    const res = await http('POST', `/tasks/${w.t1}/manual-completion`, w.rep.token, { commitSha: 'abcdef1', changedPaths: ['src/a.ts'] });
+    expect(res).toMatchObject({ status: 200, data: { state: 'DONE' } });
+    expect((await testPool.query(`SELECT count(*)::int AS n FROM approvals WHERE subject_id = $1`, [w.t1])).rows[0].n).toBe(0);
+  });
+});
+
+describe('멈춘 태스크 재개 — 그 역할 담당 또는 대표', () => {
+  it('담당은 자기 역할 태스크를 재개하고(resumedBy role_owner), 다른 역할 팀원은 403', async () => {
+    const w = await world();
+    // 멈춤(AGENT_STOPPED)으로 가는 서비스 경로는 실행 종료 보고 전체라, 이 테스트는 상태만 직접 둔다.
+    await testPool.query(`UPDATE tasks SET state = 'BLOCKED', blocked_reason = 'AGENT_STOPPED' WHERE id = $1`, [w.t1]);
+    expect(await http('POST', `/tasks/${w.t1}/resume`, w.fe.token, {})).toMatchObject({ status: 403, error: { code: 'NOT_TASK_OWNER' } });
+    expect((await http('POST', `/tasks/${w.t1}/resume`, w.be.token, { note: '설치했다' })).status).toBe(200);
+    expect(await stateOf(w.t1)).toBe('READY');
+    const ev = await testPool.query(`SELECT on_behalf_of, payload FROM events WHERE type = 'TASK_RESUMED'`);
+    expect(ev.rows[0]).toMatchObject({ on_behalf_of: w.be.userId, payload: { resumedBy: 'role_owner' } });
   });
 
   it('서버가 커밋을 못 읽으면(V3 SKIPPED) 받지 않는다 — 확인 안 된 sha로 DONE이 되지 않게', async () => {
