@@ -114,16 +114,32 @@ function selfAllowed(input: RoutingInput): boolean {
   return input.askerRole !== 'PM';
 }
 
-export function buildRoutingPrompt(input: RoutingInput): string {
-  const targets = ['FRONTEND', 'BACKEND', 'PM', ...(selfAllowed(input) ? ['SELF'] : [])].map((t) => `"${t}"`).join(' | ');
+// 후보마다 "무엇을 정하는 쪽인가". 프롬프트(LLM 계열)와 결정 모델(Jev)의 choice 기준이 같은 문장을 쓴다 — 설명이 갈리면 비교가 깨진다.
+export const TARGET_DESCRIPTIONS: Record<QuestionTarget, string> = {
+  FRONTEND: '화면·사용자 경험·화면이 필요로 하는 것',
+  BACKEND: 'API 계약·응답 형식·상태 코드·데이터·서버 동작',
+  PM: '요구사항·서비스 정책·기능 범위·우선순위 같은 제품 결정(대표가 정한다). 기술 구현 방식은 PM이 아니다',
+};
+
+// 고를 수 있는 값. 프로젝트에 없는 역할도 후보로 둔다(지금과 같다 — 해석이 프로젝트 역할만 받는다).
+export function routingTargets(input: RoutingInput): RoutingTarget[] {
+  return ['FRONTEND', 'BACKEND', PM_TARGET, ...(selfAllowed(input) ? (['SELF'] as const) : [])];
+}
+
+// 판정 규칙 한 줄 — SELF가 무엇인가(PM이 물으면 SELF가 없다).
+export function selfRule(input: RoutingInput): string {
+  return selfAllowed(input)
+    ? `규칙: 답을 정할 권한이 질문한 역할(${input.askerRole}) 자신에게 있으면 SELF다 — 남에게 물을 일이 아니다.`
+    : '규칙: PM 에이전트는 제품 결정을 스스로 확정하지 않는다 — 요구사항·정책이면 PM(대표가 확정)을 고른다. SELF는 없다.';
+}
+
+// 라우터가 판단할 맥락(상황·후보·태스크·명세·계약·질문). 출력 형식 지시는 넣지 않는다 — 결정 모델(Jev)은 이 문장을 state로 그대로 받는다.
+export function buildRoutingContext(input: RoutingInput): string[] {
   return [
-    '너는 소프트웨어 팀의 질문 라우터다. 이 질문의 답을 정할 권한이 어느 역할에 있는지 고른다.',
     situation(input),
     '',
     `후보: ${[...input.roles, PM_TARGET].join(', ')}`,
-    '- FRONTEND = 화면·사용자 경험·화면이 필요로 하는 것',
-    '- BACKEND = API 계약·응답 형식·상태 코드·데이터·서버 동작',
-    '- PM = 요구사항·서비스 정책·기능 범위·우선순위 같은 제품 결정(대표가 정한다). 기술 구현 방식은 PM이 아니다',
+    ...(['FRONTEND', 'BACKEND', PM_TARGET] as const).map((t) => `- ${t} = ${TARGET_DESCRIPTIONS[t]}`),
     `질문한 쪽: ${input.askerRole}`,
     input.task ? `태스크: ${input.task.title} (${input.task.kind})` : '',
     input.repo ? `레포: ${input.repo.fullName}` : '',
@@ -132,10 +148,16 @@ export function buildRoutingPrompt(input: RoutingInput): string {
     '',
     '질문:',
     ...input.questions.map((q, i) => `${i + 1}. ${q.question}${q.options?.length ? ` (선택지: ${q.options.map((o) => o.label).join(' / ')})` : ''}`),
+  ];
+}
+
+export function buildRoutingPrompt(input: RoutingInput): string {
+  const targets = routingTargets(input).map((t) => `"${t}"`).join(' | ');
+  return [
+    '너는 소프트웨어 팀의 질문 라우터다. 이 질문의 답을 정할 권한이 어느 역할에 있는지 고른다.',
+    ...buildRoutingContext(input),
     '',
-    selfAllowed(input)
-      ? `규칙: 답을 정할 권한이 질문한 역할(${input.askerRole}) 자신에게 있으면 SELF다 — 남에게 물을 일이 아니다.`
-      : '규칙: PM 에이전트는 제품 결정을 스스로 확정하지 않는다 — 요구사항·정책이면 PM(대표가 확정)을 고른다. SELF는 없다.',
+    selfRule(input),
     '질문이 여러 개면 대부분을 정할 역할 하나를 고른다.',
     '',
     `마지막 응답은 JSON 하나만(설명·코드 블록 없이): {"target": ${targets}, "confidence": 0~1, "reason": "한 문장"}`,
@@ -144,18 +166,21 @@ export function buildRoutingPrompt(input: RoutingInput): string {
     .join('\n');
 }
 
+// 라우터가 고른 값을 판정으로 바꾼다. 모르는 값은 예외 — 호출부가 대표에게 보낸다(틀린 판정을 조용히 쓰지 않는다).
+// 자기 역할을 이름으로 고르면 SELF와 같다. PM이 물었으면 반대다 — PM 소관(SELF로 답해도)은 대상 PM(대표가 확정)이다.
+export function normalizeTarget(raw: unknown, input: RoutingInput): RoutingTarget {
+  const allowed: readonly string[] = [...input.roles, PM_TARGET, 'SELF'];
+  if (typeof raw !== 'string' || !allowed.includes(raw)) {
+    throw new Error(`router returned an unknown target: ${String(raw)}`);
+  }
+  return (input.askerRole === 'PM' ? (raw === 'SELF' ? PM_TARGET : raw) : raw === input.askerRole ? 'SELF' : raw) as RoutingTarget;
+}
+
 // 응답 해석. 형식이 틀리면 예외 — 호출부가 대체 라우터로 넘긴다(틀린 판정을 조용히 쓰지 않는다).
 export function parseRoutingResponse(text: string, input: RoutingInput, routedBy: string): RoutingDecision {
   const json = text.trim().replace(/^```(?:json)?\s*|\s*```$/g, '');
   const parsed = JSON.parse(json) as { target?: unknown; confidence?: unknown; reason?: unknown };
-  const allowed: readonly string[] = [...input.roles, PM_TARGET, 'SELF'];
-  if (typeof parsed.target !== 'string' || !allowed.includes(parsed.target)) {
-    throw new Error(`router returned an unknown target: ${String(parsed.target)}`);
-  }
-  // 자기 역할을 이름으로 고르면 SELF와 같다. PM이 물었으면 반대다 — PM 소관(SELF로 답해도)은 대상 PM(대표가 확정)이다.
-  const target = (
-    input.askerRole === 'PM' ? (parsed.target === 'SELF' ? PM_TARGET : parsed.target) : parsed.target === input.askerRole ? 'SELF' : parsed.target
-  ) as RoutingTarget;
+  const target = normalizeTarget(parsed.target, input);
   const confidence = typeof parsed.confidence === 'number' && parsed.confidence >= 0 && parsed.confidence <= 1 ? parsed.confidence : null;
   const reason = typeof parsed.reason === 'string' ? parsed.reason.slice(0, 300) : null;
   return { target, confidence, reason, routedBy };

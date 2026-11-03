@@ -21,7 +21,8 @@
     "verify:settings": "tsx scripts/verify-workspace-settings.ts",
     "seed:tasks": "tsx scripts/seed-remote-tasks.ts",
     "probe:questions": "tsx scripts/question-probe.ts",
-    "experiment:run": "tsx scripts/experiment-run.ts"
+    "experiment:run": "tsx scripts/experiment-run.ts",
+    "router:live": "tsx scripts/router-live-check.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.129.0",

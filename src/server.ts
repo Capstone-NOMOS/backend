@@ -7,6 +7,7 @@ import { recoverInterruptedPlans } from './domain/pm/service.js';
 import { closeOrphanedRuns } from './domain/room/runs.js';
 import { startStallWatchdog } from './domain/task/stall.js';
 import { startQuestionExpirySweep } from './domain/question/service.js';
+import { warnUnavailableShadowRouters } from './domain/question/router-registry.js';
 import { startExperimentSweep } from './domain/experiment/sweep.js';
 import { attachRealtime } from './realtime/index.js';
 
@@ -24,6 +25,7 @@ export async function startServer(): Promise<void> {
   startQuestionExpirySweep();
   // 실험 모드(034): 자동 답이 빠진 질문·검증 보고 없는 VERIFYING을 정리하고 놓친 자동 진행 신호를 메운다. 기본 모드 프로젝트는 건드리지 않는다.
   startExperimentSweep();
+  warnUnavailableShadowRouters();
   const app = createApp();
   await new Promise<void>((resolve, reject) => {
     // Express 5는 포트를 열지 못해도(EADDRINUSE·EACCES) 이 콜백을 오류와 함께 부른다 — 오류를 보지 않으면 "listening"을 찍고 아무것도 받지 않는 서버가 된다.
@@ -36,6 +38,8 @@ export async function startServer(): Promise<void> {
       }
       logger.info(`server listening on port ${env.PORT}`, {
         commitInspector: env.COMMIT_INSPECTOR,
+        questionRouter: env.QUESTION_ROUTER,
+        shadowRouters: env.QUESTION_SHADOW_ROUTERS || 'off',
         docs: env.DOCS_ENABLED ? (env.DOCS_BASIC_AUTH ? 'basic-auth' : 'open') : 'off',
       });
       resolve();
