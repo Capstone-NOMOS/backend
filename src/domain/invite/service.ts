@@ -112,7 +112,20 @@ export async function acceptInvite(token: string, userId: string): Promise<Accep
       throw new AppError('ALREADY_IN_ORG', 'user already belongs to another organization');
     }
 
-    const joined = await assignUserToOrg(tx, userId, invite.orgId, 'MEMBER');
+    // 조직 없이 GitHub을 연결한 사람이 같은 GitHub 계정이 이미 있는 조직에 들어오면 (org_id, github_id) 유일 제약에 걸린다 —
+    // 혼자 여러 계정으로 시험할 때 실제로 났다(대표와 팀원 계정에 같은 GitHub). 500으로 감추지 않고 GitHub 연결 때와 같은 코드로 이유를 알린다.
+    let joined: Awaited<ReturnType<typeof assignUserToOrg>>;
+    try {
+      joined = await assignUserToOrg(tx, userId, invite.orgId, 'MEMBER');
+    } catch (err) {
+      if (err instanceof Error && (err as { code?: string }).code === '23505') {
+        throw new AppError(
+          'GITHUB_ACCOUNT_TAKEN',
+          'the github account linked to this user is already linked to another member of this organization — sign up with a separate account that is not linked to the same github account',
+        );
+      }
+      throw err;
+    }
     if (!joined) {
       throw new AppError('ALREADY_IN_ORG', 'user already belongs to another organization');
     }
