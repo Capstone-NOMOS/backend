@@ -20,6 +20,8 @@ import {
   escalateArtifactActions,
   findArtifactById,
   findTaskById,
+  findTaskBaseCommit,
+  listPredecessorBases,
   markTaskState,
   type Artifact,
   type Task,
@@ -76,7 +78,15 @@ type Plan = {
   };
   rules: RepoPath[];
   teamRole: TeamRole;
+  // 이 태스크가 그 위에서 시작한 선행 태스크의 커밋(같은 레포의 끝난 선행 — 브리핑과 같은 listPredecessorBases). 비어 있으면 기본 브랜치 기준.
+  baseCommits: string[];
 };
+
+// V3의 비교 기준 — 서버가 만든 시작 기준점(036)이 있으면 그 커밋 하나(정확하다), 없으면 선행 커밋들(교집합, #86 — 기준점을 못 만든 태스크·이 기능 전 태스크).
+async function baseCommitsFor(db: PoolClient, taskId: string): Promise<string[]> {
+  const base = await findTaskBaseCommit(db, taskId);
+  return base ? [base] : (await listPredecessorBases(db, taskId)).map((b) => b.commitSha);
+}
 
 // ── V3 — 경로 검사 ────────────────────────────────────────────────────────
 // 신고한 changed_paths가 아니라 커밋의 **실제** diff를 기준으로 본다.
@@ -96,6 +106,8 @@ function inspectInput(plan: Plan): InspectInput {
     githubRepoId: plan.repo.githubRepoId,
     commitSha: plan.artifact.commitSha,
     baseBranch: plan.repo.defaultBranch,
+    // 선행 태스크 코드 위에서 시작한 태스크는 선행이 만든 파일을 이 태스크의 변경으로 세지 않는다(inspection.ts의 baseCommits).
+    baseCommits: plan.baseCommits,
   };
 }
 
@@ -141,6 +153,8 @@ async function evaluateV3(plan: Plan): Promise<VerificationInput> {
       commitSha: plan.artifact.commitSha,
       undeclared,
       overdeclared,
+      // 선행 태스크 위에서 시작했으면 그 커밋들이 비교 기준이다 — 원인을 찾을 때 본다.
+      ...(plan.baseCommits.length > 0 ? { baseCommits: plan.baseCommits } : {}),
     });
   }
 
@@ -158,7 +172,11 @@ async function evaluateV3(plan: Plan): Promise<VerificationInput> {
     });
   }
 
-  return done('PASS', { pathCount: actual.length, inspector: getCommitInspector().kind });
+  return done('PASS', {
+    pathCount: actual.length,
+    inspector: getCommitInspector().kind,
+    ...(plan.baseCommits.length > 0 ? { baseCommits: plan.baseCommits } : {}),
+  });
 }
 
 // 사람이 직접 완료(027)할 때의 V3 — 에이전트 제출과 같은 판정기(실제 diff·신고 대조·경로 소유권)를 같은 정책 스냅샷으로 돌린다.
@@ -180,6 +198,7 @@ export async function inspectManualCommit(input: {
       repo: { id: repo.id, orgId: repo.orgId, cloneUrl: repo.cloneUrl, githubRepoId: repo.githubRepoId, devBaseUrl: repo.devBaseUrl, defaultBranch: repo.defaultBranch },
       rules: snapshot.repoPaths.filter((p) => p.repoId === input.task.repoId),
       teamRole: (input.task.teamRole ?? 'BACKEND') as TeamRole,
+      baseCommits: await baseCommitsFor(tx, input.task.id),
     };
   });
   const { artifactId: _artifactId, ...result } = await evaluateV3(plan);
@@ -415,6 +434,7 @@ export async function runServerVerifications(
       // 태스크에 역할 제한이 없으면(통합 태스크) 소유권 판정은 소유자 없는 규칙만 통과시킨다.
       // 제출 시점 판정과 같은 기준을 재현하기만 하면 된다 — 새 판정을 만들지 않는다.
       teamRole: (task.teamRole ?? 'BACKEND') as TeamRole,
+      baseCommits: await baseCommitsFor(tx, task.id),
     };
   });
 
