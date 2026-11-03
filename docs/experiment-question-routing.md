@@ -5,12 +5,17 @@
 
 ## 1. 무엇을 비교하나
 
-에이전트가 AskUserQuestion으로 물은 질문을 **누구에게 보낼지(FE · BE · PM · 자기 소관 SELF)** 정하는 라우터 두 개를 같은 질문으로 비교한다.
+에이전트가 AskUserQuestion으로 물은 질문을 **누구에게 보낼지(FE · BE · PM · 자기 소관 SELF)** 정하는 라우터 세 개를 같은 질문으로 비교한다(2026-11-03, Claude · OpenAI · Jev).
 
 | 조건 | 라우터 |
 |---|---|
-| NOMOS + LLM | `llm` — Claude가 판정(`question/llm-router.ts`, 프롬프트 `router.ts` v2) |
-| NOMOS + Decision AI | `decision` — 외부 결정 모델을 HTTP로 호출(`question/http-router.ts`, `DECISION_ROUTER_URL`) |
+| NOMOS + Claude | `llm` — Claude가 판정(`question/llm-router.ts`, 프롬프트 `router.ts` v3) |
+| NOMOS + OpenAI | `openai` — 같은 프롬프트·해석으로 OpenAI 모델이 판정(`question/openai-router.ts`, Responses API + 엄격한 JSON Schema, `OPENAI_API_KEY`·`OPENAI_ROUTER_MODEL` 기본 `gpt-6.1-sol`) |
+| NOMOS + Decision AI(Jev) | `jev` — TypeSafe의 결정 모델이 choice 질문에 확률로 답함(`question/jev-router.ts`, System One API, `TYPESAFE_API_KEY`·`JEV_MODEL` 기본 `jev-1.14.0`). state = LLM 프롬프트와 같은 맥락 문장, 기준 = 같은 후보 설명 |
+| (예비) 외부 결정 모델 | `decision` — 임의의 HTTP 결정 모델(`question/http-router.ts`, `DECISION_ROUTER_URL`) |
+
+운영에서 셋을 같은 질문에 함께 돌리려면 하나를 `QUESTION_ROUTER`로, 나머지를 `QUESTION_SHADOW_ROUTERS`(예: `openai,jev`)로 둔다. 고른 라우터에 키가 없으면 서버가 뜨지 않고, 그림자 라우터의 키가 없으면 기동 때 경고 로그를 남기고 빠진다.
+오프라인 평가: `npx tsx scripts/eval-question-router.ts openai[:모델]` · `jev[:모델]` — 키는 셸 환경변수에서만 읽는다(`.env`를 읽지 않는다).
 | 기준선 A | `baseline:asker` — 질문한 사람이 스스로 정함(SELF). 지금 보고서에 이미 있다 |
 
 **지표**
@@ -18,7 +23,7 @@
 | 지표 | 정의 | 비고 |
 |---|---|---|
 | 라우팅 정확도 | 판정이 정답(`accept`)에 들어간 비율 | 전체 + **정답 담당자별(FE·BE·PM·SELF)** + **혼동표**(정답 × 판정) + **출처별**(아래 2절) |
-| 비용 | 질문 하나 판정의 USD | LLM은 토큰 × 가격표(`pm/pricing.ts`). Decision AI는 응답의 `costUsd` — 없으면 "비용 없음"으로 나온다 |
+| 비용 | 질문 하나 판정의 USD | Claude는 토큰 × 가격표(`pm/pricing.ts`), OpenAI는 usage × `openai-router.ts` 가격표(캐시 입력 따로), Jev는 입력 토큰 × `jev-router.ts` 가격표(출력 무료). 표에 없는 모델·`decision`이 `costUsd`를 주지 않으면 "비용 없음"으로 나온다 |
 | 지연 | 요청 시작 ~ 응답 끝(ms) | **LLM은 API 모드로 잰다**(아래 10절). 중계 모드는 노트북 대기·CLI 기동이 섞인다 |
 | 실패율 | 라우터가 실패해 대표에게 넘어간 비율(`fallback:representative`) | |
 
