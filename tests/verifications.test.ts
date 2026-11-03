@@ -517,7 +517,7 @@ describe('FAIL 이후 — 재시도와 에스컬레이션', () => {
     const resumed = await resumeTask({ userId: rep, orgId: ctx.orgId, orgRole: 'REPRESENTATIVE' }, ctx.taskId, '검사기 수정 후 재개');
     expect(resumed).toMatchObject({ state: 'READY', retryCount: 0, assigneeAgentId: null });
     const ev = await pool.query(`SELECT on_behalf_of, payload FROM events WHERE type = 'TASK_RESUMED'`);
-    expect(ev.rows).toEqual([{ on_behalf_of: rep, payload: { taskId: ctx.taskId, note: '검사기 수정 후 재개', from: 'ESCALATED', previousRetryCount: 3 } }]);
+    expect(ev.rows).toEqual([{ on_behalf_of: rep, payload: { taskId: ctx.taskId, note: '검사기 수정 후 재개', from: 'ESCALATED', previousRetryCount: 3, resumedBy: 'representative' } }]);
 
     // 다시 가져가 고치면 정상으로 끝난다.
     setCommitInspector(fakeInspector(['src/api/join.ts']));
