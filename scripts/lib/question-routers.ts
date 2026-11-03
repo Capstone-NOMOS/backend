@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { buildRoutingPrompt, parseRoutingResponse, ROUTING_PROMPT_VERSION, type QuestionRouter, type RoutingDecision, type RoutingInput } from '../../src/domain/question/router.js';
 import { resolveClaudeCommand } from '../../src/executor/runner.js';
+import { jevQuestionRouter } from '../../src/domain/question/jev-router.js';
+import { openAiQuestionRouter } from '../../src/domain/question/openai-router.js';
 
 // 평가 장치용 라우터 구현들. 서버에는 아직 붙이지 않는다 — 여기서 비교해 보고 쓸 만한 것을 router-registry에 연결한다.
 // 서버 설정(env)을 import하지 않는다 — 서버 비밀값 없이 노트북에서 돈다.
@@ -48,4 +50,28 @@ export function httpRouter(url: string, name = `http:${new URL(url).host}`): Eva
     return { ...parseRoutingResponse(await res.text(), input, name), costUsd: null };
   };
   return { name, routeWithCost, route: routeWithCost };
+}
+
+// 서버와 같은 구현(src/domain/question/*-router.ts)을 그대로 쓴다 — 판정·비용 계산이 운영과 한 벌이다.
+// 키는 실행자의 셸 환경변수에서만 읽는다(.env를 읽지 않는다 — 운영 키와 평가 키를 나눠 쓴다).
+function requireKey(name: string): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`${name} 환경변수가 없다 — 셸에서 설정하고 다시 실행한다(.env는 읽지 않는다)`);
+  return value;
+}
+
+function withCost(router: QuestionRouter): EvalRouter {
+  const routeWithCost = async (input: RoutingInput): Promise<RouterRun> => {
+    const decision = await router.route(input);
+    return { ...decision, costUsd: decision.costUsd ?? null };
+  };
+  return { name: router.name, routeWithCost, route: routeWithCost };
+}
+
+export function openAiEvalRouter(model?: string): EvalRouter {
+  return withCost(openAiQuestionRouter({ apiKey: requireKey('OPENAI_API_KEY'), model, effort: 'low' }));
+}
+
+export function jevEvalRouter(model?: string): EvalRouter {
+  return withCost(jevQuestionRouter({ apiKey: requireKey('TYPESAFE_API_KEY'), model }));
 }

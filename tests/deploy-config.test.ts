@@ -56,6 +56,14 @@ describe('env — 운영에서 빠지면 조용히 넘어가지 않는다', () =
     expect(() => parseEnv(rest)).toThrow(/COMMIT_INSPECTOR/);
   });
 
+  it('실제로 보낼 질문 라우터를 골랐는데 키·주소가 없으면 기동을 거부한다 — 조용히 llm으로 내려가지 않게', () => {
+    expect(() => parseEnv({ ...BASE_ENV, QUESTION_ROUTER: 'openai' })).toThrow(/OPENAI_API_KEY/);
+    expect(() => parseEnv({ ...BASE_ENV, QUESTION_ROUTER: 'jev' })).toThrow(/TYPESAFE_API_KEY/);
+    expect(() => parseEnv({ ...BASE_ENV, QUESTION_ROUTER: 'decision' })).toThrow(/DECISION_ROUTER_URL/);
+    expect(parseEnv({ ...BASE_ENV, QUESTION_ROUTER: 'jev', TYPESAFE_API_KEY: 'k' })).toMatchObject({ QUESTION_ROUTER: 'jev', JEV_MODEL: 'jev-1.14.0' });
+    expect(parseEnv(BASE_ENV)).toMatchObject({ QUESTION_ROUTER: 'llm', OPENAI_ROUTER_MODEL: 'gpt-6.1-sol', OPENAI_ROUTER_EFFORT: 'low' });
+  });
+
   it('APP_BASE_URL이 남아 있으면 거부한다 — 두 값으로 나뉘었다', () => {
     expect(() => parseEnv({ ...BASE_ENV, APP_BASE_URL: 'http://localhost:3000' })).toThrow(/API_BASE_URL.*FRONTEND_BASE_URL/);
   });

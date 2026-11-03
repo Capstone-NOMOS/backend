@@ -85,12 +85,20 @@ const envSchema = z
     EXPERIMENT_CONTRACT_RETRIES: z.coerce.number().int().min(0).max(10).default(2),
     EXPERIMENT_STALE_QUESTION_MS: z.coerce.number().int().min(1000).default(2 * 60 * 1000),
     EXPERIMENT_VERIFYING_TIMEOUT_MS: z.coerce.number().int().min(1000).default(20 * 60 * 1000),
-    // 질문 라우터(025): llm = PM 모델이 FE·BE·PM 중 고른다(실패하면 rule로 대체·기록), rule = 반대 역할 규칙.
-    QUESTION_ROUTER: z.enum(['llm', 'decision']).default('llm'),
-    // 평가용(026): 실제로 보내지는 않고 같은 질문에 함께 돌려 기록할 라우터들(쉼표 구분: llm,decision). 비우면 끈다.
+    // 질문 라우터(025): llm = PM 모델(Claude)이 FE·BE·PM 중 고른다 · openai = OpenAI 모델(같은 프롬프트) · jev = TypeSafe의 결정 모델 Jev ·
+    // decision = 임의의 외부 결정 모델(HTTP). 실패하면 대표(PM)에게 보내고 기록한다. 고른 라우터에 키·주소가 없으면 기동을 거부한다(아래 superRefine).
+    QUESTION_ROUTER: z.enum(['llm', 'openai', 'jev', 'decision']).default('llm'),
+    // 평가용(026): 실제로 보내지는 않고 같은 질문에 함께 돌려 기록할 라우터들(쉼표 구분: llm,openai,jev,decision). 비우면 끈다.
     QUESTION_SHADOW_ROUTERS: z.string().default(''),
-    // Decision AI(Jev 등) 라우터의 HTTP 주소. RoutingInput을 POST하고 { target, confidence?, reason?, costUsd? }를 받는다.
+    // Decision AI 라우터의 HTTP 주소. RoutingInput을 POST하고 { target, confidence?, reason?, costUsd? }를 받는다.
     DECISION_ROUTER_URL: z.string().url().optional(),
+    // OpenAI 라우터(question/openai-router.ts). 키가 없으면 openai 라우터가 없다. 모델 기본은 Claude Sonnet 5.5와 같은 가격대.
+    OPENAI_API_KEY: z.string().min(1).optional(),
+    OPENAI_ROUTER_MODEL: z.string().min(1).default('gpt-6.1-sol'),
+    OPENAI_ROUTER_EFFORT: z.enum(['none', 'minimal', 'low', 'medium', 'high']).default('low'),
+    // Jev 라우터(question/jev-router.ts, TypeSafe System One API). 키가 없으면 jev 라우터가 없다. 모델은 고정 버전(별칭은 실험 중에 바뀐다).
+    TYPESAFE_API_KEY: z.string().min(1).optional(),
+    JEV_MODEL: z.string().min(1).default('jev-1.14.0'),
   })
   .superRefine((v, ctx) => {
     if (v.APP_BASE_URL !== undefined) {
@@ -112,6 +120,12 @@ const envSchema = z
         // 인증 없이 열리는 Swagger를 운영에 띄우지 않는다. 조용히 끄지도 않는다 — 켜려던 의도가 있었으므로 실패시킨다.
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['DOCS_BASIC_AUTH'], message: 'DOCS_ENABLED=true requires DOCS_BASIC_AUTH in production' });
       }
+    }
+    // 실제로 보낼 라우터를 골랐는데 키·주소가 없으면 조용히 llm으로 내려가지 않고 기동을 막는다 — 비교 실험에서 다른 라우터의 결과가 섞인다.
+    const routerNeeds = { openai: 'OPENAI_API_KEY', jev: 'TYPESAFE_API_KEY', decision: 'DECISION_ROUTER_URL' } as const;
+    if (v.QUESTION_ROUTER !== 'llm' && v[routerNeeds[v.QUESTION_ROUTER]] === undefined) {
+      const key = routerNeeds[v.QUESTION_ROUTER];
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: [key], message: `QUESTION_ROUTER=${v.QUESTION_ROUTER} requires ${key}` });
     }
     if (v.DOCS_BASIC_AUTH !== undefined) {
       const sep = v.DOCS_BASIC_AUTH.indexOf(':');

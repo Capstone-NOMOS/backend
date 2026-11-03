@@ -5,7 +5,9 @@
 //
 //   npx tsx scripts/eval-question-router.ts opposite                       # 기본 데이터셋(scripts/data/question-routing.json)
 //   npx tsx scripts/eval-question-router.ts claude:sonnet --data team.json --repeat 2
-//   npx tsx scripts/eval-question-router.ts http://localhost:8080/route --data team.json   # Jev 같은 외부 결정 모델
+//   npx tsx scripts/eval-question-router.ts openai:gpt-6.1-sol --data team.json   # OpenAI(셸의 OPENAI_API_KEY)
+//   npx tsx scripts/eval-question-router.ts jev --data team.json                  # TypeSafe Jev(셸의 TYPESAFE_API_KEY, 기본 jev-1.14.0)
+//   npx tsx scripts/eval-question-router.ts http://localhost:8080/route --data team.json   # 그 밖의 외부 결정 모델
 //   npx tsx scripts/eval-question-router.ts --check --data team.json      # 형식 검사만(라우터를 부르지 않는다)
 //
 // 지표: 정확도(accept에 든 판정), SELF 탐지(정답이 SELF뿐인 문항을 SELF로), 잘못 막음(남에게 물어야 할 걸 SELF로),
@@ -13,7 +15,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { oppositeRoleRouter } from '../src/domain/question/router.js';
-import { claudeCliRouter, httpRouter, type EvalRouter } from './lib/question-routers.js';
+import { claudeCliRouter, httpRouter, jevEvalRouter, openAiEvalRouter, type EvalRouter } from './lib/question-routers.js';
 import { parseDataset, runEvaluation, summarize, type LoadedDataset } from './lib/routing-dataset.js';
 
 function loadDataset(file: string): LoadedDataset {
@@ -57,8 +59,10 @@ if (dataset.items.length === 0) {
 function pickRouter(s: string): EvalRouter {
   if (s === 'opposite') return { ...oppositeRoleRouter, routeWithCost: async (i) => ({ ...(await oppositeRoleRouter.route(i)), costUsd: 0 }) };
   if (s === 'claude' || s.startsWith('claude:')) return claudeCliRouter(s.split(':')[1]);
+  if (s === 'openai' || s.startsWith('openai:')) return openAiEvalRouter(s.split(':')[1]);
+  if (s === 'jev' || s.startsWith('jev:')) return jevEvalRouter(s.split(':')[1]);
   if (s.startsWith('http')) return httpRouter(s);
-  throw new Error(`unknown router: ${s} (opposite | claude[:model] | http(s)://...)`);
+  throw new Error(`unknown router: ${s} (opposite | claude[:model] | openai[:model] | jev[:model] | http(s)://...)`);
 }
 const router = pickRouter(routerSpec);
 

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { jevCriteria, jevQuestionRouter } from '../src/domain/question/jev-router.js';
 import { llmQuestionRouter } from '../src/domain/question/llm-router.js';
+import { openAiQuestionRouter } from '../src/domain/question/openai-router.js';
 import { buildRoutingPrompt, oppositeRoleRouter, parseRoutingResponse, ROUTING_PROMPT_VERSION, type RoutingInput } from '../src/domain/question/router.js';
 
 const INPUT: RoutingInput = {
@@ -103,5 +105,104 @@ describe('질문 라우터 — 단계별 프롬프트 (v3)', () => {
 
   it('규칙 라우터 — PM이 물으면 PM(반대 역할이 없다)', async () => {
     expect((await oppositeRoleRouter.route(FEATURE)).target).toBe('PM');
+  });
+});
+
+// 발표 비교의 세 축(Claude · OpenAI · Jev) 중 API로 부르는 둘. 실제 API는 부르지 않는다 — 가짜 fetch가 요청을 받아 두고 정해진 응답을 낸다.
+type Captured = { url: string; init: RequestInit };
+function fakeFetch(status: number, body: unknown, captured: Captured[]): typeof fetch {
+  return (async (url: string | URL | Request, init?: RequestInit) => {
+    captured.push({ url: String(url), init: init ?? {} });
+    return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+  }) as typeof fetch;
+}
+
+describe('OpenAI 라우터', () => {
+  const ok = (text: string, extra: Record<string, unknown> = {}) => ({
+    status: 'completed',
+    output: [{ type: 'reasoning' }, { type: 'message', content: [{ type: 'output_text', text }] }],
+    usage: { input_tokens: 1_000, input_tokens_details: { cached_tokens: 200 }, output_tokens: 100 },
+    ...extra,
+  });
+
+  it('llm과 같은 프롬프트를 엄격한 JSON Schema로 보내고, 같은 해석·실제 사용량 비용을 낸다', async () => {
+    const captured: Captured[] = [];
+    const router = openAiQuestionRouter({ apiKey: 'sk-test', model: 'gpt-6.1-sol', effort: 'low', fetchImpl: fakeFetch(200, ok('{"target":"BACKEND","confidence":0.8,"reason":"응답 형식"}'), captured) });
+    const decision = await router.route({ ...INPUT, context: { orgId: 'org-secret' } });
+
+    expect(decision).toEqual({ target: 'BACKEND', confidence: 0.8, reason: '응답 형식', routedBy: `openai:gpt-6.1-sol:${ROUTING_PROMPT_VERSION}`, costUsd: 0.00262 });
+    expect(router.name).toBe(decision.routedBy); // 그림자 실행이 이름으로 실제 라우터를 뺀다
+    const req = captured[0]!;
+    expect(req.url).toBe('https://api.openai.com/v1/responses');
+    expect((req.init.headers as Record<string, string>).Authorization).toBe('Bearer sk-test');
+    const body = JSON.parse(String(req.init.body)) as Record<string, unknown>;
+    expect(body.input).toBe(buildRoutingPrompt(INPUT));
+    expect(body).toMatchObject({ model: 'gpt-6.1-sol', reasoning: { effort: 'low' }, store: false, text: { format: { type: 'json_schema', strict: true } } });
+    expect(String(req.init.body)).not.toContain('org-secret'); // 조직 id는 외부로 보내지 않는다
+  });
+
+  it('자기 역할을 고르면 SELF, 모르는 모델은 비용 null(지어내지 않는다)', async () => {
+    const router = openAiQuestionRouter({ apiKey: 'k', model: 'gpt-unknown', fetchImpl: fakeFetch(200, ok('{"target":"FRONTEND","confidence":0.6,"reason":"화면"}'), []) });
+    expect(await router.route(INPUT)).toMatchObject({ target: 'SELF', costUsd: null });
+  });
+
+  it('잘림·거절·HTTP 오류·모르는 역할은 예외다 — 호출부가 대표에게 보내고 실패로 기록한다', async () => {
+    const make = (status: number, body: unknown) => openAiQuestionRouter({ apiKey: 'k', fetchImpl: fakeFetch(status, body, []) });
+    await expect(make(200, ok('{"target":"BACKEND"', { status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' } })).route(INPUT)).rejects.toThrow(/max_output_tokens/);
+    await expect(make(200, { status: 'completed', output: [{ type: 'message', content: [{ type: 'refusal', refusal: '안 됨' }] }] }).route(INPUT)).rejects.toThrow(/refusal/);
+    await expect(make(401, { error: { message: 'bad key' } }).route(INPUT)).rejects.toThrow(/401/);
+    await expect(make(200, ok('{"target":"QA","confidence":1,"reason":"x"}')).route(INPUT)).rejects.toThrow(/unknown target/);
+  });
+});
+
+describe('Jev 라우터 (TypeSafe 결정 모델)', () => {
+  const answer = (choice: string, probabilities: Record<string, number>, extra: Record<string, unknown> = {}) => ({
+    model: 'jev-1.14.0',
+    answers: { owner: { type: 'choice', choice, confidence: 0.82, probabilities } },
+    usage: { input_tokens: 1_000_000, output_tokens: 3 },
+    ...extra,
+  });
+
+  it('같은 맥락을 state로, 같은 후보 설명을 choice 기준으로 보낸다 — 묻는 역할 자신은 SELF 하나로만', async () => {
+    const captured: Captured[] = [];
+    const router = jevQuestionRouter({ apiKey: 'ts-test', fetchImpl: fakeFetch(200, answer('BACKEND', { BACKEND: 0.82, SELF: 0.1, PM: 0.08 }), captured) });
+    const decision = await router.route({ ...INPUT, context: { orgId: 'org-secret' } });
+
+    expect(decision).toEqual({
+      target: 'BACKEND',
+      confidence: 0.82,
+      reason: '확률: BACKEND 0.82, SELF 0.10, PM 0.08',
+      routedBy: `jev:jev-1.14.0:${ROUTING_PROMPT_VERSION}`,
+      costUsd: 0.042,
+    });
+    const req = captured[0]!;
+    expect(req.url).toBe('https://api.typesafe.ai/v1/systemone');
+    expect((req.init.headers as Record<string, string>).Authorization).toBe('Bearer ts-test');
+    const body = JSON.parse(String(req.init.body)) as { model: string; state: string; questions: { owner: { type: string; criteria: Record<string, string> } } };
+    expect(body.model).toBe('jev-1.14.0');
+    expect(body.state).toContain('응답 본문은 어떤 형태인가요?');
+    expect(body.state).not.toContain('JSON'); // 출력 형식 지시는 LLM 계열에만
+    expect(body.questions.owner.type).toBe('choice');
+    expect(Object.keys(body.questions.owner.criteria)).toEqual(['BACKEND', 'PM', 'SELF']);
+    expect(String(req.init.body)).not.toContain('org-secret');
+  });
+
+  it('PM이 물으면 SELF가 없고 PM 소관은 PM이다', () => {
+    const pmInput: RoutingInput = { ...INPUT, stage: 'feature_spec', askerRole: 'PM', task: null, repo: null };
+    expect(Object.keys(jevCriteria(pmInput))).toEqual(['FRONTEND', 'BACKEND', 'PM']);
+  });
+
+  it('별칭으로 불러도 실제로 답한 버전의 가격으로 센다, 모르는 모델은 비용 null', async () => {
+    const aliased = jevQuestionRouter({ apiKey: 'k', model: 'jev-latest', fetchImpl: fakeFetch(200, answer('PM', { PM: 1 }), []) });
+    expect(await aliased.route(INPUT)).toMatchObject({ target: 'PM', costUsd: 0.042, routedBy: `jev:jev-latest:${ROUTING_PROMPT_VERSION}` });
+    const unknown = jevQuestionRouter({ apiKey: 'k', model: 'jev-9', fetchImpl: fakeFetch(200, answer('PM', { PM: 1 }, { model: 'jev-9' }), []) });
+    expect((await unknown.route(INPUT)).costUsd).toBeNull();
+  });
+
+  it('HTTP 오류·choice 답 없음·모르는 값은 예외다', async () => {
+    const make = (status: number, body: unknown) => jevQuestionRouter({ apiKey: 'k', fetchImpl: fakeFetch(status, body, []) });
+    await expect(make(429, { detail: 'rate limited' }).route(INPUT)).rejects.toThrow(/429/);
+    await expect(make(200, { model: 'jev-1.14.0', answers: {} }).route(INPUT)).rejects.toThrow(/no choice answer/);
+    await expect(make(200, answer('QA', { QA: 1 })).route(INPUT)).rejects.toThrow(/unknown target/);
   });
 });
