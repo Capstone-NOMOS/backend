@@ -65,29 +65,33 @@ export function openAiQuestionRouter(options: OpenAiRouterOptions): QuestionRout
   return {
     name: routedBy,
     async route(input) {
+      // 판정 시간(modelLatencyMs) = 요청을 보내 응답 본문을 다 받을 때까지. 프롬프트 조립·해석은 넣지 않는다.
+      const body = JSON.stringify({
+        model,
+        instructions: SYSTEM,
+        input: buildRoutingPrompt(input),
+        max_output_tokens: MAX_OUTPUT_TOKENS,
+        ...(options.effort ? { reasoning: { effort: options.effort } } : {}),
+        text: { format: { type: 'json_schema', name: 'routing', strict: true, schema: ROUTING_JSON_SCHEMA } },
+        store: false,
+      });
+      const started = Date.now();
       const res = await fetchImpl(OPENAI_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${options.apiKey}` },
-        body: JSON.stringify({
-          model,
-          instructions: SYSTEM,
-          input: buildRoutingPrompt(input),
-          max_output_tokens: MAX_OUTPUT_TOKENS,
-          ...(options.effort ? { reasoning: { effort: options.effort } } : {}),
-          text: { format: { type: 'json_schema', name: 'routing', strict: true, schema: ROUTING_JSON_SCHEMA } },
-          store: false,
-        }),
+        body,
         signal: AbortSignal.timeout(30_000),
       });
       // 응답 본문은 에러 메시지에 싣지 않는다 — 상태 코드만(본문에 요청 일부가 되돌아올 수 있다).
       if (!res.ok) throw new Error(`${routedBy} returned ${res.status}`);
-      const body = (await res.json()) as OpenAiResponse;
+      const response = (await res.json()) as OpenAiResponse;
+      const modelLatencyMs = Date.now() - started;
       // llm 라우터처럼 끝난 이유부터 본다 — 잘렸거나 거절이면 JSON이 스키마와 맞지 않을 수 있다.
-      if (body.status !== 'completed') throw new Error(`router stopped: ${body.incomplete_details?.reason ?? body.status ?? 'unknown'}`);
-      const parts = (body.output ?? []).filter((o) => o.type === 'message').flatMap((o) => o.content ?? []);
+      if (response.status !== 'completed') throw new Error(`router stopped: ${response.incomplete_details?.reason ?? response.status ?? 'unknown'}`);
+      const parts = (response.output ?? []).filter((o) => o.type === 'message').flatMap((o) => o.content ?? []);
       if (parts.some((p) => p.type === 'refusal')) throw new Error('router stopped: refusal');
       const text = parts.flatMap((p) => (p.type === 'output_text' && p.text ? [p.text] : [])).join('');
-      return { ...parseRoutingResponse(text, input, routedBy), costUsd: openAiCost(model, body.usage) };
+      return { ...parseRoutingResponse(text, input, routedBy), costUsd: openAiCost(model, response.usage), modelLatencyMs };
     },
   };
 }

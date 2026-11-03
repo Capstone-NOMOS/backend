@@ -460,6 +460,7 @@ components:
             latencyMs: { type: integer }
             fallback: { type: string, nullable: true, description: '라우터가 실패·시간 초과로 규칙 라우터로 대체됐으면 그 사유' }
             costUsd: { type: number, nullable: true, description: '판정의 모델 비용(USD). 규칙 라우터·옛 질문은 없음 또는 null' }
+            modelLatencyMs: { type: integer, nullable: true, description: '판정 시간(035) — 판정자에게 도달해 답이 나오기까지(모델 API 호출). latencyMs는 서버가 라우터를 부른 순간부터(중계면 대기열·CLI 기동 포함). 옛 질문은 없음, 모르면 null' }
         questions:
           type: array
           description: Claude Code AskUserQuestion 형식 그대로
@@ -560,7 +561,7 @@ components:
           type: array
           items:
             type: object
-            required: [router, mode, decisions, errors, labeled, aligned, alignmentRate, avgLatencyMs, p95LatencyMs, avgCostUsd, totalCostUsd]
+            required: [router, mode, decisions, errors, labeled, aligned, alignmentRate, avgLatencyMs, p95LatencyMs, avgModelLatencyMs, p95ModelLatencyMs, modelLatencySamples, avgCostUsd, totalCostUsd]
             properties:
               router: { type: string, description: "라우터 이름·버전. baseline:asker = 조건 A(질문한 사람에게 — 모두 SELF)" }
               mode: { type: string, enum: [primary, shadow, baseline], description: 'primary 실제로 보낸 라우터 · shadow 함께 돌려 본 라우터 · baseline 기준선' }
@@ -571,6 +572,9 @@ components:
               alignmentRate: { type: number, nullable: true, description: '최초 수신자-정답 담당자 일치율(0~1)' }
               avgLatencyMs: { type: integer, nullable: true, description: '분류 지연 평균' }
               p95LatencyMs: { type: integer, nullable: true }
+              avgModelLatencyMs: { type: integer, nullable: true, description: '판정 시간 평균(035, 판정자에게 도달 ~ 답) — 라우터 비교는 이 값으로. 측정 위치가 다르다(API 라우터 = 서버, 중계 llm = 노트북의 Claude Code)' }
+              p95ModelLatencyMs: { type: integer, nullable: true }
+              modelLatencySamples: { type: integer, description: '판정 시간을 잰 판정 수(옛 CLI 중계 등 모르면 빠진다)' }
               avgCostUsd: { type: number, nullable: true, description: '요청당 비용(USD)' }
               totalCostUsd: { type: number, nullable: true }
         byStage:
@@ -4078,7 +4082,7 @@ paths:
           - `TASK_CANCELLED` — `taskId, title, previousState, reason, expiredQuestionIds[], unblockedDependents[]`(대표가 취소, 027)
           - `TASK_COMPLETED_MANUALLY` — `taskId, title, artifactId, commitSha, changedPaths[], previousState, v3('PASS'), note`(사람이 직접 완료, 027)
           - `TASK_RESUMED` — `taskId, note, from('AGENT_STOPPED'|'ESCALATED'), previousRetryCount?`
-          - `QUESTION_ASKED` — `questionId, taskId, askerRole, targetRole('FRONTEND'|'BACKEND'|'PM'|'SELF'), routedBy, confidence, latencyMs, fallback, costUsd, questionCount`
+          - `QUESTION_ASKED` — `questionId, taskId, askerRole, targetRole('FRONTEND'|'BACKEND'|'PM'|'SELF'), routedBy, confidence, latencyMs, fallback, costUsd, modelLatencyMs(035 판정 시간), questionCount`
           - `QUESTION_GOLD_LABELED` — `questionId, goldTarget('FRONTEND'|'BACKEND'|'PM'|'SELF'), previousGoldTarget`(대표가 정답 담당자를 붙임, 026)
           - `MEMBER_AGENT_DETACHED` — `agentId, agentName?, teamRole, userId, cause('agent_disconnected')`(에이전트만 떨어짐 — 사람은 담당으로 남음, 028. 그 역할 룸에 줄로도 나온다)
           - `MEMBER_AGENT_ATTACHED` — `agentId, agentName?, teamRole, userId, cause('reconnected'|'assigned')`(빈 담당 자리에 에이전트가 다시 붙음, 028. 그 역할 룸에 줄로도 나온다)
@@ -4949,6 +4953,7 @@ paths:
                     outputTokens: { type: integer }
                     cacheWriteTokens: { type: integer }
                     cacheReadTokens: { type: integer }
+                modelLatencyMs: { type: integer, nullable: true, description: 'Claude Code의 duration_api_ms(모델 API 호출 시간) — 질문 라우팅의 판정 시간(035). CLI 0.1.19부터, 옛 CLI는 보내지 않는다' }
       responses:
         '200':
           description: 받음

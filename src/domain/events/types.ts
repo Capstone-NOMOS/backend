@@ -255,6 +255,8 @@ export type QuestionAskedPayload = QuestionStageFields & {
   fallback: string | null;
   // 판정의 모델 비용(USD, 025 LLM 라우터) — "요청당 비용" 지표. 규칙 라우터·옛 이벤트는 null·없음.
   costUsd?: number | null;
+  // 판정 시간(035) — 판정자에게 도달해 답이 나오기까지(모델 API 호출). latencyMs는 서버가 라우터를 부른 순간부터. 옛 이벤트는 없음, 모르면 null.
+  modelLatencyMs?: number | null;
   questionCount: number;
 };
 

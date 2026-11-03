@@ -70,14 +70,18 @@ export function jevQuestionRouter(options: JevRouterOptions): QuestionRouter {
   return {
     name: routedBy,
     async route(input) {
+      // 판정 시간(modelLatencyMs) = 요청을 보내 응답 본문을 다 받을 때까지(openai 라우터와 같은 정의).
+      const requestBody = JSON.stringify(jevRequestBody(model, input));
+      const started = Date.now();
       const res = await fetchImpl(JEV_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${options.apiKey}` },
-        body: JSON.stringify(jevRequestBody(model, input)),
+        body: requestBody,
         signal: AbortSignal.timeout(30_000),
       });
       if (!res.ok) throw new Error(`${routedBy} returned ${res.status}`);
       const body = (await res.json()) as JevResponse;
+      const modelLatencyMs = Date.now() - started;
       const answer = body.answers?.[QUESTION_KEY];
       if (!answer || answer.type !== 'choice') throw new Error(`${routedBy} returned no choice answer`);
       const target = normalizeTarget(answer.choice, input);
@@ -88,7 +92,7 @@ export function jevQuestionRouter(options: JevRouterOptions): QuestionRouter {
         .sort((a, b) => b[1] - a[1])
         .map(([k, p]) => `${k} ${p.toFixed(2)}`)
         .join(', ');
-      return { target, confidence, reason: reason ? `확률: ${reason}`.slice(0, 300) : null, routedBy, costUsd: jevCost(body.model ?? model, body.usage?.input_tokens) };
+      return { target, confidence, reason: reason ? `확률: ${reason}`.slice(0, 300) : null, routedBy, costUsd: jevCost(body.model ?? model, body.usage?.input_tokens), modelLatencyMs };
     },
   };
 }

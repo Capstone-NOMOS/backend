@@ -67,6 +67,9 @@ const envSchema = z
     PM_MAX_TOKENS: z.coerce.number().int().min(1024).max(128_000).default(32_000),
     // 스트리밍 호출 전체 시간 제한. 연결이 멈춰도 pending이 영원히 남지 않게.
     PM_TIMEOUT_MS: z.coerce.number().int().positive().default(600_000),
+    // 중계 모드: pm-worker의 작업 확인(GET /pm/jobs/next)을 작업이 생길 때까지 붙잡는 최대 시간(long-poll). 워커 꺼짐 판정(30초)보다 짧아야 한다.
+    // 0이면 바로 답한다(예전 동작 — 테스트). 질문 라우팅의 대기 지연을 줄이려고 둔다.
+    PM_RELAY_WAIT_MS: z.coerce.number().int().min(0).max(25_000).default(20_000),
     // 한 수정 체인에서 받을 수 있는 수정 요청 수(원본 요청은 세지 않는다). 중계 모드에서는 API 예산이 상한 역할을 못 하므로 서버가 센다.
     PM_MAX_REVISIONS: z.coerce.number().int().min(0).max(20).default(3),
     // 에이전트 질문(AskUserQuestion)의 유효 기간. 묻는 쪽 실행은 몇 분만 기다리고(브릿지 NOMOS_QUESTION_INLINE_WAIT_MS) 태스크를

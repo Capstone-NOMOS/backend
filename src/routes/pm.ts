@@ -139,8 +139,13 @@ pmRouter.post(
 // ── 중계 모드(PM_PROVIDER=relay) — 대표 노트북의 `executor pm-worker`가 부른다. API 모드에서는 409 PM_RELAY_DISABLED.
 
 // GET /api/pm/jobs/next — 그 조직의 다음 모델 호출 작업을 가져간다(대표 본인의 에이전트만). 없으면 job: null.
+// 작업이 없으면 PM_RELAY_WAIT_MS까지 응답을 붙잡고 있다가 생기는 즉시 넘긴다(long-poll). 끊긴 요청에는 작업을 맡기지 않는다.
 pmRouter.get('/pm/jobs/next', authenticateAgent, async (req, res) => {
-  res.status(200).json({ data: { job: await takeRelayJob(req.agent!) } });
+  let closed = false;
+  res.on('close', () => {
+    closed = true;
+  });
+  res.status(200).json({ data: { job: await takeRelayJob(req.agent!, () => closed) } });
 });
 
 const jobParams = z.object({ jobId: z.string().uuid() });
@@ -157,6 +162,9 @@ const relayResultBody = z
       cacheWriteTokens: z.number().int().nonnegative(),
       cacheReadTokens: z.number().int().nonnegative(),
     }),
+    // Claude Code의 duration_api_ms(모델 API 호출 시간) — 질문 라우팅의 판정 시간(035). CLI 0.1.19부터 보낸다(옛 CLI는 없음).
+    // 모르는 필드를 거부하는 스키마라 **서버를 먼저 배포**해야 새 CLI가 400을 받지 않는다.
+    modelLatencyMs: z.number().int().nonnegative().max(3_600_000).nullable().optional(),
   })
   .strict();
 

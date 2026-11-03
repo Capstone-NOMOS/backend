@@ -517,19 +517,24 @@ describe('라우팅 평가 기록과 보고서', () => {
 
   it('실제 판정(primary)과 그림자 라우터 판정이 남고, 정답을 붙이면 라우터별 일치율·지연·비용이 나온다', async () => {
     const w = await world();
-    setQuestionRouter({ name: 'llm:test', route: async () => ({ target: 'BACKEND', confidence: 0.9, reason: 'API', routedBy: 'llm:test', costUsd: 0.002 }) });
+    setQuestionRouter({ name: 'llm:test', route: async () => ({ target: 'BACKEND', confidence: 0.9, reason: 'API', routedBy: 'llm:test', costUsd: 0.002, modelLatencyMs: 1200 }) });
     setShadowRouters([
-      { name: 'decision:test', route: async () => ({ target: 'PM', confidence: 0.7, reason: '정책', routedBy: 'decision:test', costUsd: 0.0001 }) },
+      { name: 'decision:test', route: async () => ({ target: 'PM', confidence: 0.7, reason: '정책', routedBy: 'decision:test', costUsd: 0.0001, modelLatencyMs: 250 }) },
       { name: 'broken', route: async () => { throw new Error('down'); } },
     ]);
     const asked = await w.feClient.askQuestions(w.taskId, [Q1]);
     await drainRoutingRecords();
-    const runs = await pool.query(`SELECT router, mode, target, error FROM question_routing_runs ORDER BY router`);
+    const runs = await pool.query(`SELECT router, mode, target, error, model_latency_ms FROM question_routing_runs ORDER BY router`);
     expect(runs.rows).toEqual([
-      { router: 'broken', mode: 'shadow', target: null, error: 'down' },
-      { router: 'decision:test', mode: 'shadow', target: 'PM', error: null },
-      { router: 'llm:test', mode: 'primary', target: 'BACKEND', error: null },
+      { router: 'broken', mode: 'shadow', target: null, error: 'down', model_latency_ms: null },
+      { router: 'decision:test', mode: 'shadow', target: 'PM', error: null, model_latency_ms: 250 },
+      { router: 'llm:test', mode: 'primary', target: 'BACKEND', error: null, model_latency_ms: 1200 },
     ]);
+    // 판정 시간(035)은 질문 행의 routing과 QUESTION_ASKED 이벤트에도 남는다(실제로 보낸 라우터 것).
+    const q = await pool.query(`SELECT routing->>'modelLatencyMs' AS ms FROM agent_questions WHERE id = $1`, [asked.id]);
+    expect(q.rows[0].ms).toBe('1200');
+    const ev = await pool.query(`SELECT payload->>'modelLatencyMs' AS ms FROM events WHERE type = 'QUESTION_ASKED' AND payload->>'questionId' = $1`, [asked.id]);
+    expect(ev.rows[0].ms).toBe('1200');
 
     // 정답은 대표만 붙인다.
     expect((await http('POST', `/questions/${asked.id}/gold`, await w.be.token(), { target: 'BACKEND' })).status).toBe(403);
@@ -537,14 +542,14 @@ describe('라우팅 평가 기록과 보고서', () => {
 
     const report = (await http('GET', `/projects/${w.projectId}/routing-report`, await w.rep.token())).json.data as unknown as {
       questions: number; labeled: number;
-      routers: { router: string; mode: string; decisions: number; errors: number; alignmentRate: number | null; avgCostUsd: number | null }[];
+      routers: { router: string; mode: string; decisions: number; errors: number; alignmentRate: number | null; avgCostUsd: number | null; avgModelLatencyMs: number | null; modelLatencySamples: number }[];
       rows: { decisions: Record<string, string | null>; goldTarget: string }[];
     };
     expect(report).toMatchObject({ questions: 1, labeled: 1 });
     const by = Object.fromEntries(report.routers.map((r) => [r.router, r]));
-    expect(by['llm:test']).toMatchObject({ mode: 'primary', decisions: 1, alignmentRate: 1, avgCostUsd: 0.002 });
-    expect(by['decision:test']).toMatchObject({ mode: 'shadow', alignmentRate: 0 });
-    expect(by['broken']).toMatchObject({ decisions: 0, errors: 1, alignmentRate: null });
+    expect(by['llm:test']).toMatchObject({ mode: 'primary', decisions: 1, alignmentRate: 1, avgCostUsd: 0.002, avgModelLatencyMs: 1200, modelLatencySamples: 1 });
+    expect(by['decision:test']).toMatchObject({ mode: 'shadow', alignmentRate: 0, avgModelLatencyMs: 250 });
+    expect(by['broken']).toMatchObject({ decisions: 0, errors: 1, alignmentRate: null, avgModelLatencyMs: null, modelLatencySamples: 0 });
     // 조건 A(기존 다인 개발 — 질문한 사람에게)는 SELF로 본다.
     expect(by['baseline:asker']).toMatchObject({ mode: 'baseline', alignmentRate: 0 });
     expect(report.rows[0]).toMatchObject({ goldTarget: 'BACKEND', decisions: { 'llm:test': 'BACKEND', 'decision:test': 'PM', broken: null, 'baseline:asker': 'SELF' } });

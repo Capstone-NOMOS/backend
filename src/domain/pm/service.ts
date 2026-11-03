@@ -51,7 +51,7 @@ import {
   RelayJobNotTaken,
   RelayWorkerFailed,
   relayWorkerLastSeen,
-  takeNextJob,
+  waitForNextJob,
   type RelayJob,
   type RelayResult,
 } from './relay.js';
@@ -935,9 +935,10 @@ async function assertRepresentativeAgent(agent: RelayAgent): Promise<{ orgId: st
   return { orgId: agent.orgId };
 }
 
-export async function takeRelayJob(agent: RelayAgent): Promise<RelayJob | null> {
+// 작업이 없으면 PM_RELAY_WAIT_MS까지 응답을 붙잡고 기다린다(long-poll, relay.ts의 waitForNextJob). cancelled = 요청이 끊겼는가.
+export async function takeRelayJob(agent: RelayAgent, cancelled: () => boolean = () => false): Promise<RelayJob | null> {
   const { orgId } = await assertRepresentativeAgent(agent);
-  return takeNextJob(orgId, agent.id);
+  return waitForNextJob(orgId, agent.id, env.PM_RELAY_WAIT_MS, cancelled);
 }
 
 export async function submitRelayResult(agent: RelayAgent, jobId: string, result: RelayResult): Promise<void> {
