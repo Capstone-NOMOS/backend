@@ -18,6 +18,8 @@ export default defineConfig({
       JWT_SECRET: 'test-only-secret-not-for-production-0123456789',
       SECRET_ENCRYPTION_KEY: 'dGVzdC1vbmx5LWVuY3J5cHRpb24ta2V5LTMyYnl0ZXM=',
       GITHUB_CLIENT_ID: 'test-client-id',
+      // 중계 long-poll은 끈다 — 작업이 없으면 바로 null이어야 기존 테스트가 20초씩 기다리지 않는다. long-poll 자체는 waitForNextJob을 직접 시험한다.
+      PM_RELAY_WAIT_MS: '0',
     },
     // 통합 테스트가 같은 DB 스키마를 공유하며 TRUNCATE로 서로를 격리하므로 직렬로 실행한다.
     fileParallelism: false,

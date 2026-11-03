@@ -55,6 +55,7 @@ export const relayModel: PmModel = {
         reject,
       };
       jobs.set(job.id, job);
+      wakeWaiter(job.orgId);
       // 시간 제한(PM_TIMEOUT_MS)으로 끊기면 대기열에서 뺀다. 노트북이 꺼져 있어 아무도 안 가져간 경우도 여기서 끝난다.
       signal.addEventListener('abort', () => {
         if (!jobs.delete(job.id)) return;
@@ -68,17 +69,62 @@ export const relayModel: PmModel = {
   },
 };
 
-// 그 조직의 가장 오래된 미할당 작업을 이 에이전트에게 맡긴다. 없으면 null.
+// 그 조직의 미할당 작업을 이 에이전트에게 맡긴다. 없으면 null.
+// 질문 라우팅(route)을 먼저 꺼낸다 — 질문 하나를 묻는 동안 에이전트가 답을 기다리고, 라우팅 지연은 실험 지표다.
+// 그 밖에는 들어온 순서(Map은 넣은 순서를 지킨다).
 export function takeNextJob(orgId: string, agentId: string): RelayJob | null {
   workerSeen.set(orgId, new Date());
+  let picked: Pending | null = null;
   for (const job of jobs.values()) {
-    if (job.orgId === orgId && job.takenBy === null) {
-      job.takenBy = agentId;
-      const { resolve: _r, reject: _j, ...view } = job;
-      return view;
+    if (job.orgId !== orgId || job.takenBy !== null) continue;
+    if (job.purpose === 'route') {
+      picked = job;
+      break;
+    }
+    picked ??= job;
+  }
+  if (!picked) return null;
+  picked.takenBy = agentId;
+  const { resolve: _r, reject: _j, ...view } = picked;
+  return view;
+}
+
+// 작업을 기다리는 pm-worker 요청(long-poll). 작업이 생기면 그 조직의 대기자 하나를 깨운다.
+type Waiter = { orgId: string; wake: () => void };
+const waiters = new Set<Waiter>();
+
+function wakeWaiter(orgId: string): void {
+  for (const w of waiters) {
+    if (w.orgId === orgId) {
+      waiters.delete(w);
+      w.wake();
+      return;
     }
   }
-  return null;
+}
+
+// takeNextJob을 최대 waitMs 동안 기다린다(long-poll). pm-worker는 빈 응답 뒤 3초 쉬고 다시 묻는다 —
+// 그 3초 사이에 들어온 작업은 그만큼 기다렸다. 서버가 응답을 붙잡고 있다가 작업이 생기는 즉시 넘기면 대기가 거의 0이 된다(CLI 변경 없음).
+// cancelled()가 참이면(요청이 끊김) 작업을 맡기지 않는다 — 끊긴 요청에 맡긴 작업은 아무도 실행하지 않아 시간 제한까지 멈춘다.
+// 기다리는 동안에도 워커는 살아 있는 것으로 본다(workerSeen) — 붙잡는 시간은 꺼짐 판정(30초)보다 짧아야 한다.
+export async function waitForNextJob(orgId: string, agentId: string, waitMs: number, cancelled: () => boolean): Promise<RelayJob | null> {
+  const now = takeNextJob(orgId, agentId);
+  if (now || waitMs <= 0) return now;
+  await new Promise<void>((resolve) => {
+    const waiter: Waiter = { orgId, wake: () => { clearTimeout(timer); resolve(); } };
+    const timer = setTimeout(() => {
+      waiters.delete(waiter);
+      resolve();
+    }, waitMs);
+    timer.unref();
+    waiters.add(waiter);
+  });
+  if (cancelled()) {
+    // 깨워졌는데 요청이 이미 끊겼으면 다른 대기자에게 넘긴다.
+    wakeWaiter(orgId);
+    return null;
+  }
+  return takeNextJob(orgId, agentId);
 }
 
 export type RelayResult = {
@@ -115,4 +161,6 @@ export function clearRelayJobs(): void {
   for (const job of jobs.values()) job.reject(new Error('relay queue cleared'));
   jobs.clear();
   workerSeen.clear();
+  for (const w of waiters) w.wake();
+  waiters.clear();
 }
