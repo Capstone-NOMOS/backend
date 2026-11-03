@@ -50,6 +50,8 @@ export type PreparedWorkspace = {
   dir: string;
   branch: string;
   createdBranch: boolean;
+  // 이번에 기본 브랜치에서 새로 딴 태스크 브랜치인가(이어 가는 브랜치가 아니다) — 선행 작업을 합치는 건 이때뿐이다.
+  startedFresh: boolean;
   settingsPath: string;
 };
 
@@ -69,6 +71,7 @@ export function prepareWorkspace(input: PrepareInput): PreparedWorkspace {
   const dir = workspaceDir(input.projectId, input.taskId);
   const branch = input.branchName ?? `task/${input.taskId}`;
   const existed = branchExists(input.repoPath, branch);
+  let startedFresh = false;
 
   excludeNomosFiles(input.repoPath);
 
@@ -82,6 +85,7 @@ export function prepareWorkspace(input: PrepareInput): PreparedWorkspace {
       : refExists(input.repoPath, remote)
         ? ['worktree', 'add', '-b', branch, dir, `origin/${branch}`]
         : ['worktree', 'add', '-b', branch, dir, input.baseBranch];
+    startedFresh = args.at(-1) === input.baseBranch;
     git(input.repoPath, args);
   }
 
@@ -94,7 +98,61 @@ export function prepareWorkspace(input: PrepareInput): PreparedWorkspace {
     `${JSON.stringify({ policyHash: input.policyHash, taskId: input.taskId, generatedAt: new Date().toISOString() }, null, 2)}\n`,
   );
 
-  return { dir, branch, createdBranch: !existed, settingsPath };
+  return { dir, branch, createdBranch: !existed, startedFresh, settingsPath };
+}
+
+// 선행 작업(서버 브리핑의 predecessors — 같은 레포의 끝난 선행 태스크의 마지막 제출 커밋). 태스크 브랜치는 기본 브랜치에 합쳐지지 않으므로
+// 이걸 합치지 않으면 "선행이 만든 기반 위에 덧붙이라"는 태스크가 빈 기본 브랜치에서 시작해 막힌다(운영 실험: BE가 기반 코드가 없다며 멈췄다).
+export type PredecessorCommit = { taskId: string; title: string; branchName: string | null; commitSha: string };
+export type PredecessorMerge = { merged: PredecessorCommit[]; failed: { predecessor: PredecessorCommit; reason: string }[] };
+
+const SHA = /^[0-9a-f]{7,64}$/i;
+const BRANCH = /^[A-Za-z0-9._/-]+$/;
+
+// 원격 브랜치의 커밋을 이 레포로 받아 둔다(서버가 만든 시작 기준점, 선행 브랜치). 이미 있거나 받았으면 true.
+export function fetchCommit(repoPath: string, branchName: string | null, commitSha: string): boolean {
+  if (!SHA.test(commitSha)) return false;
+  if (refExists(repoPath, `${commitSha}^{commit}`)) return true;
+  if (branchName && BRANCH.test(branchName) && !branchName.startsWith('-')) {
+    try {
+      execFileSync('git', ['fetch', '--quiet', 'origin', `refs/heads/${branchName}`], { cwd: repoPath, stdio: 'ignore' });
+    } catch {
+      // origin이 없거나(로컬 레포) 브랜치가 없다.
+    }
+  }
+  return refExists(repoPath, `${commitSha}^{commit}`);
+}
+
+// 새로 딴 태스크 브랜치에 선행 커밋을 오래된 것부터 합친다(앞서면 빨리 감기, 아니면 병합 커밋). 모델이 아니라 Executor가 한다 —
+// 모델의 git은 merge·cherry-pick이 막혀 있다. 커밋이 없으면 선행 브랜치를 받아 온다. 충돌이나 실패는 되돌리고 건너뛴다 —
+// 실행을 막으면 태스크가 READY로 남아 같은 실패를 되풀이하므로, 프롬프트에 "합치지 못했다"를 적고 모델이 멈출지 판단하게 한다.
+// 서버의 V3는 같은 커밋들을 비교 기준으로 써서 선행의 파일을 이 태스크의 변경으로 세지 않는다.
+export function mergePredecessors(dir: string, predecessors: readonly PredecessorCommit[]): PredecessorMerge {
+  const result: PredecessorMerge = { merged: [], failed: [] };
+  for (const p of predecessors) {
+    if (!SHA.test(p.commitSha)) {
+      result.failed.push({ predecessor: p, reason: '커밋 형식이 아니다' });
+      continue;
+    }
+    if (!fetchCommit(dir, p.branchName, p.commitSha)) {
+      result.failed.push({ predecessor: p, reason: `커밋 ${p.commitSha.slice(0, 12)}을 찾지 못했다(선행 브랜치 ${p.branchName ?? '?'}가 push되지 않았거나 지워졌다)` });
+      continue;
+    }
+    try {
+      execFileSync('git', ['merge', '--no-edit', '-m', `nomos: 선행 태스크 합침 — ${p.title.slice(0, 120)}`, p.commitSha], { cwd: dir, stdio: 'pipe' });
+      result.merged.push(p);
+    } catch (err) {
+      try {
+        execFileSync('git', ['merge', '--abort'], { cwd: dir, stdio: 'ignore' });
+      } catch {
+        // 병합이 시작되지도 않았다(신원 미설정 등) — 되돌릴 것이 없다.
+      }
+      // 충돌 안내(CONFLICT ...)는 stdout으로, 그 밖의 실패는 stderr로 나온다.
+      const stderr = `${String((err as { stdout?: unknown }).stdout ?? '')}\n${String((err as { stderr?: unknown }).stderr ?? '')}`.trim();
+      result.failed.push({ predecessor: p, reason: /conflict/i.test(stderr) ? '병합 충돌' : `병합 실패: ${stderr.split('\n')[0]?.slice(0, 200) ?? ''}` });
+    }
+  }
+  return result;
 }
 
 // Executor가 작업공간에 쓰는 파일(MCP 설정·실행 로그·브리핑 노트·정책 표시·settings.json)이 모델의 `git add`에 섞이지 않게 한다.

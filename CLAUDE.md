@@ -326,6 +326,13 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
   (진입점이 claude-vscode로 기록되고 부모 세션의 알림이 모델 맥락에 끼어들었다 — 실측). 인증·설정 변수는 남긴다.
 - **모델 출력이 15분(`DEFAULT_IDLE_MS`) 없으면 끊는다**(`stalled`). 도구 결과 뒤 다음 응답이 오지 않은 채 20분 넘게 멈춘 실행이 있었다. 서버에는 `timeout`으로 보고하고
   사유 문장 `[응답 없음]`으로 구분한다(옛 서버는 outcome에 stalled를 모른다). 질문 답 대기(3분)·시험 실행(최대 10분)보다 길어야 한다.
+- **선행 작업 위에서 시작한다**(CLI 0.1.20, 036): 태스크 브랜치는 기본 브랜치에 합쳐지지 않아서, 같은 레포의 끝난 선행(선행의 선행까지 — `listPredecessorBases`)이 있으면
+  **서버가 시작 기준점을 만든다**(`task/task-base.ts`의 `ensureTaskBase`, 브리핑 때 트랜잭션 밖에서 한 번 — `tasks.base_commit`에 적고 다시 쓴다): 기본 브랜치 최신 + 선행 커밋을 합친 커밋을
+  `nomos/base/<태스크 id>`에 둔다(운영 = 대표 토큰으로 GitHub refs·merges API, 로컬 = mirror의 merge-tree·commit-tree 후 clone_url에 push — `COMMIT_INSPECTOR`를 따른다).
+  Executor는 브리핑 `base`에서 **분기만** 한다. 기준점이 없으면(선행끼리 충돌·GitHub 실패·옛 서버) 예전처럼 브리핑 `predecessors`를 **Executor가** 오래된 것부터 합친다(`mergePredecessors` — 모델의 git은 merge가 막혀 있다).
+  운영 실험에서 "F-01 기반 위에 라우트를 더하라"는 BE 태스크가 빈 main에서 시작해 기반 코드가 없다며 멈췄다. 충돌·없는 커밋은 되돌리고 건너뛰고 프롬프트에 "합치지 못했다 — 다시 만들지 말고 멈춰라"를 적는다
+  (실행을 막으면 READY로 남아 같은 실패를 되풀이한다). 이어 가는 브랜치(재시도·재개)는 합치지 않는다. 다른 레포의 선행은 합치지 않는다(계약으로 맞춘다).
+  **통합 브랜치에 쌓는 방식을 쓰지 않은 이유**: 실험 회차(r2~)가 앞 회차 코드를 보게 되어 "회차마다 같은 출발점"이 깨진다 — 선행만 합치면 회차끼리 섞이지 않는다.
 - 작업공간은 `~/.nomos/workspaces/{projectId}/{taskId}/`에 **git worktree로** 만든다. 레포 자체와 분리되므로
   사용자의 작업 트리를 건드리지 않는다. 태스크가 끝나도 **남긴다** — 실패 원인은 남은 파일에서 드러난다.
 - `.claude/settings.json`이 로컬 방어선이다. 생성에 쓴 `policy_hash`를 `.claude/.nomos-policy.json`에 함께 남긴다.
@@ -352,6 +359,9 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
 - **V3는 태스크 브랜치의 실제 diff를 읽는다** — 커밋 하나가 아니라 기본 브랜치(`repos.default_branch`)와의 분기점부터 제출 커밋까지다
   (`InspectInput.baseBranch`, mirror는 `merge-base`, github는 Compare API). 반려·검증 실패·질문 뒤 같은 브랜치에 커밋이 쌓이면 마지막 커밋만 봐서
   앞 커밋의 파일이 "과다 신고" FAIL이었다(통합 테스트). 기본 브랜치를 못 찾거나 커밋이 이미 기본 브랜치에 있으면 커밋 하나로 본다.
+  **선행 위에서 시작한 태스크는 시작 기준점이 비교 기준이다**(`InspectInput.baseCommits`, 서버가 DB로 정한다 — 노트북이 보낸 값을 믿지 않는다): `tasks.base_commit`(서버가 만든 커밋)이 있으면
+  그 커밋 하나와 제출 커밋을 그대로 비교한다(정확하다). 없으면 선행 커밋마다 비교한 **교집합**(#86)인데, 두 선행이 같은 파일(라우터 등록 파일 등 — 드물지 않다)을 바꿨으면 이 태스크가 안 건드려도 잡힌다 —
+  그래서 기준점을 서버가 만든다. 선행을 합치지 않은 옛 CLI 태스크도 분기점이 기본 브랜치 쪽이라 같은 결과다.
   제출 시점 3·4단계는 *신고한* 경로만 보므로, 신고에서 뺀 파일은
   아무 검사도 받지 않는다. diff의 출처는 제출자가 아니어야 한다 — `CommitInspector` 뒤에 있고
   지금 구현체는 서버가 bare mirror를 들고 fetch하는 `gitMirrorInspector`, 운영은 GitHub Commits API다.
@@ -539,7 +549,7 @@ PM_REVIEW 반려·피드백 분류·이의 설명·보고서는 아직 없다.
 
 검증은 통과했지만 정책 판정이 HUMAN·PM_REVIEW라 `AWAITING_APPROVAL`에 멈춘 산출물을 역할 담당과 대표가 차례로 결정한다(ACTION). G1·G2 카드와 PM 예산 초과 승인은 아직 없다.
 
-- **G3 = 통합 확인·완료 승인**(운영 테스트 4-3, 대표 결정). 통합 확인은 에이전트가 아니라 대표가 한다 — 에이전트에게는 선행 태스크 코드(main에 머지되지 않는다)·
+- **G3 = 통합 확인·완료 승인**(운영 테스트 4-3, 대표 결정). 통합 확인은 에이전트가 아니라 대표가 한다 — 에이전트에게는 선행 태스크 코드(main에 머지되지 않는다 — 같은 레포 선행은 CLI 0.1.20부터 Executor가 합쳐서 시작한다)·
   상대 역할의 레포·서버 실행 수단이 없어 통합 태스크가 늘 멈췄다. **PM은 INTEGRATION 태스크를 만들지 않고**(`pmOnlyProblems` → 교정) `integrationChecks`를 쓴다.
   태스크가 DONE이 되는 같은 트랜잭션(검증 결론·ACTION 승인)에서 `requestReleaseIfComplete`가 "모든 태스크 DONE"이면 카드를 하나 만든다
   (확인 항목 + 태스크별 레포·브랜치·마지막 커밋 스냅샷, `RELEASE_REQUESTED`·`system:pm`). 프로젝트 행을 `FOR NO KEY UPDATE`로 잠근 **뒤 다음 문장에서** 다시 읽는다 —
@@ -587,7 +597,7 @@ FE의 "받은 편지함"은 두 칸이다(대표 결정 2026-10-29). **둘 다 �
   상태 변화가 아니라 화면 상태이고(노트 읽기와 같은 이유), 쓰면 events가 조회 로그가 된다.
 - **처리할 일(`GET /me/inbox`) = 지금 상태에서 계산한다** — 처리하면 저절로 빠진다. 종류마다 **그 일을 처리하는 API의 조회·판정 함수를 그대로 쓴다**:
   1차 검토는 `GET /me/approvals`와 같은 `listApprovals`, 최종·G3는 조직 대기열, 질문은 `listMyQuestions`(answerQuestion의 자격), 계약은 `contractApproverRole`(확정 API와 한 벌),
-  멈춘 태스크는 `listResumableTasks`(재개 함수와 같은 상태). 정의가 두 벌이면 받은 편지함에 보이는데 누르면 403이 된다. 진행 중 프로젝트만.
+  멈춘 태스크는 `listResumableTasks`(재개 함수와 같은 상태) + 받는 사람은 `stuckTaskHandler`(재개 권한과 한 벌 — 그 역할 담당, 없거나 대표 본인이면 대표). 정의가 두 벌이면 받은 편지함에 보이는데 누르면 403이 된다. 진행 중 프로젝트만.
   **종류마다 쿼리는 프로젝트 수와 상관없이 한 번이다**(`listContractsForProjects`·`findBackendOwners`·`listLatestPlansByKind`·`listAgentlessRolesOfUser`) —
   프로젝트마다 묻던 첫 구현은 프로젝트 하나당 쿼리 3번씩 늘었다. 테스트가 프로젝트를 늘려도 쿼리 수가 같은지 확인한다 — 새 종류를 넣을 때 프로젝트 루프 안에서 묻지 말 것.
 - 화면 신호는 조직 토픽 `inbox`(`realtime/topics.ts`) — 알림이 되는 이벤트와 처리할 일이 바뀌는 이벤트에서 조직 전부에 간다. 데이터가 없다(누구 것인지는 다시 읽어서 안다).
@@ -727,7 +737,7 @@ FE의 "받은 편지함"은 두 칸이다(대표 결정 2026-10-29). **둘 다 �
   화면이 `GET /projects/:id/questions`의 같은 id로 질문 카드(선택지·초안·답)를 그린다. 질문 데이터를 피드에 싣지 않는다(가시성 판정이 두 벌이 된다).
 - **제출 없이 끝난 태스크는 BLOCKED(`AGENT_STOPPED`)로 멈춘다**(`task/stall.ts`, 종료 보고와 같은 트랜잭션). CLAIMED로 두면 아무도 다시 못 가져가고(운영 테스트의 영구 정체),
   READY로 되돌려 재시도를 깎으면 권한·환경 탓(쉘 거부·선행 코드 없음)을 에이전트 실패로 센다(대표 결정). **retry_count는 검증 실패·반려만 쓴다.**
-  사유는 `TASK_BLOCKED`에 — 모델의 마지막 말과 Executor가 실행 기록에서 뽑은 **거부된 쉘 명령**(대표가 무엇을 풀어야 하는지). 대표가 `POST /tasks/:id/resume`으로 재개하면 READY(담당 비움),
+  사유는 `TASK_BLOCKED`에 — 모델의 마지막 말과 Executor가 실행 기록에서 뽑은 **거부된 쉘 명령**(무엇을 풀어야 하는지). 그 역할 담당(없으면 대표)이 `POST /tasks/:id/resume`으로 재개하면 READY(담당 비움),
   `task_dispatches`의 resumes가 달라져 "다시 실행해 주세요 (재개)"가 다시 나간다. Executor가 꺼져 종료 보고조차 없으면 감시(`startStallWatchdog`, `startServer`에서만)가
   45분 동안 실행 보고·도구 사용이 없는 수령을 같은 방식으로 멈춘다(`system:watchdog`). `tasks.claimed_at`(마지막 수령 시각)이 그 기준이자 화면의 "수령 후 경과"다.
 - **그 역할 에이전트의 연결 해제·재연결도 룸 줄이다**: `MEMBER_AGENT_DETACHED`·`MEMBER_AGENT_ATTACHED`를 `payload.teamRole`로 그 역할 룸에 낸다(speaker nomos,
@@ -796,7 +806,12 @@ FE의 "받은 편지함"은 두 칸이다(대표 결정 2026-10-29). **둘 다 �
   - **취소**(`POST /tasks/:id/cancel`, 대표, 사유 필수): `CANCELLED`로 남는다. **G3의 "모든 태스크 완료"와 뒤 태스크의 선행에서 끝난 것으로 센다** — 안 그러면 잘못 나눈 태스크 하나로
     프로젝트가 영원히 끝나지 않는다. 그 태스크의 대기 질문은 만료로 닫고, 풀린 뒤 태스크를 `TASK_CANCELLED.payload.unblockedDependents`에 남긴다. 상태를 `<> 'DONE'`으로 거르는 곳은 `NOT IN ('DONE','CANCELLED')`로 쓸 것.
   - **직접 완료**(`POST /tasks/:id/manual-completion`, 그 역할 담당 또는 대표): 개발자가 직접 커밋한 sha와 태스크 브랜치 경로를 내면 에이전트 제출과 **같은 V3**(`inspectManualCommit`)를 돌린다.
-    FAIL이면 아무것도 쓰지 않고 422 `MANUAL_COMPLETION_INVALID`, 통과하면 산출물(gate HUMAN)·V3 결과·DONE·`TASK_COMPLETED_MANUALLY`(지표에서 사람이 처리한 것으로 따로 센다).
+    FAIL이면 아무것도 쓰지 않고 422 `MANUAL_COMPLETION_INVALID`, 통과하면 산출물(gate HUMAN)·V3 결과·`TASK_COMPLETED_MANUALLY`(지표에서 사람이 처리한 것으로 따로 센다).
+    **대표가 하면 DONE, 역할 담당이 하면 AWAITING_APPROVAL + 대표 최종 카드**(`roleReviewSkipped = manual_completion` — 담당 본인의 결과라 1차 검토 없이 final). 반려는 에이전트 반려와 같은 재시도 경로.
+    이벤트 `taskState`로 가른다 — AWAITING_APPROVAL이면 task_done 알림이 아니다(승인 결과가 알림이 된다), 통합 확인 요청도 승인 때.
+  - **멈춘 태스크(BLOCKED·AGENT_STOPPED, ESCALATED)는 그 역할 담당이 처리한다**(대표 결정 2026-11-03 — 대표는 직접 일을 끝낼 수 없고 원인도 담당이 안다).
+    판정은 `task/stall.ts`의 `stuckTaskHandler` 한 벌: 재개 권한(`resumeTask`, 아니면 403 `NOT_TASK_OWNER`)과 받은 편지함 `stuck_task`가 같이 쓴다. 담당이 없거나 대표 본인이면 대표.
+    대표는 담당이 있어도 대신 재개할 수 있지만 처리할 일로는 띄우지 않는다. 담당은 재개하거나 직접 완료하고(→ 대표 승인), 취소는 범위를 버리는 결정이라 대표만.
 - **해제·삭제(021)는 행을 지우지 않는다** — events·태스크·노트가 가리키고(P5), 다시 연결할 수 있어야 한다.
   - 에이전트 연결 해제(`DELETE /agents/:agentId`, 주인·대표): `agents.disconnected_at` + refresh token 폐기 + 진행 중 프로젝트에서 빠짐. 남은 access token은 `agent-auth`가
     401 `AGENT_DISCONNECTED`로 거부하고, 태스크 스트림은 `dispatch/agent-revoked` 신호로 바로 끊는다. 같은 사용자·이름으로 다시 connect하면 `upsertAgent`가 되살린다.

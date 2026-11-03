@@ -1,5 +1,5 @@
 import { pool } from '../../config/db.js';
-import { listApprovals, type ApprovalView } from '../approval/repository.js';
+import { listApprovals, listRoleOwnersForProjects, type ApprovalView } from '../approval/repository.js';
 import { findBackendOwners, listContractsForProjects } from '../contract/repository.js';
 import { contractApproverRole } from '../contract/service.js';
 import { listLatestPlansByKind } from '../pm/repository.js';
@@ -7,6 +7,7 @@ import { listAgentlessRolesOfUser, listProjectsByOrg, type Project } from '../pr
 import type { UserContext } from '../project/visibility.js';
 import { listMyQuestions } from '../question/service.js';
 import { listResumableTasks } from '../task/repository.js';
+import { stuckTaskHandler } from '../task/stall.js';
 import { clip, firstQuestion, notificationTypeOf, renderNotification, roleShort, type NotificationType } from './render.js';
 import { advanceReadCursor, countUnreadNotifications, findReadCursor, listNotificationRows } from './repository.js';
 
@@ -245,9 +246,14 @@ export async function listInbox(actor: UserContext): Promise<{ items: InboxItem[
     );
   }
 
-  // 멈춘 태스크 — 재개(POST /tasks/:id/resume)는 대표 전용이다.
-  if (isRep) {
-    for (const { task, updatedAt } of await listResumableTasks(pool, projects.map((p) => p.id))) {
+  // 멈춘 태스크 — 그 역할 담당에게(재개·직접 완료), 담당이 없거나 대표 본인이면 대표에게. 판정은 재개 권한과 같은 stuckTaskHandler.
+  // 대표는 담당이 있는 태스크도 대신 재개할 수 있지만 처리할 일로는 띄우지 않는다 — 대표는 직접 일을 끝낼 수 없다(대표 결정 2026-11-03).
+  {
+    const stuck = await listResumableTasks(pool, projects.map((p) => p.id));
+    const owners = stuck.length > 0 ? await listRoleOwnersForProjects(pool, [...new Set(stuck.map((s) => s.task.projectId))]) : new Map();
+    for (const { task, updatedAt } of stuck) {
+      const handler = stuckTaskHandler(task.teamRole === null ? null : (owners.get(`${task.projectId}:${task.teamRole}`) ?? null));
+      if (handler === 'representative' ? !isRep : handler.userId !== actor.userId) continue;
       const project = open.get(task.projectId)!;
       items.push(
         item(project, 'stuck_task', updatedAt, {
@@ -257,8 +263,8 @@ export async function listInbox(actor: UserContext): Promise<{ items: InboxItem[
           title: task.title,
           text:
             task.state === 'ESCALATED'
-              ? `${clip(task.title)} — 재시도 한도를 넘었습니다. 원인을 확인하고 재개해 주세요`
-              : `${clip(task.title)} — 에이전트가 제출 없이 멈췄습니다. 원인을 확인하고 재개해 주세요`,
+              ? `${clip(task.title)} — 재시도 한도를 넘었습니다. 원인을 확인하고 재개하거나 직접 완료해 주세요`
+              : `${clip(task.title)} — 에이전트가 제출 없이 멈췄습니다. 원인을 확인하고 재개하거나 직접 완료해 주세요`,
         }),
       );
     }

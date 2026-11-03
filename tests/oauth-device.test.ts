@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { pool } from '../src/config/db.js';
 import { env } from '../src/config/env.js';
 import type { GithubDeviceApi } from '../src/domain/oauth/github-device.js';
+import { acceptInvite, createInvite } from '../src/domain/invite/service.js';
 import { completeGithubDeviceFlow, startGithubDeviceFlow } from '../src/domain/oauth/service.js';
 import { decryptSecret, encryptSecret, setKmsClient, type KmsLike } from '../src/utils/secret-box.js';
 import { createTestOrg, createTestUser } from './fixtures.js';
@@ -190,5 +191,23 @@ describe('GitHub Device Flow', () => {
       code: 'GITHUB_ACCOUNT_TAKEN',
       status: 409,
     });
+  });
+});
+
+describe('초대 수락 — 같은 GitHub 계정', () => {
+  it('조직 없이 GitHub을 붙인 사람이 같은 GitHub 계정이 있는 조직에 들어오면 500이 아니라 409 GITHUB_ACCOUNT_TAKEN이다', async () => {
+    const { userId: rep, orgId } = await createTestOrg('rep');
+    await completeGithubDeviceFlow(rep, 'dev-code', stubApi());
+    // 혼자 시험하는 사람이 팀원 계정에도 같은 GitHub을 붙였다(조직이 없을 때라 연결은 통과한다).
+    const member = await createTestUser('member');
+    await completeGithubDeviceFlow(member, 'dev-code', stubApi());
+
+    const { token } = await createInvite(orgId, rep, { teamRole: 'BACKEND' });
+    await expect(acceptInvite(token, member)).rejects.toMatchObject({ code: 'GITHUB_ACCOUNT_TAKEN', status: 409 });
+    // 롤백됐다 — 조직에 들어가지 않았고 초대도 쓰이지 않았다(다른 계정으로 다시 받을 수 있다).
+    const user = await pool.query(`SELECT org_id FROM users WHERE id = $1`, [member]);
+    expect(user.rows[0].org_id).toBeNull();
+    const invite = await pool.query(`SELECT used_by FROM invites WHERE org_id = $1`, [orgId]);
+    expect(invite.rows[0].used_by).toBeNull();
   });
 });

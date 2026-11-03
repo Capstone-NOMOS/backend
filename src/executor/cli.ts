@@ -38,6 +38,7 @@ import { deviceLogin } from './device-login.js';
 import { cliVersion, mcpServerPath } from './paths.js';
 import { checkTools } from './preflight.js';
 import { handleNextPmJob } from './pm-worker.js';
+import { acquireHomeLock } from './home-lock.js';
 import { buildTaskPrompt } from './prompt.js';
 import { DEFAULT_IDLE_MS, runClaude } from './runner.js';
 import { streamTaskSource } from './stream-source.js';
@@ -46,7 +47,7 @@ import { runLint, runSpecTests, type SpecTest, type StageReport } from './verify
 import { ensureRepo } from './repo-checkout.js';
 import { runConsult } from './consult.js';
 import { runContractBatch, runContractDraft, type ContractDraft } from './contract.js';
-import { cleanWorkspaces, headSha, prepareWorkspace } from './workspace.js';
+import { cleanWorkspaces, fetchCommit, headSha, mergePredecessors, prepareWorkspace, type PredecessorCommit, type PredecessorMerge } from './workspace.js';
 
 // 푸시가 오지 않아도 이 간격으로 한 번씩 다시 본다(끊겼을 때는 이 간격으로 폴링한다).
 const POLL_INTERVAL_MS = 10_000;
@@ -106,6 +107,10 @@ type Briefing = {
   decisions?: { id: string; question: string; answer: string | null; askerRole: string; targetRole: string; decidedByName: string | null; answeredAt: string | null }[];
   humanMessages?: { text: string; fromNickname: string | null; fromRepresentative: boolean; ts: string }[];
   questionRelay?: boolean;
+  // 같은 레포의 끝난 선행 태스크와 마지막 제출 커밋(CLI 0.1.20·서버 같은 배포부터, 옛 서버면 없다) — 새 태스크 브랜치에 합치고 시작한다.
+  predecessors?: PredecessorCommit[];
+  // 서버가 만든 시작 기준점(서버 036, 옛 서버면 없다) — 있으면 여기서 분기만 한다(선행을 직접 합치지 않는다).
+  base?: { branchName: string; commitSha: string } | null;
   notesBlock: string;
   writablePaths: { pathPattern: string }[];
   claudeSettings: unknown;
@@ -231,17 +236,31 @@ async function handleTask(client: NomosClient, projectId: string, task: TaskSumm
 
   // cloneUrl이 없는 옛 서버(브리핑에 필드 자체가 없음)도 github.com/{fullName}으로 받는다.
   const checkout = ensureRepo({ fullName: briefing.repo.fullName, cloneUrl: briefing.repo.cloneUrl ?? null }, { log });
+  // 서버가 만든 시작 기준점이 있으면 거기서 분기한다(선행 코드가 이미 합쳐져 있다). 받지 못하면 기본 브랜치에서 따고 선행을 직접 합친다.
+  const serverBase = briefing.base && fetchCommit(checkout.path, briefing.base.branchName, briefing.base.commitSha) ? briefing.base : null;
+  if (briefing.base && !serverBase) log(`서버 기준점 ${briefing.base.branchName}을 받지 못했다 — 선행을 직접 합친다`);
   const workspace = prepareWorkspace({
     repoPath: checkout.path,
     projectId,
     taskId: task.id,
     branchName: briefing.task.branchName,
-    // CLI가 관리하는 클론은 방금 fetch한 origin/<기본 브랜치>에서 분기한다.
-    baseBranch: checkout.baseRef(briefing.repo.defaultBranch),
+    // CLI가 관리하는 클론은 방금 fetch한 origin/<기본 브랜치>에서 분기한다. 서버 기준점이 있으면 그 커밋에서.
+    baseBranch: serverBase?.commitSha ?? checkout.baseRef(briefing.repo.defaultBranch),
     settings: briefing.claudeSettings,
     policyHash: briefing.policyHash,
   });
   log(`작업공간 ${workspace.dir} (브랜치 ${workspace.branch})`);
+  // 선행 작업 위에서 시작한다 — 새로 딴 브랜치일 때만(이어 가는 브랜치에는 이미 들어 있다).
+  let predecessorMerge: PredecessorMerge | undefined;
+  if (workspace.startedFresh && serverBase && (briefing.predecessors?.length ?? 0) > 0) {
+    // 서버가 이미 합쳤다 — 프롬프트에 "선행 코드가 들어 있다"만 알린다.
+    predecessorMerge = { merged: briefing.predecessors!, failed: [] };
+    log(`  서버 기준점에서 시작: ${serverBase.branchName} (${serverBase.commitSha.slice(0, 12)}) — 선행 ${briefing.predecessors!.length}개 포함`);
+  } else if (workspace.startedFresh && (briefing.predecessors?.length ?? 0) > 0) {
+    predecessorMerge = mergePredecessors(workspace.dir, briefing.predecessors!);
+    for (const p of predecessorMerge.merged) log(`  선행 합침: ${p.title} (${p.commitSha.slice(0, 12)})`);
+    for (const f of predecessorMerge.failed) log(`  선행 합치지 못함: ${f.predecessor.title} — ${f.reason}`);
+  }
   activeWorkspaces.set(task.id, { dir: workspace.dir, repo: briefing.repo.fullName });
   // 프롬프트에 넣는 노트·결정 = 제출 때 "받은 것"으로 함께 보낼 노트·결정. MCP 서버(submit_artifact)가 읽는다.
   writeBriefingNotes(workspace.dir, task.id, (briefing.notes ?? []).map((n) => n.id), (briefing.decisions ?? []).map((d) => d.id));
@@ -278,7 +297,7 @@ async function handleTask(client: NomosClient, projectId: string, task: TaskSumm
   const before = headSha(workspace.dir);
   const result = await runClaude({
     workspaceDir: workspace.dir,
-    prompt: buildTaskPrompt(briefing, workspace.branch, { allowedCommands: ALLOWED_BASH_PREFIXES, setup: setup.steps }),
+    prompt: buildTaskPrompt({ ...briefing, predecessorMerge }, workspace.branch, { allowedCommands: ALLOWED_BASH_PREFIXES, setup: setup.steps }),
     mcpConfigPath,
     pathPrepend: setup.venvBin,
     // 질문 중계가 꺼진 프로젝트(또는 옛 서버)면 권한 도구를 붙이지 않는다 — AskUserQuestion이 없어진다.
@@ -372,6 +391,7 @@ async function reportBridgeStages(
 }
 
 async function once(): Promise<void> {
+  acquireHomeLock('once');
   const client = createClient();
   const self = await client.describeSelf();
   const source = pollingTaskSource(client);
@@ -386,6 +406,7 @@ async function once(): Promise<void> {
 
 // 멈춘 이유를 돌려준다 — connect는 배정이 풀린 경우(해제·프로젝트 중단) 다시 배정을 기다린다.
 async function start(): Promise<'disconnected' | 'unassigned'> {
+  acquireHomeLock('start');
   const client = createClient();
   const self = await client.describeSelf();
   // 서버 푸시(웹소켓)로 받는다. 끊겨 있는 동안은 같은 목록을 HTTP로 읽는다.
@@ -566,6 +587,8 @@ async function loginWithCode(baseUrl: string, agentName: string, code: string): 
 }
 
 async function login(argv: string[]): Promise<void> {
+  // 돌고 있는 에이전트의 자격 증명을 덮어쓰지 않게 — 같은 폴더를 쓰는 프로세스가 있으면 멈춘다.
+  acquireHomeLock('login');
   const args = parseArgs(argv);
   const baseUrl = normalizeBaseUrl(args.positional ?? args.server);
   const previous = readCredentials();
@@ -601,6 +624,8 @@ async function connectCommand(argv: string[]): Promise<void> {
     log('상태: nomos status · 끄기: nomos stop · 진행 상황은 웹의 룸에서 본다');
     return;
   }
+  // 한 NOMOS_HOME = 한 에이전트(home-lock.ts). 백그라운드를 띄우는 부모는 바로 끝나므로 잡지 않고, 실제로 도는 자식이 여기서 잡는다.
+  acquireHomeLock('connect');
 
   // 배정이 풀리면(해제·프로젝트 중단) 창을 닫지 않고 다시 배정을 기다린다. 연결 해제면 멈춘다.
   // 1회용 코드는 처음 한 번만 쓴다 — 그 뒤로는 그 코드로 받은 자격 증명이 저장돼 있다.
@@ -668,6 +693,7 @@ async function refresh(): Promise<void> {
 const PM_POLL_INTERVAL_MS = 3_000;
 
 async function pmWorker(): Promise<void> {
+  acquireHomeLock('pm-worker');
   const client = createClient();
   log('pm-worker 시작 — 대표가 PM에 계획을 요청하면 여기서 claude가 돈다 (Ctrl+C로 종료)');
   for (;;) {

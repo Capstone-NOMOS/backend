@@ -4,6 +4,7 @@ import { logger } from '../../config/logger.js';
 import { AppError } from '../../errors.js';
 import { tasksChanged } from '../dispatch/tasks-changed.js';
 import { appendEvent } from '../events/append.js';
+import { findRoleOwner } from '../approval/repository.js';
 import { findProjectById } from '../project/repository.js';
 import type { TaskBlockedPayload } from '../events/types.js';
 import { blockStoppedTask, findTaskById, listUnresponsiveClaims, resumeEscalatedTask, resumeStoppedTask, type Task } from './repository.js';
@@ -39,7 +40,15 @@ export async function blockStoppedTaskInTx(
   return blocked;
 }
 
-// 대표의 재개. 원인(허용 명령·설치·명세)을 해결했다는 판단은 사람이 한다.
+// 멈춘 태스크(BLOCKED·AGENT_STOPPED, ESCALATED)를 처리할 사람 — **그 역할의 담당**이다(대표 결정 2026-11-03).
+// 대표는 직접 일을 끝낼 수 없고, 원인(쉘 거부·선행 코드·명세)을 아는 것도 그 역할 담당이다. 담당이 없거나(역할 제한 없는 태스크·빈 역할)
+// 담당이 대표 본인이면 대표다. 재개 권한·받은 편지함(처리할 일)이 이 함수 한 벌을 쓴다 — 갈리면 보이는데 누르면 403이 된다.
+// 대표는 담당이 있어도 대신 처리할 수 있다(1차 검토를 대신하는 것과 같다). 담당이 직접 완료하면 대표의 최종 승인을 거친다(human-control.ts).
+export function stuckTaskHandler(owner: { userId: string; isRepresentative: boolean } | null): { userId: string } | 'representative' {
+  return owner === null || owner.isRepresentative ? 'representative' : { userId: owner.userId };
+}
+
+// 재개. 원인(허용 명령·설치·명세)을 해결했다는 판단은 사람이 한다 — 그 역할 담당 또는 대표(stuckTaskHandler).
 // 두 경우를 받는다: 멈춤(BLOCKED·AGENT_STOPPED — 재시도 횟수 그대로)과 재시도 소진(ESCALATED — 횟수를 0으로).
 // ESCALATED는 "사람에게 넘긴다"인데 사람이 처리할 길이 없어 막다른 길이었다(통합 테스트: 검사기 결함으로 3번 실패한 태스크를 되살릴 수 없었다).
 export async function resumeTask(
@@ -47,12 +56,18 @@ export async function resumeTask(
   taskId: string,
   note: string | null,
 ): Promise<Task> {
-  if (actor.orgRole !== 'REPRESENTATIVE') throw new AppError('NOT_REPRESENTATIVE', 'only the representative can resume a stopped task');
+  const isRepresentative = actor.orgRole === 'REPRESENTATIVE';
   const resumed = await withTransaction(async (tx) => {
     const task = await findTaskById(tx, taskId);
     if (!task) throw new AppError('TASK_NOT_FOUND', `task ${taskId} not found`);
     const project = await findProjectById(tx, task.projectId);
     if (project?.orgId !== actor.orgId) throw new AppError('CROSS_ORG_ACCESS', 'cannot access another organization');
+    if (!isRepresentative) {
+      const handler = stuckTaskHandler(await findRoleOwner(tx, task.projectId, task.teamRole));
+      if (handler === 'representative' || handler.userId !== actor.userId) {
+        throw new AppError('NOT_TASK_OWNER', `only the ${task.teamRole ?? 'assigned'} member or the representative can resume this task`);
+      }
+    }
     const escalated = task.state === 'ESCALATED';
     const next = escalated ? await resumeEscalatedTask(tx, taskId) : await resumeStoppedTask(tx, taskId);
     if (next === null) {
@@ -63,7 +78,14 @@ export async function resumeTask(
       projectId: task.projectId,
       type: 'TASK_RESUMED',
       onBehalfOf: actor.userId,
-      payload: { taskId, note, from: escalated ? 'ESCALATED' : 'AGENT_STOPPED', ...(escalated ? { previousRetryCount: task.retryCount } : {}) },
+      payload: {
+        taskId,
+        note,
+        from: escalated ? 'ESCALATED' : 'AGENT_STOPPED',
+        ...(escalated ? { previousRetryCount: task.retryCount } : {}),
+        // 누가 재개했나 — "사람 개입" 지표를 담당·대표로 나눠 센다.
+        resumedBy: isRepresentative ? 'representative' : 'role_owner',
+      },
     });
     return next;
   });

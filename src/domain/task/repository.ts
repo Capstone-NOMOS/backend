@@ -365,6 +365,17 @@ export async function closeTaskByHuman(db: Queryable, taskId: string, state: 'DO
   return rows[0] ? toTask(rows[0]) : null;
 }
 
+// 역할 담당이 직접 완료한 결과를 대표 최종 승인에 올린다(human-control.ts) — 사람이 붙잡지 않은 상태에서만, 담당을 비운다.
+export async function submitTaskForApprovalByHuman(db: Queryable, taskId: string): Promise<Task | null> {
+  const { rows } = await db.query(
+    `UPDATE tasks SET state = 'AWAITING_APPROVAL', blocked_reason = NULL, assignee_agent_id = NULL, updated_at = now()
+      WHERE id = $1 AND state = ANY($2::text[])
+      RETURNING *`,
+    [taskId, HUMAN_CLOSABLE],
+  );
+  return rows[0] ? toTask(rows[0]) : null;
+}
+
 // 이 태스크를 선행으로 둔 끝나지 않은 태스크 — 취소 이벤트에 남긴다(취소된 선행은 막지 않으므로 그 태스크들이 풀린다).
 export async function listOpenDependents(db: Queryable, taskId: string): Promise<string[]> {
   const { rows } = await db.query(
@@ -448,4 +459,46 @@ export async function escalateArtifactActions(
     [artifactId, triggeredActions, gateMode],
   );
   return toArtifact(rows[0]!);
+}
+
+// 이 태스크가 그 위에서 시작해야 하는 선행 작업 — 같은 레포의 끝난(DONE) 선행 태스크(선행의 선행까지)와 그 마지막 제출 커밋.
+// 태스크 브랜치는 기본 브랜치에 합쳐지지 않으므로, 선행 코드 위에서 이어 가려면 Executor가 이 커밋들을 합쳐서 시작한다.
+// V3는 같은 목록을 비교 기준으로 쓴다(선행이 만든 파일을 이 태스크의 변경으로 세지 않게) — 브리핑과 V3가 **이 함수 한 벌**을 쓴다.
+// 다른 레포의 선행은 사슬을 따라가기만 하고 결과에서 뺀다(코드를 합칠 수 없다 — 그쪽은 계약으로 맞춘다).
+// 마지막 제출 = attempt가 가장 큰 산출물(DONE으로 만든 제출, 직접 완료 포함). 오래된 선행부터.
+export type PredecessorBase = { taskId: string; title: string; branchName: string | null; commitSha: string };
+
+export async function listPredecessorBases(db: Queryable, taskId: string): Promise<PredecessorBase[]> {
+  const { rows } = await db.query(
+    `WITH RECURSIVE preds(id) AS (
+       SELECT depends_on FROM task_deps WHERE task_id = $1
+       UNION
+       SELECT d.depends_on FROM task_deps d JOIN preds p ON d.task_id = p.id
+     )
+     SELECT t.id, t.title, t.branch_name, a.commit_sha
+       FROM preds p
+       JOIN tasks t ON t.id = p.id
+       JOIN tasks me ON me.id = $1
+       JOIN LATERAL (SELECT commit_sha FROM artifacts WHERE task_id = t.id ORDER BY attempt DESC LIMIT 1) a ON true
+      WHERE t.repo_id = me.repo_id AND t.state = 'DONE'
+      ORDER BY t.created_at, t.id`,
+    [taskId],
+  );
+  return rows.map((r) => ({
+    taskId: r.id as string,
+    title: r.title as string,
+    branchName: (r.branch_name as string | null) ?? null,
+    commitSha: r.commit_sha as string,
+  }));
+}
+
+// 시작 기준점(036, task-base.ts). 한 번 적으면 바꾸지 않는다 — 동시에 두 번 만들었으면 먼저 적은 쪽이 남는다(돌려준 값이 그 값이다).
+export async function findTaskBaseCommit(db: Queryable, taskId: string): Promise<string | null> {
+  const { rows } = await db.query(`SELECT base_commit FROM tasks WHERE id = $1`, [taskId]);
+  return (rows[0]?.base_commit as string | null | undefined) ?? null;
+}
+
+export async function setTaskBaseCommit(db: Queryable, taskId: string, commitSha: string): Promise<string> {
+  await db.query(`UPDATE tasks SET base_commit = $2 WHERE id = $1 AND base_commit IS NULL`, [taskId, commitSha]);
+  return (await findTaskBaseCommit(db, taskId)) ?? commitSha;
 }

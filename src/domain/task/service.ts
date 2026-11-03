@@ -23,6 +23,7 @@ import { findApprovedContractForSpec } from '../contract/repository.js';
 import { listPendingRoomMessages, type PendingRoomMessage } from '../room/repository.js';
 import type { TeamRole } from '../roles.js';
 import { runServerVerifications, type VerificationSummary } from '../verification/service.js';
+import { ensureTaskBase, type TaskBase } from './task-base.js';
 import {
   claimTaskRow,
   countUnfinishedDeps,
@@ -33,10 +34,12 @@ import {
   findSpecForTask,
   listArtifactsForTask,
   listLockedSpecTests,
+  listPredecessorBases,
   listTasks,
   markTaskVerifying,
   setTaskBranch,
   type Artifact,
+  type PredecessorBase,
   type SpecTest,
   type Task,
   type TaskSpec,
@@ -489,10 +492,16 @@ export type TaskBriefing = {
   humanMessages: PendingRoomMessage[];
   // 질문 중계(018). 꺼져 있으면 Executor가 권한 도구(AskUserQuestion)를 붙이지 않고, 다른 역할 소관은 GOTCHA "가정함"으로 남기게 한다.
   questionRelay: boolean;
+  // 이 태스크가 그 위에서 시작할 선행 작업(같은 레포의 끝난 선행과 마지막 제출 커밋) — Executor가 새 태스크 브랜치에 합치고 시작한다.
+  // V3도 같은 목록(listPredecessorBases)을 비교 기준으로 쓴다. 옛 CLI는 이 필드를 몰라 기본 브랜치에서 시작한다(V3는 그래도 맞게 센다).
+  predecessors: PredecessorBase[];
+  // 서버가 만든 시작 기준점(036, task-base.ts) — 기본 브랜치 + 선행 커밋을 합친 커밋. 있으면 Executor는 여기서 분기만 한다(합치지 않는다).
+  // 선행이 없거나 만들지 못했으면(충돌·GitHub 실패) null — Executor가 predecessors를 직접 합친다.
+  base: TaskBase | null;
 };
 
 export async function getTaskBriefing(ctx: AgentContext, taskId: string): Promise<TaskBriefing> {
-  return withTransaction(async (tx) => {
+  const briefing = await withTransaction(async (tx) => {
     const membership = await findAgentMembership(tx, ctx.agentId);
     if (!membership || membership.projectId !== ctx.projectId) {
       throw new AppError('NOT_PROJECT_MEMBER', 'agent is not a member of this project');
@@ -547,8 +556,12 @@ export async function getTaskBriefing(ctx: AgentContext, taskId: string): Promis
       claudeSettings: buildClaudePermissions(rules),
       specTests: task.specId === null ? [] : await listLockedSpecTests(tx, task.specId),
       policyHash: ctx.policyHash,
+      predecessors: await listPredecessorBases(tx, taskId),
     };
   });
+  // 권한·범위 확인이 끝난 뒤, 트랜잭션 밖에서(GitHub·git을 탄다). 선행이 없으면 바로 null이다.
+  const base = briefing.predecessors.length > 0 ? await ensureTaskBase(briefing.task) : null;
+  return { ...briefing, base };
 }
 
 // Executor는 모델이 MCP 도구로 제출한 산출물의 id를 모른다. V2·V4 결과를 어디에 붙일지

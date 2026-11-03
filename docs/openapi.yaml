@@ -208,7 +208,7 @@ components:
             - question: 내가 답할 질문(`GET /me/questions`와 같다) → `POST /questions/{questionId}/answer`
             - contract: 확정할 API 계약(BE 담당, 없으면 대표) — 초안 확정 대기 또는 작성 실패(다시 요청 필요)
             - plan: PM 초안 검토 대기·실패(대표만, 종류별 가장 최근 요청)
-            - stuck_task: 멈춘(BLOCKED·AGENT_STOPPED)·재시도 소진(ESCALATED) 태스크 → `POST /tasks/{taskId}/resume`(대표만)
+            - stuck_task: 멈춘(BLOCKED·AGENT_STOPPED)·재시도 소진(ESCALATED) 태스크 → 그 역할 담당에게(담당이 없거나 대표 본인이면 대표) — `POST /tasks/{taskId}/resume` 또는 `POST /tasks/{taskId}/manual-completion`(담당의 직접 완료는 대표 승인 뒤 DONE)
             - agent_needed: 내가 담당인 진행 중 프로젝트 역할에 에이전트가 없다 — CLI 연결
         createdAt: { type: string, format: date-time, description: '그 일이 생긴 시각(카드 요청·질문·계약 갱신·계획 요청·태스크 갱신). agent_needed는 프로젝트 생성 시각' }
         projectId: { type: string, format: uuid }
@@ -366,7 +366,7 @@ components:
           description: |
             요청 시점의 카드 스냅샷.
             - ACTION: taskTitle, artifactId, attempt, commitSha, changedPaths, triggeredActions, gateMode, stages, submittedByAgentId, teamRole.
-              역할 담당 검토를 건너뛰었으면 `roleReviewSkipped`(`no_owner` 역할 담당 없음 · `owner_is_representative` 담당이 대표 본인).
+              역할 담당 검토를 건너뛰었으면 `roleReviewSkipped`(`no_owner` 역할 담당 없음 · `owner_is_representative` 담당이 대표 본인 · `manual_completion` 역할 담당이 직접 완료해 올린 카드 — `manualCompletion { byUserId, note }`가 함께 있다).
               1차 검토를 거친 final 카드는 `roleReview`(위 필드와 같은 값)·`roleReviewApprovalId`(닫힌 role_review 카드).
             - G3: integrationChecks(PM이 쓴 확인 항목 문자열 목록), tasks([{ taskId, title, teamRole, repo, branchName, commitSha }] — 머지·실행해 볼 브랜치와 마지막 커밋).
             **backfilled: true**면 승인 기능 이전부터 멈춰 있던 태스크라 지금 DB에서 알 수 있는 값만 있다(stages 등 없음) — "정보 일부 없음"을 표시한다.
@@ -974,7 +974,7 @@ components:
           nullable: true
           description: |
             state=BLOCKED일 때만 있다.
-            AGENT_STOPPED = 에이전트가 제출 없이 멈췄다(권한·환경·응답 끊김). 사유는 이벤트 TASK_BLOCKED(룸 피드)에 있고, 대표가 `POST /tasks/{taskId}/resume`으로 재개한다. 재시도 횟수는 오르지 않는다
+            AGENT_STOPPED = 에이전트가 제출 없이 멈췄다(권한·환경·응답 끊김). 사유는 이벤트 TASK_BLOCKED(룸 피드)에 있고, 그 역할 담당(없으면 대표)이 `POST /tasks/{taskId}/resume`으로 재개하거나 직접 완료한다. 재시도 횟수는 오르지 않는다
         claimedAt: { type: string, format: date-time, nullable: true, description: '마지막 수령 시각. 화면의 "수령 후 경과"에 쓴다(CLAIMED·IN_PROGRESS일 때 의미가 있다)' }
         retryCount: { type: integer, description: 'FAIL마다 오른다. 3이면 ESCALATED' }
     Artifact:
@@ -1370,7 +1370,7 @@ components:
         ownerRole: { type: string, enum: [FRONTEND, BACKEND], nullable: true }
     TaskBriefing:
       type: object
-      required: [task, repo, spec, contract, notes, notesBlock, writablePaths, claudeSettings, specTests, policyHash, lastRejection, answeredQuestions, decisions, humanMessages, questionRelay]
+      required: [task, repo, spec, contract, notes, notesBlock, writablePaths, claudeSettings, specTests, policyHash, lastRejection, answeredQuestions, decisions, humanMessages, questionRelay, predecessors, base]
       properties:
         task: { $ref: '#/components/schemas/Task' }
         repo:
@@ -1408,6 +1408,33 @@ components:
         specTests: { type: array, items: { $ref: '#/components/schemas/SpecTest' } }
         policyHash: { type: string }
         questionRelay: { type: boolean, description: '프로젝트의 질문 중계 스위치. 꺼져 있으면 Executor가 권한 도구(AskUserQuestion)를 붙이지 않는다' }
+        predecessors:
+          type: array
+          description: >-
+            이 태스크가 그 위에서 시작할 선행 작업 — 같은 레포의 끝난 선행 태스크(선행의 선행까지)와 마지막 제출 커밋, 오래된 것부터.
+            태스크 브랜치는 기본 브랜치에 합쳐지지 않으므로 Executor(CLI 0.1.20+)가 새 태스크 브랜치에 이 커밋들을 합쳐서 시작한다.
+            V3는 같은 커밋들을 비교 기준으로 써서 선행이 만든 파일을 이 태스크의 변경으로 세지 않는다.
+          items:
+            type: object
+            additionalProperties: false
+            required: [taskId, title, branchName, commitSha]
+            properties:
+              taskId: { type: string, format: uuid }
+              title: { type: string }
+              branchName: { type: string, nullable: true }
+              commitSha: { type: string }
+        base:
+          type: object
+          nullable: true
+          additionalProperties: false
+          description: >-
+            서버가 만든 시작 기준점(036) — 기본 브랜치 최신 + predecessors를 합친 커밋을 `nomos/base/<태스크 id>` 브랜치에 둔다.
+            있으면 Executor는 여기서 분기만 하고, V3는 이 커밋과 제출 커밋을 그대로 비교한다(두 선행이 같은 파일을 바꿔도 정확하다).
+            선행이 없거나 만들지 못했으면(선행끼리 충돌·GitHub 실패) null — Executor가 predecessors를 직접 합친다.
+          required: [branchName, commitSha]
+          properties:
+            branchName: { type: string }
+            commitSha: { type: string }
         humanMessages:
           type: array
           description: '그 역할 담당·대표가 룸에서 보낸 메시지 중 아직 전달되지 않은 것(그 역할 태스크의 마지막 실행 시작 이후, 최근 20개, 오래된 것부터). 실행 중에는 끼워 넣지 않고 다음 실행에 여기로 온다'
@@ -5295,7 +5322,7 @@ paths:
       description: |
         Claude가 끝나면 부른다(이벤트 `AGENT_RUN_ENDED`). **제출 여부는 서버가 태스크 상태로 정한다** — 이 에이전트가 아직 잡고 있으면
         제출하지 않은 것이다. 그때는 같은 트랜잭션에서 태스크가 **BLOCKED(AGENT_STOPPED)**로 바뀌고(이벤트 `TASK_BLOCKED`), 룸에
-        "멈췄습니다 — 사유 / 거부된 명령 → 대표 확인 후 재개가 필요합니다"가 남는다. 재시도 횟수는 오르지 않는다.
+        "멈췄습니다 — 사유 / 거부된 명령 → 담당 확인 후 재개가 필요합니다"가 남는다. 재시도 횟수는 오르지 않는다.
         Executor가 꺼져 이 보고조차 오지 않으면 서버 감시가 45분 동안 응답이 없는 수령을 같은 방식으로 멈춘다.
         에이전트 연결이 해제되면 서버가 열린 실행을 `outcome: disconnected`로 대신 닫는다 — 그 뒤의 이 보고는 토큰이 막혀 401이다(Executor는 보내지 않는다).
         열린 실행(시작하고 아직 안 끝낸 것)이 없으면 409 `RUN_NOT_OPEN`.
@@ -5415,7 +5442,9 @@ paths:
         에이전트가 끝내 못 한 일을 개발자가 직접 커밋해 넘긴다(027). 커밋을 태스크 브랜치에 push한 뒤 sha와 **태스크 브랜치에서 바꾼 모든 경로**를 낸다.
         에이전트 제출과 **같은 V3**(실제 diff와 신고 대조, 경로 소유권)를 서버가 돌린다 — 실패면 아무것도 바뀌지 않고 422 `MANUAL_COMPLETION_INVALID`(details에 undeclared·overdeclared·거부 사유).
         서버가 커밋을 읽지 못하면(레포 clone_url·GitHub 미연결 — V3 SKIPPED) 받지 않는다: 409 `MANUAL_COMPLETION_UNVERIFIABLE`. 확인 안 된 sha로 DONE이 되지 않게.
-        통과하면 산출물(gateMode HUMAN)과 V3 결과가 남고 태스크는 DONE, 이벤트 `TASK_COMPLETED_MANUALLY`(지표에서 사람이 처리한 것으로 따로 센다).
+        통과하면 산출물(gateMode HUMAN)과 V3 결과가 남고 이벤트 `TASK_COMPLETED_MANUALLY`(지표에서 사람이 처리한 것으로 따로 센다).
+        **대표가 하면 DONE. 역할 담당이 하면 AWAITING_APPROVAL**이고 대표의 최종 승인 카드가 생긴다(`payload.roleReviewSkipped = manual_completion`, `manualCompletion { byUserId, note }`) —
+        멈춘 태스크는 담당이 해결하고 대표가 승인한다. 대표가 승인하면 DONE, 반려하면 에이전트 반려와 같은 재시도 경로(READY). 이벤트의 `taskState`·`approvalId`.
         에이전트가 붙잡지 않은 상태(READY·BLOCKED·ESCALATED)에서만. 그 역할 담당(에이전트 주인)이나 대표가 아니면 403 `NOT_TASK_OWNER`.
       security: [{ userToken: [] }]
       parameters: [{ $ref: '#/components/parameters/TaskId' }]
@@ -5433,7 +5462,7 @@ paths:
             example: { commitSha: 'a1b2c3d', changedPaths: ['src/routes/studies.ts'], note: '정원 계산 로직을 직접 고쳤다' }
       responses:
         '200':
-          description: 완료됨(DONE)
+          description: 대표면 DONE, 역할 담당이면 AWAITING_APPROVAL(대표 최종 승인 대기)
           content:
             application/json:
               schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/Task' } } }
@@ -5441,12 +5470,14 @@ paths:
   /tasks/{taskId}/resume:
     post:
       tags: [룸]
-      summary: 멈춘·재시도 소진 태스크 재개 (대표 전용)
+      summary: 멈춘·재시도 소진 태스크 재개 (그 역할 담당 또는 대표)
       description: |
         두 경우를 다시 돌린다. READY로 돌아가고 담당이 비어 같은 역할의 에이전트가 다시 가져간다(룸에 "다시 실행해 주세요 (재개)").
         - 에이전트가 제출 없이 멈춘 태스크(BLOCKED·`AGENT_STOPPED`): **재시도 횟수는 그대로다** — 권한·환경 탓은 에이전트 실패가 아니다.
         - 재시도를 다 쓴 태스크(`ESCALATED`): 원인을 확인한 대표가 다시 맡긴다. **재시도 횟수를 0으로 돌린다**(이전 횟수는 이벤트 `TASK_RESUMED.payload.previousRetryCount`).
         둘 다 아니면 409 `TASK_NOT_STOPPED`.
+        **그 역할의 담당이 처리한다**(받은 편지함 `stuck_task`도 담당에게 간다). 담당이 없거나 대표 본인이면 대표. 대표는 담당이 있어도 대신 재개할 수 있다.
+        그 밖의 사람은 403 `NOT_TASK_OWNER`. 이벤트 `TASK_RESUMED.payload.resumedBy`(`role_owner`·`representative`).
       security: [{ userToken: [] }]
       parameters: [{ $ref: '#/components/parameters/TaskId' }]
       requestBody:

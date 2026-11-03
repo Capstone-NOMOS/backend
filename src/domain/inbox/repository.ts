@@ -63,7 +63,8 @@ const BASE = `
        AND p.deleted_at IS NULL
        AND (   (e.type = 'APPROVAL_RESULT' AND e.payload->>'decision' = 'APPROVE' AND e.payload->>'taskState' = 'DONE')
             OR (e.type = 'VERIFICATION_COMPLETED' AND e.payload->>'taskState' = 'DONE')
-            OR e.type = 'TASK_COMPLETED_MANUALLY'
+            -- 역할 담당의 직접 완료는 대표 승인을 기다린다(taskState AWAITING_APPROVAL) — 끝난 게 아니다. 승인 결과(APPROVAL_RESULT)가 알림이 된다.
+            OR (e.type = 'TASK_COMPLETED_MANUALLY' AND e.payload->>'taskState' IS DISTINCT FROM 'AWAITING_APPROVAL')
             -- 실험 모드의 자동 답(033, 첫 선택지)은 사람 일이 아니다 — 답도, 그 질문이 왔다는 알림도 내지 않는다(곧바로 답해진다).
             OR (e.type = 'QUESTION_ANSWERED' AND e.payload->>'source' IS DISTINCT FROM 'auto_first_option')
             OR (e.type = 'QUESTION_DRAFTED' AND e.payload->>'autoAnswered' = 'true')
