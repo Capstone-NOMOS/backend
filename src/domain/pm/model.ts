@@ -29,6 +29,9 @@ export type PmModelResponse = {
   text: string;
   // 시도마다의 사용량(대체 모델이 돌면 둘 이상). 비용은 항목마다 그 모델 가격으로 더한다.
   attempts: AttemptUsage[];
+  // 모델 API 호출에 걸린 시간(ms) — 질문 라우팅의 "판정 시간"(035). API 모드는 서버가 잰 호출 시간,
+  // 중계 모드는 노트북의 Claude Code가 보고한 duration_api_ms(CLI 0.1.19+, 옛 CLI는 없음 → null).
+  modelLatencyMs?: number | null;
 };
 
 export type PmModel = {
@@ -44,6 +47,7 @@ function anthropicModel(apiKey: string): PmModel {
       // 출력이 길어(명세·태스크 수십 개 + 생각) 스트리밍으로 받는다 — 비스트리밍은 HTTP 시간 제한에 걸린다.
       // 대체 모델(fallbacks)은 쓰지 않는다. 계획 작성이 안전 거절에 걸릴 일은 드물고, 켜면 "어느 모델이 한 번 더 도는지"를
       // 서버가 정해 호출 한 번의 비용 상한을 가장 비싼 모델 기준으로 잡아야 했다($3.9). 거절되면 failed(refused) → 대표가 다시 요청한다.
+      const started = Date.now();
       const stream = client.beta.messages.stream(
         {
           model: req.model,
@@ -83,7 +87,7 @@ function anthropicModel(apiKey: string): PmModel {
           cacheReadTokens: message.usage.cache_read_input_tokens ?? 0,
         });
       }
-      return { stopReason: message.stop_reason, servedModel: message.model, text, attempts };
+      return { stopReason: message.stop_reason, servedModel: message.model, text, attempts, modelLatencyMs: Date.now() - started };
     },
   };
 }

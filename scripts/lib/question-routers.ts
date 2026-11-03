@@ -31,8 +31,10 @@ export function claudeCliRouter(model?: string): EvalRouter {
       child.stdout.on('data', (d) => (out += d));
       child.on('close', () => {
         try {
-          const result = JSON.parse(out) as { result?: string; total_cost_usd?: number };
-          resolve({ ...parseRoutingResponse(result.result ?? '', input, name), costUsd: result.total_cost_usd ?? null });
+          const result = JSON.parse(out) as { result?: string; total_cost_usd?: number; duration_api_ms?: number };
+          // 판정 시간 = Claude Code가 모델 API 호출에 쓴 시간(duration_api_ms) — CLI 기동은 빠진다(운영 pm-worker와 같은 값).
+          const modelLatencyMs = typeof result.duration_api_ms === 'number' ? Math.round(result.duration_api_ms) : null;
+          resolve({ ...parseRoutingResponse(result.result ?? '', input, name), costUsd: result.total_cost_usd ?? null, modelLatencyMs });
         } catch (err) {
           reject(new Error(`unparseable router output: ${err instanceof Error ? err.message : String(err)} — ${out.slice(0, 200)}`));
         }

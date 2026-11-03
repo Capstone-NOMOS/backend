@@ -130,7 +130,7 @@ describe('OpenAI 라우터', () => {
     const router = openAiQuestionRouter({ apiKey: 'sk-test', model: 'gpt-6.1-sol', effort: 'low', fetchImpl: fakeFetch(200, ok('{"target":"BACKEND","confidence":0.8,"reason":"응답 형식"}'), captured) });
     const decision = await router.route({ ...INPUT, context: { orgId: 'org-secret' } });
 
-    expect(decision).toEqual({ target: 'BACKEND', confidence: 0.8, reason: '응답 형식', routedBy: `openai:gpt-6.1-sol:${ROUTING_PROMPT_VERSION}`, costUsd: 0.00262 });
+    expect(decision).toEqual({ target: 'BACKEND', confidence: 0.8, reason: '응답 형식', routedBy: `openai:gpt-6.1-sol:${ROUTING_PROMPT_VERSION}`, costUsd: 0.00262, modelLatencyMs: expect.any(Number) });
     expect(router.name).toBe(decision.routedBy); // 그림자 실행이 이름으로 실제 라우터를 뺀다
     const req = captured[0]!;
     expect(req.url).toBe('https://api.openai.com/v1/responses');
@@ -174,6 +174,7 @@ describe('Jev 라우터 (TypeSafe 결정 모델)', () => {
       reason: '확률: BACKEND 0.82, SELF 0.10, PM 0.08',
       routedBy: `jev:jev-1.14.0:${ROUTING_PROMPT_VERSION}`,
       costUsd: 0.042,
+      modelLatencyMs: expect.any(Number), // 판정 시간(035) — 요청 ~ 응답 본문
     });
     const req = captured[0]!;
     expect(req.url).toBe('https://api.typesafe.ai/v1/systemone');

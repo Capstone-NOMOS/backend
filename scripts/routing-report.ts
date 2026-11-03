@@ -21,6 +21,9 @@ type Report = {
     alignmentRate: number | null;
     avgLatencyMs: number | null;
     p95LatencyMs: number | null;
+    avgModelLatencyMs: number | null;
+    p95ModelLatencyMs: number | null;
+    modelLatencySamples: number;
     avgCostUsd: number | null;
     totalCostUsd: number | null;
   }[];
@@ -50,13 +53,13 @@ const report = await api.call<Report>('GET', `/projects/${project}/routing-repor
 
 out(`${server} · 프로젝트 ${project} · 질문 ${report.questions}개 (정답 라벨 ${report.labeled})`);
 out();
-out('라우터별 — 판정 수 · 실패 · 지연 평균/p95 · 요청당 비용 · 비용 합 · 정답 일치율');
+out('라우터별 — 건수 · 실패 · 판정 시간 평균/p95(판정자 도달~답, 비교용) · 전체 지연 평균/p95(질문~판정 도착) · 요청당 비용 · 비용 합 · 정답 일치율');
 for (const r of report.routers) {
   const usd = (n: number | null) => (n === null ? '-' : `$${n.toFixed(6)}`);
   const ms = (n: number | null) => (n === null ? '-' : `${n}ms`);
   out(
-    `  ${r.mode.padEnd(8)} ${r.router.padEnd(34)} 판정 ${String(r.decisions).padStart(3)}  실패 ${String(r.errors).padStart(3)}  ` +
-      `${ms(r.avgLatencyMs).padStart(8)}/${ms(r.p95LatencyMs).padEnd(8)} ${usd(r.avgCostUsd).padStart(10)} ${usd(r.totalCostUsd).padStart(10)}  ` +
+    `  ${r.mode.padEnd(8)} ${r.router.padEnd(34)} 건수 ${String(r.decisions).padStart(3)}  실패 ${String(r.errors).padStart(3)}  ` +
+      `판정 ${ms(r.avgModelLatencyMs).padStart(8)}/${ms(r.p95ModelLatencyMs).padEnd(8)}(${r.modelLatencySamples}) 전체 ${ms(r.avgLatencyMs).padStart(8)}/${ms(r.p95LatencyMs).padEnd(8)} ${usd(r.avgCostUsd).padStart(10)} ${usd(r.totalCostUsd).padStart(10)}  ` +
       `${r.alignmentRate === null ? '-' : `${Math.round(r.alignmentRate * 100)}%`}`,
   );
 }

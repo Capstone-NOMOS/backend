@@ -162,6 +162,9 @@ const relayResultBody = z
       cacheWriteTokens: z.number().int().nonnegative(),
       cacheReadTokens: z.number().int().nonnegative(),
     }),
+    // Claude Code의 duration_api_ms(모델 API 호출 시간) — 질문 라우팅의 판정 시간(035). CLI 0.1.19부터 보낸다(옛 CLI는 없음).
+    // 모르는 필드를 거부하는 스키마라 **서버를 먼저 배포**해야 새 CLI가 400을 받지 않는다.
+    modelLatencyMs: z.number().int().nonnegative().max(3_600_000).nullable().optional(),
   })
   .strict();
 

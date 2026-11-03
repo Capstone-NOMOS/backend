@@ -131,6 +131,7 @@ export async function askQuestion(ctx: AgentContext, taskId: string, questions: 
     latencyMs: routed.latencyMs,
     fallback: routed.fallback,
     costUsd: routed.costUsd ?? null,
+    modelLatencyMs: routed.modelLatencyMs ?? null,
   };
 
   const created = await withTransaction(async (tx) => {
@@ -169,6 +170,7 @@ export async function askQuestion(ctx: AgentContext, taskId: string, questions: 
         latencyMs: routed.latencyMs,
         fallback: routed.fallback,
         costUsd: routed.costUsd ?? null,
+        modelLatencyMs: routed.modelLatencyMs ?? null,
         questionCount: questions.length,
       },
     });

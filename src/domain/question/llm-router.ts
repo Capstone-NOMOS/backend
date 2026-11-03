@@ -37,6 +37,6 @@ export const llmQuestionRouter: QuestionRouter = {
       context: { orgId, planId: null, purpose: 'route' },
     });
     if (response.stopReason === 'refusal' || response.stopReason === 'max_tokens') throw new Error(`router stopped: ${response.stopReason}`);
-    return { ...parseRoutingResponse(response.text, input, routedBy), costUsd: costOfAttempts(response.attempts) };
+    return { ...parseRoutingResponse(response.text, input, routedBy), costUsd: costOfAttempts(response.attempts), modelLatencyMs: response.modelLatencyMs ?? null };
   },
 };

@@ -1080,7 +1080,8 @@ Table question_routing_runs {
   mode         text        [not null, note: "primary(실제로 보낸 라우터) | shadow(같은 입력으로 함께 돌려 본 라우터)"]
   target       text        [note: 'FRONTEND | BACKEND | PM | SELF. 실패면 NULL']
   confidence   double
-  latency_ms   int         [not null]
+  latency_ms   int         [not null, note: '서버가 라우터를 부른 순간 ~ 판정 도착(중계면 대기열·CLI 기동 포함)']
+  model_latency_ms int     [note: '035 판정자에게 도달 ~ 답(모델 API 호출 시간). 중계는 Claude Code의 duration_api_ms. 모르면 NULL']
   cost_usd     numeric(12,6)
   error        text
   created_at   timestamptz [not null, default: `clock_timestamp()`]
@@ -1092,6 +1093,7 @@ Table question_routing_runs {
   Note: '''
   ★ 026 질문 라우팅 평가(발표 지표). 서비스 동작에는 쓰지 않는다. 정답은 agent_questions.gold_target.
   question_routing_runs_result_chk CHECK ((target IS NULL) = (error IS NOT NULL))
+  question_routing_runs_model_latency_chk CHECK (model_latency_ms IS NULL OR (model_latency_ms >= 0 AND target IS NOT NULL))
   '''
 }
 

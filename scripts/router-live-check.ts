@@ -92,7 +92,7 @@ async function setUp(): Promise<{ projectId: string; ctx: Record<TeamRole, Agent
   return { projectId: project.id, ctx, taskOf: { FRONTEND: feTask.id, BACKEND: beTask.id } };
 }
 
-type RunRow = { router: string; mode: string; target: string | null; confidence: number | null; latency_ms: number; cost_usd: string | null; error: string | null };
+type RunRow = { router: string; mode: string; target: string | null; confidence: number | null; latency_ms: number; model_latency_ms: number | null; cost_usd: string | null; error: string | null };
 
 async function main(): Promise<void> {
   if ((await readEnvironmentMarker(pool)) === 'production') throw new Error('운영으로 표시된 DB다 — 로컬 DB에서만 돈다');
@@ -110,7 +110,7 @@ async function main(): Promise<void> {
   const { projectId, ctx, taskOf } = await setUp();
   const problems: string[] = [];
   let hits = 0;
-  const perRouter = new Map<string, { n: number; ok: number; err: number; latency: number[]; cost: number; costKnown: number }>();
+  const perRouter = new Map<string, { n: number; ok: number; err: number; latency: number[]; model: number[]; cost: number; costKnown: number }>();
 
   for (const [i, probe] of probes.entries()) {
     const asked = await askQuestion(ctx[probe.asker], taskOf[probe.asker], [{ question: probe.question, options: probe.options.map((label) => ({ label })) }]);
@@ -120,20 +120,21 @@ async function main(): Promise<void> {
       routed_by: string; target_role: string; status: string; routing: Record<string, unknown> | null; routing_input: unknown;
     };
     const ev = (await pool.query(`SELECT payload FROM events WHERE type = 'QUESTION_ASKED' AND payload->>'questionId' = $1`, [asked.id])).rows[0] as { payload: Record<string, unknown> } | undefined;
-    const runs = (await pool.query(`SELECT router, mode, target, confidence, latency_ms, cost_usd, error FROM question_routing_runs WHERE question_id = $1 ORDER BY mode, id`, [asked.id])).rows as RunRow[];
+    const runs = (await pool.query(`SELECT router, mode, target, confidence, latency_ms, model_latency_ms, cost_usd, error FROM question_routing_runs WHERE question_id = $1 ORDER BY mode, id`, [asked.id])).rows as RunRow[];
 
     const primaryTarget = q.status === 'self_owned' ? 'SELF' : q.target_role;
     if (primaryTarget === probe.expect) hits += 1;
     out(`${i + 1}. [${probe.asker} → 예상 ${probe.expect}] ${probe.question}`);
     for (const r of runs) {
       const shown = r.error ? `실패: ${r.error}` : `${r.target}${r.target === probe.expect ? ' ✓' : ' ✗'} 확신 ${r.confidence?.toFixed(2) ?? '-'}`;
-      out(`   ${r.mode.padEnd(7)} ${r.router.padEnd(32)} ${shown.padEnd(24)} ${String(r.latency_ms).padStart(6)}ms  $${r.cost_usd ?? '-'}`);
-      const s = perRouter.get(r.router) ?? { n: 0, ok: 0, err: 0, latency: [], cost: 0, costKnown: 0 };
+      out(`   ${r.mode.padEnd(7)} ${r.router.padEnd(32)} ${shown.padEnd(24)} 판정 ${String(r.model_latency_ms ?? '-').padStart(6)}ms 전체 ${String(r.latency_ms).padStart(6)}ms  $${r.cost_usd ?? '-'}`);
+      const s = perRouter.get(r.router) ?? { n: 0, ok: 0, err: 0, latency: [], model: [], cost: 0, costKnown: 0 };
       s.n += 1;
       if (r.error) s.err += 1;
       else {
         if (r.target === probe.expect) s.ok += 1;
         s.latency.push(r.latency_ms);
+        if (r.model_latency_ms !== null) s.model.push(r.model_latency_ms);
       }
       if (r.cost_usd !== null) {
         s.cost += Number(r.cost_usd);
@@ -148,7 +149,10 @@ async function main(): Promise<void> {
     need(q.routing_input !== null, 'agent_questions.routing_input이 비었다(오프라인 재평가 입력)');
     need(typeof q.routing?.latencyMs === 'number', 'agent_questions.routing.latencyMs가 없다');
     need(q.routing !== null && 'costUsd' in q.routing, 'agent_questions.routing.costUsd 칸이 없다');
-    need(ev !== undefined && typeof ev.payload.latencyMs === 'number' && 'costUsd' in ev.payload, 'QUESTION_ASKED 이벤트에 latencyMs·costUsd가 없다');
+    need(q.routing !== null && 'modelLatencyMs' in q.routing, 'agent_questions.routing.modelLatencyMs 칸이 없다');
+    // API 라우터(openai·jev)는 서버가 판정 시간을 잰다 — 비어 있으면 기록 경로가 끊긴 것이다. 중계 llm은 CLI 0.1.19부터라 보지 않는다.
+    for (const r of runs.filter((x) => !x.error && /^(openai|jev):/.test(x.router))) need(r.model_latency_ms !== null, `${r.router}의 판정 시간(model_latency_ms)이 비었다`);
+    need(ev !== undefined && typeof ev.payload.latencyMs === 'number' && 'costUsd' in ev.payload && 'modelLatencyMs' in ev.payload, 'QUESTION_ASKED 이벤트에 latencyMs·costUsd·modelLatencyMs가 없다');
     need(runs.some((r) => r.mode === 'primary'), 'question_routing_runs에 primary 기록이 없다');
     for (const name of shadows.filter((n) => routerByName(n) !== null && routerByName(n)!.name !== q.routed_by)) {
       need(runs.some((r) => r.mode === 'shadow' && r.router === routerByName(name)!.name), `그림자 ${name}의 기록이 없다`);
@@ -158,11 +162,13 @@ async function main(): Promise<void> {
   }
 
   out();
-  out('라우터별 요약 (예상 담당과 일치 · 실패 · 지연 중앙값 · 비용 합)');
+  out('라우터별 요약 (예상 담당과 일치 · 실패 · 판정 시간 중앙값 · 전체 지연 중앙값 · 비용 합)');
   for (const [router, s] of perRouter) {
     const sorted = [...s.latency].sort((a, b) => a - b);
     const median = sorted.length ? sorted[Math.floor(sorted.length / 2)] : null;
-    out(`  ${router.padEnd(34)} 일치 ${s.ok}/${s.n - s.err}  실패 ${s.err}  지연 ${median ?? '-'}ms  비용 $${s.cost.toFixed(6)}${s.costKnown < s.n ? ` (비용 모름 ${s.n - s.costKnown}건)` : ''}`);
+    const models = [...s.model].sort((a, b) => a - b);
+    const modelMedian = models.length ? models[Math.floor(models.length / 2)] : null;
+    out(`  ${router.padEnd(34)} 일치 ${s.ok}/${s.n - s.err}  실패 ${s.err}  판정 ${modelMedian ?? '-'}ms  전체 ${median ?? '-'}ms  비용 $${s.cost.toFixed(6)}${s.costKnown < s.n ? ` (비용 모름 ${s.n - s.costKnown}건)` : ''}`);
   }
   out(`실제 라우터가 예상대로 보낸 질문: ${hits}/${probes.length}`);
   out(`보고서: GET /api/projects/${projectId}/routing-report · 데이터셋: GET /api/projects/${projectId}/routing-dataset (대표 로그인 후)`);
@@ -172,7 +178,7 @@ async function main(): Promise<void> {
     for (const p of problems) out(`  - ${p}`);
     process.exitCode = 1;
   } else {
-    out('✓ 저장 확인: 질문마다 routing_input·routing(지연·비용)·QUESTION_ASKED 이벤트·primary/그림자 평가 기록이 남았다');
+    out('✓ 저장 확인: 질문마다 routing_input·routing(지연·판정 시간·비용)·QUESTION_ASKED 이벤트·primary/그림자 평가 기록(판정 시간 포함)이 남았다');
   }
 }
 
