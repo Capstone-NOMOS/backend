@@ -38,6 +38,7 @@ import { deviceLogin } from './device-login.js';
 import { cliVersion, mcpServerPath } from './paths.js';
 import { checkTools } from './preflight.js';
 import { handleNextPmJob } from './pm-worker.js';
+import { acquireHomeLock } from './home-lock.js';
 import { buildTaskPrompt } from './prompt.js';
 import { DEFAULT_IDLE_MS, runClaude } from './runner.js';
 import { streamTaskSource } from './stream-source.js';
@@ -381,6 +382,7 @@ async function reportBridgeStages(
 }
 
 async function once(): Promise<void> {
+  acquireHomeLock('once');
   const client = createClient();
   const self = await client.describeSelf();
   const source = pollingTaskSource(client);
@@ -395,6 +397,7 @@ async function once(): Promise<void> {
 
 // 멈춘 이유를 돌려준다 — connect는 배정이 풀린 경우(해제·프로젝트 중단) 다시 배정을 기다린다.
 async function start(): Promise<'disconnected' | 'unassigned'> {
+  acquireHomeLock('start');
   const client = createClient();
   const self = await client.describeSelf();
   // 서버 푸시(웹소켓)로 받는다. 끊겨 있는 동안은 같은 목록을 HTTP로 읽는다.
@@ -575,6 +578,8 @@ async function loginWithCode(baseUrl: string, agentName: string, code: string): 
 }
 
 async function login(argv: string[]): Promise<void> {
+  // 돌고 있는 에이전트의 자격 증명을 덮어쓰지 않게 — 같은 폴더를 쓰는 프로세스가 있으면 멈춘다.
+  acquireHomeLock('login');
   const args = parseArgs(argv);
   const baseUrl = normalizeBaseUrl(args.positional ?? args.server);
   const previous = readCredentials();
@@ -610,6 +615,8 @@ async function connectCommand(argv: string[]): Promise<void> {
     log('상태: nomos status · 끄기: nomos stop · 진행 상황은 웹의 룸에서 본다');
     return;
   }
+  // 한 NOMOS_HOME = 한 에이전트(home-lock.ts). 백그라운드를 띄우는 부모는 바로 끝나므로 잡지 않고, 실제로 도는 자식이 여기서 잡는다.
+  acquireHomeLock('connect');
 
   // 배정이 풀리면(해제·프로젝트 중단) 창을 닫지 않고 다시 배정을 기다린다. 연결 해제면 멈춘다.
   // 1회용 코드는 처음 한 번만 쓴다 — 그 뒤로는 그 코드로 받은 자격 증명이 저장돼 있다.
@@ -677,6 +684,7 @@ async function refresh(): Promise<void> {
 const PM_POLL_INTERVAL_MS = 3_000;
 
 async function pmWorker(): Promise<void> {
+  acquireHomeLock('pm-worker');
   const client = createClient();
   log('pm-worker 시작 — 대표가 PM에 계획을 요청하면 여기서 claude가 돈다 (Ctrl+C로 종료)');
   for (;;) {

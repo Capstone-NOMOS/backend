@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -41,7 +41,17 @@ export function readCredentials(): Credentials | null {
 export function writeCredentials(credentials: Credentials): void {
   mkdirSync(credentialsDir(), { recursive: true, mode: 0o700 });
   const file = credentialsPath();
-  writeFileSync(file, `${JSON.stringify(credentials, null, 2)}\n`, { mode: 0o600 });
+  // 임시 파일에 다 쓴 뒤 이름을 바꾼다 — 읽는 쪽이 반쯤 쓰인 파일을 보지 않게(토큰 재발급마다 쓴다).
+  // 같은 NOMOS_HOME을 두 프로세스가 쓰다 "Unexpected end of JSON input"으로 죽은 일이 있었다(운영 실험) — 공유 자체는 executor/home-lock.ts가 막는다.
+  const tmp = `${file}.${process.pid}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(credentials, null, 2)}\n`, { mode: 0o600 });
+  try {
+    renameSync(tmp, file);
+  } catch {
+    // Windows에서 다른 프로세스가 그 순간 파일을 열고 있으면 바꾸기가 거부될 수 있다 — 직접 쓴다.
+    writeFileSync(file, readFileSync(tmp), { mode: 0o600 });
+    rmSync(tmp, { force: true });
+  }
   try {
     chmodSync(file, 0o600);
   } catch {
