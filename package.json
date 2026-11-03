@@ -22,7 +22,8 @@
     "seed:tasks": "tsx scripts/seed-remote-tasks.ts",
     "probe:questions": "tsx scripts/question-probe.ts",
     "experiment:run": "tsx scripts/experiment-run.ts",
-    "router:live": "tsx scripts/router-live-check.ts"
+    "router:live": "tsx scripts/router-live-check.ts",
+    "routing:report": "tsx scripts/routing-report.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.129.0",

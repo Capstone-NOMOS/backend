@@ -14,7 +14,7 @@ import { createOrganization } from '../src/domain/org/service.js';
 import type { PlanDraft } from '../src/domain/pm/draft.js';
 import { setPmModel } from '../src/domain/pm/model.js';
 import { PM_SYSTEM_PROMPT } from '../src/domain/pm/prompt.js';
-import { clearRelayJobs } from '../src/domain/pm/relay.js';
+import { clearRelayJobs, relayModel, takeNextJob, waitForNextJob } from '../src/domain/pm/relay.js';
 import { drainPmJobs } from '../src/domain/pm/service.js';
 import { createProject } from '../src/domain/project/service.js';
 import { connectRepos } from '../src/domain/repo/service.js';
@@ -289,5 +289,47 @@ describe('PM 준비 상태 (GET /projects/:id/pm/status)', () => {
   it('대표만 본다', async () => {
     const w = await world();
     expect((await call('GET', `/projects/${w.projectId}/pm/status`, w.be.token)).status).toBe(403);
+  });
+});
+
+// long-poll(PM_RELAY_WAIT_MS) — 테스트 설정은 0이라 HTTP 경로는 바로 답한다. 기다리는 동작은 함수로 직접 본다.
+describe('중계 대기열 — long-poll과 라우팅 우선', () => {
+  const ORG = '00000000-0000-4000-8000-0000000000aa';
+  const enqueue = (purpose: 'draft' | 'route') => {
+    const controller = new AbortController();
+    relayModel
+      .generate({
+        model: 'm', effort: 'low', maxTokens: 10, system: 's', user: purpose, jsonSchema: {},
+        signal: controller.signal, context: { orgId: ORG, planId: null, purpose },
+      })
+      .catch(() => undefined); // clearRelayJobs가 거절한다
+  };
+  afterEach(() => clearRelayJobs());
+
+  it('작업이 없으면 응답을 붙잡고 있다가, 작업이 들어오는 즉시 넘긴다', async () => {
+    const started = Date.now();
+    const waiting = waitForNextJob(ORG, 'worker', 5_000, () => false);
+    setTimeout(() => enqueue('route'), 50);
+    const job = await waiting;
+    expect(job?.purpose).toBe('route');
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it('기다려도 작업이 없으면 null', async () => {
+    expect(await waitForNextJob(ORG, 'worker', 30, () => false)).toBeNull();
+  });
+
+  it('끊긴 요청에는 작업을 맡기지 않는다 — 다음 확인이 가져간다', async () => {
+    const waiting = waitForNextJob(ORG, 'worker', 5_000, () => true);
+    setTimeout(() => enqueue('draft'), 20);
+    expect(await waiting).toBeNull();
+    expect(takeNextJob(ORG, 'worker')?.purpose).toBe('draft');
+  });
+
+  it('질문 라우팅을 먼저 꺼낸다 — 기획 초안 뒤에 줄 서지 않게', () => {
+    enqueue('draft');
+    enqueue('route');
+    expect(takeNextJob(ORG, 'worker')?.purpose).toBe('route');
+    expect(takeNextJob(ORG, 'worker')?.purpose).toBe('draft');
   });
 });
