@@ -709,6 +709,12 @@ FE의 "받은 편지함"은 두 칸이다(대표 결정 2026-10-29). **둘 다 �
     정리: BLOCKED(AGENT_STOPPED) 재개 1회 → 또 멈추면 취소, ESCALATED 취소, 회차 시간 초과면 취소할 수 있는 것을 취소하고 다음 회차. **자동으로 풀 수 없는 고장**(같은 실패 연속 K번·
     에이전트·PM 워커 offline·예산 소진·READY를 아무도 안 가져감·계약 포기)은 멈추고 원인·할 일을 한 줄로(종료 코드 3, `EXPERIMENT_ALERT_WEBHOOK`). 서버 판정을 흉내 내지 않는다 —
     상태는 API로만 읽는다. 진행 상태 파일 `scripts/data/experiment-runs/<run>.json`(커밋하지 않음)으로 같은 `--run`이면 이어 간다. 절차는 `docs/experiment-question-routing.md` 8절.
+  - **CLI에도 같은 감독이 있다**(`npx @capstone-nomos/cli@latest experiment …`, CLI 0.1.21) — 실험 PC에 서버 레포를 받지 않게. 본체는 `src/executor/experiment-*.ts`·`human-http.ts` 한 벌이고
+    `scripts/`의 진입점·`scripts/lib/{experiment-run,nomos-http}.ts`는 다시 내보내기만 한다(CLI 패키지 경계 — 서버 코드 import 금지). CLI의 상태 파일은 `<NOMOS_HOME>/experiment-runs/`.
+    감독은 **대표 계정(사람 토큰)**만 쓰고 에이전트 자격 증명·폴더 잠금(home-lock)을 건드리지 않는다 — 에이전트와 같은 PC·같은 NOMOS_HOME에서 돌아도 된다.
+  - **24시간 무인**: `--until <시간>`은 요구사항을 한 바퀴씩, 바퀴마다 회차를 `--repeat`만큼 늘려 마감까지 돈다(마감 `untilAt`은 상태 파일에 — 다시 띄워도 늘지 않는다).
+    `--keep-going`(until이 켠다)은 멈춤·오류에도 끝내지 않고 알린 뒤 `--retry-wait`(5분) 기다렸다 상태 파일로 이어 간다 — 기다려도 안 풀리는 설정 문제(`HaltError.permanent`: 실험 모드 아님·프로젝트 끝남)만 끝낸다.
+    사람 토큰(24시간) 만료는 같은 비밀번호로 다시 로그인한다(`setRelogin`, 비밀번호는 메모리에만). **GET만** 일시 오류(끊김·502/503/504)를 다시 시도한다 — POST를 다시 보내면 태스크·기능 명세가 두 번 생긴다.
 - **`GET /me/questions`**: 내가 답할 질문(대표는 전부, 팀원은 자기 역할이 대상인 것) — 알림 배지용. 답할 자격 정의는 `answerQuestion`과 같아야 한다.
 
 ### 룸 (`domain/room`, 017) — 보기 전용
