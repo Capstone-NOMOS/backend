@@ -12,6 +12,8 @@
 //   --offline <분>(10) --unclaimed <분>(15) --failures <K>(3)
 //   --until <시간>       이 시간 동안 회차를 늘려 가며 계속 돈다(요구사항을 한 바퀴씩, 바퀴마다 --repeat회 더). 마감은 상태 파일에 남아 이어 가도 늘지 않는다. --keep-going을 함께 켠다.
 //   --keep-going         멈춤·일시 오류에도 끝내지 않고 알린 뒤 --retry-wait <분>(5) 기다렸다가 이어 간다(설정 문제만 끝낸다). 24시간 무인 실행용.
+//   --build              쌓기 모드 — 요구사항마다 한 번씩만(회차 반복 없음) 차례로 실행해 하나의 앱에 기능을 쌓는다. 프로젝트에 autoMerge(037)가 켜져 있어야 한다.
+//                        --until과 함께 쓰면 마감 뒤 새 요구사항을 시작하지 않는다(--repeat는 무시).
 //
 // 요구사항 파일: [{ "key": "study-list", "instruction": "대표가 PM에게 하듯 자연어 요구", "repeat"?: 3 }] — 예시 scripts/examples/experiment-requirements.json.
 // 자동으로 풀 수 없는 고장(로그인 만료·노트북 꺼짐·예산 소진 등)은 멈추고 원인과 할 일을 한 줄로 출력한다(종료 코드 3).
@@ -57,7 +59,7 @@ function usage(message?: string): never {
     `사용법: ${commandName} --project <id> --login <대표 loginId> --requirements <파일.json> [--repeat N] [--run <이름>] [--dry-run]\n` +
       `        ${commandName} --project <id> --login <대표 loginId> --report --run <이름>\n` +
       '        [--server <주소>] [--interval <초>] [--round-timeout <분>] [--planning-timeout <분>] [--offline <분>] [--unclaimed <분>] [--failures <K>]\n' +
-      '        [--until <시간>] [--keep-going] [--retry-wait <분>]\n',
+      '        [--until <시간>] [--keep-going] [--retry-wait <분>] [--build]\n',
   );
   process.exit(2);
 }
@@ -80,6 +82,7 @@ type Args = {
   untilHours?: number;
   keepGoing: boolean;
   retryWaitMin: number;
+  build: boolean;
 };
 
 function parseArgs(argv: string[]): Args {
@@ -107,6 +110,7 @@ function parseArgs(argv: string[]): Args {
     failures: DEFAULTS.failureLimit,
     keepGoing: false,
     retryWaitMin: 5,
+    build: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
@@ -124,6 +128,7 @@ function parseArgs(argv: string[]): Args {
     else if (arg === '--failures') a.failures = positive(value(i++), '--failures');
     else if (arg === '--until') a.untilHours = positive(value(i++), '--until');
     else if (arg === '--keep-going') a.keepGoing = true;
+    else if (arg === '--build') a.build = true;
     else if (arg === '--retry-wait') a.retryWaitMin = positive(value(i++), '--retry-wait');
     else if (arg === '--dry-run') a.dryRun = true;
     else if (arg === '--report') a.report = true;
@@ -224,6 +229,7 @@ async function runExperiment(argv: string[], runsDir: string): Promise<void> {
         unclaimedMs: args.unclaimedMin * 60_000,
         failureLimit: args.failures,
         ...(args.untilHours !== undefined ? { untilMs: args.untilHours * 3_600_000 } : {}),
+        ...(args.build ? { build: true } : {}),
       },
         fileStore(runsDir, run),
       io,

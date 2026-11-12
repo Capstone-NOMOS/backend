@@ -79,7 +79,7 @@ export type StateStore = { load(): Promise<RunState | null>; save(state: RunStat
 // ── 서버 응답(쓰는 필드만) ──
 
 type ProjectDetail = {
-  project: { id: string; name: string; status: string; questionRelay: boolean; questionMode?: string };
+  project: { id: string; name: string; status: string; questionRelay: boolean; questionMode?: string; autoMerge?: boolean };
   repos?: { id: string }[];
   members: { teamRole: string; agentId: string | null }[];
 };
@@ -129,6 +129,9 @@ export type SupervisorOptions = {
   failureLimit: number;
   // 이 시간(ms) 동안 회차를 계속 늘려 돈다(--until). 없으면 요구사항마다 repeat회만.
   untilMs?: number;
+  // 쌓기 모드(--build): 요구사항마다 한 번씩만(회차 반복 없음) 차례로 — 하나의 앱에 기능을 쌓는다. 서버가 완료 태스크를 main에 합쳐야(autoMerge, 037) 쌓인다.
+  // --until과 함께 쓰면 마감이 지난 뒤 새 요구사항을 시작하지 않는다(바퀴를 돌지 않는다).
+  build?: boolean;
 };
 
 export const DEFAULTS = {
@@ -264,7 +267,14 @@ export class Supervisor {
     }
     const status = await this.api.call<PmStatusJson>('GET', `/projects/${this.opts.projectId}/pm/status`);
     if (!status.ready) problems.push(`PM을 부를 수 없다(${status.reason}) — ${status.reason === 'WORKER_OFFLINE' ? '대표 노트북에서 pm-worker를 띄운다' : '서버의 PM 설정을 확인한다'}`);
-    const permanent = detail.project.questionMode !== 'experiment' || !['planning', 'active'].includes(detail.project.status);
+    // 쌓기 모드는 완료 태스크가 main에 합쳐져야 앞 기능 위에 다음 기능이 쌓인다 — 안 켜져 있으면 요구사항마다 빈 레포에서 다시 시작한다.
+    const buildWithoutMerge = this.opts.build === true && detail.project.autoMerge !== true;
+    if (buildWithoutMerge) {
+      problems.push(
+        "쌓기 모드(--build)는 완료 태스크 자동 병합이 켜진 프로젝트에서만 — 시작 전에 PATCH /projects/:id/settings { autoMerge: true } (실험 모드와 함께)",
+      );
+    }
+    const permanent = detail.project.questionMode !== 'experiment' || !['planning', 'active'].includes(detail.project.status) || buildWithoutMerge;
     if (problems.length > 0) throw new HaltError(`시작할 수 없다:\n${problems.map((p) => `  - ${p}`).join('\n')}`, permanent);
     return detail;
   }
@@ -282,17 +292,32 @@ export class Supervisor {
       this.io.log('--dry-run: 아무것도 요청하지 않았다');
       return this.state;
     }
-    if (this.opts.untilMs !== undefined) {
-      if (this.state.untilAt === undefined) {
-        this.state.untilAt = this.io.now() + this.opts.untilMs;
-        await this.save();
-      }
+    if (this.opts.untilMs !== undefined && this.state.untilAt === undefined) {
+      this.state.untilAt = this.io.now() + this.opts.untilMs;
+      await this.save();
+    }
+    if (this.opts.build) {
+      await this.runBuild();
+    } else if (this.state.untilAt !== undefined) {
       await this.runUntil(this.state.untilAt);
     } else {
       for (const r of this.opts.requirements) await this.runRequirement(r, r.repeat ?? this.opts.repeat);
     }
     this.io.log(`다 돌았다 — npm run experiment:run -- --project ${this.opts.projectId} --report --run ${this.opts.run}`);
     return this.state;
+  }
+
+  // 쌓기 모드 — 요구사항을 차례로 한 번씩(r1만). 마감이 지나면 새 요구사항을 시작하지 않는다(돌던 요구사항은 끝까지 — 회차 시간 제한이 있다).
+  private async runBuild(): Promise<void> {
+    if (this.state.untilAt !== undefined) this.io.log(`쌓기 모드 — 마감 ${new Date(this.state.untilAt).toISOString()}까지 요구사항을 차례로 한 번씩`);
+    for (const r of this.opts.requirements) {
+      if (this.pastDeadline()) {
+        this.io.log('마감이 지났다 — 새 요구사항을 시작하지 않는다');
+        return;
+      }
+      await this.runRequirement(r, 1);
+    }
+    this.io.log('요구사항을 다 돌았다');
   }
 
   private pastDeadline(): boolean {

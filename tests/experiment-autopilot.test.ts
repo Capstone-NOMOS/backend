@@ -23,6 +23,7 @@ import { setQuestionRouter } from '../src/domain/question/router-registry.js';
 import type { RoutingInput, RoutingTarget } from '../src/domain/question/router.js';
 import { drainRoutingRecords } from '../src/domain/question/routing-eval.js';
 import { connectRepos } from '../src/domain/repo/service.js';
+import { setDefaultMerger, type DefaultMergeInput, type DefaultMergeResult } from '../src/domain/task/default-merge.js';
 import { gitMirrorInspector, setCommitInspector } from '../src/domain/verification/commit-inspector.js';
 import { assignRootOwner, createTestProject } from './fixtures.js';
 import { resetSchema, testPool, truncateAll } from './test-db.js';
@@ -57,6 +58,7 @@ afterEach(async () => {
   setQuestionRouter(null);
   setPmModel(null);
   setCommitInspector(realInspector);
+  setDefaultMerger(null);
 });
 
 afterAll(async () => {
@@ -562,5 +564,78 @@ describe('승인·검증 정리', () => {
         payload: { auto: true, cause: 'verification_timeout', lastMessage: VERIFYING_TIMEOUT_MESSAGE },
       });
     }
+  });
+});
+
+// ── 완료 태스크를 기본 브랜치에 합치기(037) — 실험 모드 + autoMerge ──
+
+function fakeMerger(results: (DefaultMergeResult | Error)[]): { calls: DefaultMergeInput[] } {
+  const calls: DefaultMergeInput[] = [];
+  setDefaultMerger({
+    kind: 'fake',
+    async merge(input) {
+      calls.push(input);
+      const next = results.shift() ?? { result: 'merged', mergeCommit: 'm'.repeat(40) };
+      if (next instanceof Error) throw next;
+      return next;
+    },
+  });
+  return { calls };
+}
+
+describe('완료 태스크 자동 병합(037)', () => {
+  it('설정: 실험 모드에서만 켤 수 있고, 시작 전에만 바뀐다', async () => {
+    const normal = await world({ experiment: false });
+    const refused = await http('PATCH', `/projects/${normal.projectId}/settings`, normal.rep, { autoMerge: true });
+    expect(refused.status).toBe(422);
+    expect(refused.json.error?.code).toBe('QUESTION_MODE_INVALID');
+    const ok = await http('PATCH', `/projects/${normal.projectId}/settings`, normal.rep, { questionMode: 'experiment', autoMerge: true });
+    expect(ok.status).toBe(200);
+    expect(ok.json.data).toMatchObject({ questionMode: 'experiment', autoMerge: true });
+    expect((await events('PROJECT_SETTINGS_UPDATED')).at(-1)?.payload).toMatchObject({ before: { autoMerge: false }, after: { autoMerge: true } });
+    // 자동 병합을 켠 채 기본 모드로 되돌릴 수 없다(DB CHECK와 같은 규칙).
+    expect((await http('PATCH', `/projects/${normal.projectId}/settings`, normal.rep, { questionMode: 'normal' })).status).toBe(422);
+  });
+
+  it('DONE이 되면 마지막 제출 커밋을 기본 브랜치에 합치고 결과를 한 번만 남긴다 · 실패는 다음에 다시, 충돌은 남기고 넘어간다', async () => {
+    const ctx = await actionSetup(true);
+    await pool.query(`UPDATE projects SET auto_merge = true WHERE id = $1`, [ctx.projectId]);
+    const fake = fakeMerger([new Error('GitHub 502')]);
+    await submit(ctx, true);
+    expect((await taskState(ctx.taskId)).state).toBe('DONE');
+    // 첫 시도는 실패(이벤트 없음) — 다음 신호·주기 정리에서 다시 해 합친다.
+    await sweepExperiment();
+    await settle();
+    expect(fake.calls.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(fake.calls.map((c) => `${c.taskId} ${c.commitSha} ${c.defaultBranch}`))).toEqual(new Set([`${ctx.taskId} abc1234 main`]));
+    const merged = await events('TASK_MERGED_TO_DEFAULT');
+    expect(merged.map((e) => [e.on_behalf_of, e.payload.auto, e.payload.taskId, e.payload.result, e.payload.mergeCommit])).toEqual([
+      ['system:experiment', true, ctx.taskId, 'merged', 'm'.repeat(40)],
+    ]);
+    // 이미 합친 태스크는 다시 보지 않는다.
+    const before = fake.calls.length;
+    await sweepExperiment();
+    await settle();
+    expect(fake.calls).toHaveLength(before);
+  });
+
+  it('충돌은 결과로 남기고 다시 시도하지 않는다 · autoMerge가 꺼진 실험 모드는 합치지 않는다', async () => {
+    const ctx = await actionSetup(true);
+    await pool.query(`UPDATE projects SET auto_merge = true WHERE id = $1`, [ctx.projectId]);
+    const fake = fakeMerger([{ result: 'conflict' }]);
+    await submit(ctx, true);
+    await sweepExperiment();
+    await settle();
+    expect(fake.calls).toHaveLength(1);
+    expect((await events('TASK_MERGED_TO_DEFAULT')).map((e) => [e.payload.result, e.payload.mergeCommit])).toEqual([['conflict', null]]);
+
+    await truncateAll();
+    const off = await actionSetup(true);
+    const none = fakeMerger([]);
+    await submit(off, true);
+    expect((await taskState(off.taskId)).state).toBe('DONE');
+    await sweepExperiment();
+    await settle();
+    expect(none.calls).toEqual([]);
   });
 });

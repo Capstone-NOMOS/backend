@@ -114,7 +114,7 @@ components:
             teamRole: { type: string, enum: [FRONTEND, BACKEND] }
     Project:
       type: object
-      required: [id, orgId, name, autonomyPreset, policyHash, constitutionHash, pmBudgetUsd, budgetUsd, deadline, status, startedAt, createdBy, createdAt, questionRelay, questionMode]
+      required: [id, orgId, name, autonomyPreset, policyHash, constitutionHash, pmBudgetUsd, budgetUsd, deadline, status, startedAt, createdBy, createdAt, questionRelay, questionMode, autoMerge]
       properties:
         id: { type: string, format: uuid }
         orgId: { type: string, format: uuid }
@@ -143,6 +143,12 @@ components:
           description: |
             질문 모드(033). experiment = 질문 데이터를 모으는 실험 — 기획 단계 질문 상한 없음, 질문의 라우팅이 기록된 **뒤** 첫 번째 선택지로 자동 답(answerSource auto_first_option),
             상담 실행·PM 답 초안 생략, 받은 편지함·사람 지표에서 빠짐. 질문 중계가 켜져 있어야 켤 수 있다. 시작(G1) 전에만 바꾼다
+        autoMerge:
+          type: boolean
+          description: |
+            완료 태스크를 기본 브랜치에 합치기(037, **실험 모드 전용**, 기본 꺼짐). 켜면 DONE이 된 태스크의 마지막 제출 커밋을 서버가 기본 브랜치에 합친다
+            (이벤트 `TASK_MERGED_TO_DEFAULT` — merged·already·conflict). 기능을 쌓아 큰 앱을 키우는 무인 실험용이다 — 회차를 반복하는 실험에서는 끈다(회차마다 같은 출발점이어야 한다).
+            시작(G1) 전에만 바꾼다
     RepoListItem:
       type: object
       required: [id, fullName, githubRepoId, defaultBranch, devBranch, cloneUrl, ownershipAssigned, activeProjectId, activeProjectName]
@@ -3438,8 +3444,8 @@ paths:
       tags: [프로젝트]
       summary: 프로젝트 설정 (대표 전용, 시작 전에만)
       description: |
-        질문 중계 스위치(`questionRelay`)와 질문 모드(`questionMode`, 033 — 실험 모드). **시작(G1) 뒤에는 403 `PROJECT_STARTED`** — 실행 중에 바뀌면 같은 프로젝트 안에서 결과가 섞인다.
-        실험 모드는 질문 중계가 켜져 있을 때만 켤 수 있다(422 `QUESTION_MODE_INVALID`).
+        질문 중계 스위치(`questionRelay`)·질문 모드(`questionMode`, 033 — 실험 모드)·완료 태스크 자동 병합(`autoMerge`, 037). **시작(G1) 뒤에는 403 `PROJECT_STARTED`** — 실행 중에 바뀌면 같은 프로젝트 안에서 결과가 섞인다.
+        실험 모드는 질문 중계가 켜져 있을 때만, 자동 병합은 실험 모드에서만 켤 수 있다(422 `QUESTION_MODE_INVALID`).
         바뀌면 이벤트 `PROJECT_SETTINGS_UPDATED`(before·after). 같은 값이면 그대로 돌려준다.
       security: [{ userToken: [] }]
       parameters: [{ $ref: '#/components/parameters/ProjectId' }]
@@ -3449,11 +3455,12 @@ paths:
           application/json:
             schema:
               type: object
-              description: 'questionRelay·questionMode 중 하나 이상. 실험 모드는 질문 중계가 켜져 있을 때만(아니면 422 QUESTION_MODE_INVALID)'
+              description: 'questionRelay·questionMode·autoMerge 중 하나 이상. 실험 모드는 질문 중계가 켜져 있을 때만, 자동 병합은 실험 모드에서만(아니면 422 QUESTION_MODE_INVALID)'
               additionalProperties: false
               properties:
                 questionRelay: { type: boolean }
                 questionMode: { type: string, enum: [normal, experiment] }
+                autoMerge: { type: boolean }
             example: { questionRelay: true, questionMode: experiment }
       responses:
         '200':
