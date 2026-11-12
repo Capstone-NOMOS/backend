@@ -11,15 +11,24 @@ export type ExperimentProject = {
   policyHash: string;
   // 조직 대표(실험을 켠 사람). DB 행의 사람 칸(approved_by·decided_by·requested_by)에 적는다 — 명의는 system:experiment.
   representativeUserId: string | null;
+  // 완료 태스크를 기본 브랜치에 합치는가(037).
+  autoMerge: boolean;
 };
 
 const OPEN = `p.status IN ('planning', 'active') AND p.deleted_at IS NULL AND p.question_mode = 'experiment'`;
 
 function toProject(row: QueryResultRow): ExperimentProject {
-  return { id: row.id, orgId: row.org_id, status: row.status, policyHash: row.policy_hash, representativeUserId: row.representative_user_id ?? null };
+  return {
+    id: row.id,
+    orgId: row.org_id,
+    status: row.status,
+    policyHash: row.policy_hash,
+    representativeUserId: row.representative_user_id ?? null,
+    autoMerge: row.auto_merge === true,
+  };
 }
 
-const PROJECT_COLUMNS = `p.id, p.org_id, p.status, p.policy_hash,
+const PROJECT_COLUMNS = `p.id, p.org_id, p.status, p.policy_hash, p.auto_merge,
        (SELECT u.id FROM users u WHERE u.org_id = p.org_id AND u.org_role = 'REPRESENTATIVE' ORDER BY u.created_at LIMIT 1) AS representative_user_id`;
 
 // 진행 중인 실험 모드 프로젝트 하나. 아니면 null(기본 모드·끝난 프로젝트).
@@ -174,4 +183,39 @@ export async function blockVerifyingTask(db: Queryable, taskId: string, agentId:
     [taskId, agentId],
   );
   return rowCount === 1;
+}
+
+// 기본 브랜치에 아직 합치지 않은 DONE 태스크(037) — 마지막 제출 커밋과 레포. 결과(합침·이미 있음·충돌)가 TASK_MERGED_TO_DEFAULT로 남으면 빠진다.
+// 끝난 순서(마지막 제출 시각)대로 — 앞 기능 위에 다음 기능이 합쳐지게. 선행 기준점(listPredecessorBases)과 같은 "마지막 제출" 규칙이다.
+export type UnmergedDoneTask = {
+  taskId: string;
+  title: string;
+  commitSha: string;
+  repoId: string;
+  fullName: string;
+  cloneUrl: string | null;
+  defaultBranch: string;
+};
+
+export async function listUnmergedDoneTasks(db: Queryable, projectId: string): Promise<UnmergedDoneTask[]> {
+  const { rows } = await db.query(
+    `SELECT t.id, t.title, a.commit_sha, r.id AS repo_id, r.full_name, r.clone_url, r.default_branch
+       FROM tasks t
+       JOIN repos r ON r.id = t.repo_id
+       JOIN LATERAL (SELECT commit_sha, created_at FROM artifacts WHERE task_id = t.id ORDER BY attempt DESC LIMIT 1) a ON true
+      WHERE t.project_id = $1 AND t.state = 'DONE'
+        AND NOT EXISTS (SELECT 1 FROM events e WHERE e.project_id = t.project_id AND e.type = 'TASK_MERGED_TO_DEFAULT'
+                         AND e.payload->>'taskId' = t.id::text)
+      ORDER BY a.created_at, t.id`,
+    [projectId],
+  );
+  return rows.map((r) => ({
+    taskId: r.id as string,
+    title: r.title as string,
+    commitSha: r.commit_sha as string,
+    repoId: r.repo_id as string,
+    fullName: r.full_name as string,
+    cloneUrl: (r.clone_url as string | null) ?? null,
+    defaultBranch: r.default_branch as string,
+  }));
 }

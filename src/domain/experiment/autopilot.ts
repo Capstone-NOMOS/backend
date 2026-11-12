@@ -10,6 +10,7 @@ import { onTasksChanged } from '../dispatch/tasks-changed.js';
 import { appendEvent } from '../events/append.js';
 import type { ExperimentSkippedPayload } from '../events/types.js';
 import { findPendingPlan, findTaskSplitBlockers } from '../pm/repository.js';
+import { getDefaultMerger } from '../task/default-merge.js';
 import { applyPlanAsExperiment, requestTaskSplitAsExperiment, retryPlanAsExperiment, retryRewriteWithAnswers } from '../pm/service.js';
 import type { UserContext } from '../project/visibility.js';
 import { EXPERIMENT_ACTOR } from './attribution.js';
@@ -18,6 +19,7 @@ import {
   listContractCandidates,
   listPendingActionApprovals,
   listPlanLeaves,
+  listUnmergedDoneTasks,
   needsTaskSplit,
   type ExperimentProject,
 } from './repository.js';
@@ -32,6 +34,7 @@ import {
 //   PM 초안 failed(budget 제외)                              → 같은 요청을 EXPERIMENT_PLAN_RETRIES회까지, 넘으면 EXPERIMENT_SKIPPED
 //   계약 failed                                              → 수정 요청을 EXPERIMENT_CONTRACT_RETRIES회까지, 넘으면 EXPERIMENT_SKIPPED
 //   답이 다 왔는데 다시 쓰지 못한 초안(그때 다른 초안이 작성 중)  → 다시 쓰기를 다시 시도
+//   (auto_merge 프로젝트만, 037) DONE 태스크                → 마지막 제출 커밋을 기본 브랜치에 합친다(충돌이면 남기고 넘어간다)
 //
 // "새 질문 없음"이 "다 됐다"다 — 재작성이 질문을 더 내지 않거나 회차 상한(EXPERIMENT_QUESTION_ROUNDS)에 닿아 질문을 가정으로 옮겼다.
 // 판정·검증은 각 서비스의 사람 경로와 한 벌이다(…AsExperiment가 같은 함수를 부르고, 자격 검사만 "실험 모드인가"로 바꾼다).
@@ -163,7 +166,11 @@ async function onePass(project: ExperimentProject, rep: UserContext): Promise<nu
     if (await attempt('승인', { approvalId }, () => decideAsExperiment(rep, approvalId))) acted += 1;
   }
 
-  // ④ 태스크 나누기 — 태스크 없는 확정 명세가 있고, API 기능의 계약이 전부 확정됐고, 작성 중인 계획이 없을 때
+  // ④ 완료 태스크를 기본 브랜치에 합치기(037) — 끝난 순서대로, 한 프로젝트는 한 줄로 돌아 같은 레포에 겹쳐 밀지 않는다.
+  // 합치기 전에 다음 태스크가 시작될 수 있다(그 태스크는 이 코드 없이 시작한다) — 승인 처리(③) 바로 뒤에 두어 그 틈을 줄인다.
+  if (project.autoMerge) acted += await mergeDoneTasks(project);
+
+  // ⑤ 태스크 나누기 — 태스크 없는 확정 명세가 있고, API 기능의 계약이 전부 확정됐고, 작성 중인 계획이 없을 때
   if (!(await findPendingPlan(pool, project.id)) && (await needsTaskSplit(pool, project.id))) {
     const { specCount, unapprovedContracts } = await findTaskSplitBlockers(pool, project.id);
     if (specCount > 0 && unapprovedContracts.length === 0) {
@@ -171,6 +178,42 @@ async function onePass(project: ExperimentProject, rep: UserContext): Promise<nu
     }
   }
   return acted;
+}
+
+// 합친 결과를 남긴 건수. 실패(권한·네트워크·그 사이 main이 움직임)는 세지 않는다 — 다음 신호·주기 정리에서 다시 본다.
+// 실패한 태스크 뒤의 태스크는 이번에 합치지 않는다 — 끝난 순서를 지키지 않으면 앞 기능 없이 뒤 기능만 main에 들어간다.
+async function mergeDoneTasks(project: ExperimentProject): Promise<number> {
+  let merged = 0;
+  for (const t of await listUnmergedDoneTasks(pool, project.id)) {
+    let outcome: Awaited<ReturnType<ReturnType<typeof getDefaultMerger>['merge']>>;
+    try {
+      outcome = await getDefaultMerger().merge({ ...t, orgId: project.orgId });
+    } catch (err) {
+      logger.warn('실험 모드: 완료 태스크를 기본 브랜치에 합치지 못했다 — 다음에 다시', { projectId: project.id, taskId: t.taskId, error: String(err) });
+      return merged;
+    }
+    await withTransaction((tx) =>
+      appendEvent(tx, {
+        orgId: project.orgId,
+        projectId: project.id,
+        type: 'TASK_MERGED_TO_DEFAULT',
+        onBehalfOf: EXPERIMENT_ACTOR,
+        policyHash: project.policyHash,
+        payload: {
+          auto: true,
+          taskId: t.taskId,
+          repoId: t.repoId,
+          commitSha: t.commitSha,
+          defaultBranch: t.defaultBranch,
+          result: outcome.result,
+          mergeCommit: outcome.result === 'merged' ? outcome.mergeCommit : null,
+        },
+      }),
+    );
+    if (outcome.result === 'conflict') logger.warn('실험 모드: 완료 태스크가 기본 브랜치와 충돌해 합치지 않았다', { projectId: project.id, taskId: t.taskId });
+    merged += 1;
+  }
+  return merged;
 }
 
 // 자동으로 다시 시켜도 끝내지 못한 흐름을 포기한다(한 번만 — 이벤트가 있으면 조회에서 빠진다).

@@ -25,6 +25,7 @@ import { ALLOWED_BASH_PREFIXES, buildMcpConfig } from '../bridge/claude-args.js'
 import { prepareDependencies } from './setup.js';
 import {
   credentialsPath,
+  nomosHome,
   readCredentials,
   updateAccessToken,
   writeCredentials,
@@ -38,6 +39,7 @@ import { deviceLogin } from './device-login.js';
 import { cliVersion, mcpServerPath } from './paths.js';
 import { checkTools } from './preflight.js';
 import { handleNextPmJob } from './pm-worker.js';
+import { experimentCli } from './experiment-command.js';
 import { acquireHomeLock } from './home-lock.js';
 import { buildTaskPrompt } from './prompt.js';
 import { DEFAULT_IDLE_MS, runClaude } from './runner.js';
@@ -741,6 +743,8 @@ async function main(): Promise<void> {
     return;
   }
   if (command === 'pm-worker') return pmWorker();
+  // 무인 실험 감독 — 대표 계정으로 서버 API만 부른다. 에이전트가 아니라 폴더 잠금(home-lock)을 잡지 않는다(에이전트와 같은 NOMOS_HOME에서 돌아도 된다).
+  if (command === 'experiment') return experimentCli(process.argv.slice(3), { command: 'nomos experiment', runsDir: path.join(nomosHome(), 'experiment-runs') });
   if (command === 'clean') {
     const { pruned, removed } = cleanWorkspaces();
     log(`worktree prune: ${pruned.join(', ') || '없음'} / 삭제: ${removed ?? '없음'}`);
@@ -755,6 +759,7 @@ async function main(): Promise<void> {
       '  login [주소] [--name 이름] [--connect-key]   로그인만',
       '  refresh | once | start | clean | --version',
       '  pm-worker                                    (대표 전용, 서버가 PM_PROVIDER=relay일 때) PM 모델 호출을 이 노트북의 Claude Code로',
+      '  experiment --project <id> --login <대표> --requirements <파일> [--until 24]   (대표 전용) 실험 모드 프로젝트 무인 감독 — 인자 없이 실행하면 사용법',
       '',
     ].join('\n'),
   );

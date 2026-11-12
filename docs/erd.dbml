@@ -203,6 +203,7 @@ Table projects {
   created_at        timestamptz     [not null, default: `now()`]
   deleted_at        timestamptz     [note: '★ 029: 삭제(대표). 목록·상세·하위 API에서 없는 것으로 본다. 행은 지우지 않는다']
   question_mode     text            [not null, default: 'normal', note: '★ 033: normal | experiment(질문 상한 없음·라우팅 기록 뒤 첫 선택지 자동 답·상담/PM 답 초안 생략). 시작 전에만 바꾼다']
+  auto_merge        boolean         [not null, default: false, note: '★ 037: 실험 모드 전용 — DONE 태스크의 마지막 제출 커밋을 기본 브랜치에 합친다(TASK_MERGED_TO_DEFAULT). 시작 전에만 바꾼다']
 
   Note: '''
   status='halted'면 권한 검증 0단계에서 모든 도구 호출 거부
@@ -210,6 +211,7 @@ Table projects {
   CHECK (status <> 'halted' OR halt_reason IS NOT NULL)
   CHECK projects_deleted_closed_chk (deleted_at IS NULL OR status IN ('completed', 'aborted')) — 029: 진행 중이면 같은 트랜잭션에서 먼저 중단한다
   CHECK projects_question_mode_chk (question_mode IN ('normal','experiment') AND (question_mode = 'normal' OR question_relay)) — 033: 실험 모드는 질문 중계가 켜져 있을 때만
+  CHECK projects_auto_merge_chk (NOT auto_merge OR question_mode = 'experiment') — 037: 완료 태스크 자동 병합은 실험 모드에서만
   '''
 }
 

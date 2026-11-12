@@ -203,6 +203,15 @@ npm run experiment:run -- --project <id> --login <대표> --requirements scripts
 npm run experiment:run -- --project <id> --login <대표> --requirements <요구사항 1개 파일> --repeat 1
 # 3) 본 실행 — 시범이 끝까지 돌면(멈춤 없이 "다 돌았다") 요구사항·회차를 늘린다. 끊기면 출력된 --run으로 다시 실행하면 이어 간다
 npm run experiment:run -- --project <id> --login <대표> --requirements <파일> --repeat 3
+# 3') 하루짜리 무인 실행 — 24시간 동안 요구사항을 한 바퀴씩, 바퀴마다 회차를 --repeat만큼 늘려 돈다(마감은 상태 파일에 남아 이어 가도 늘지 않는다).
+#     --until은 --keep-going을 켠다: 위 표의 고장으로 멈춰도 알린 뒤 --retry-wait(5분) 기다렸다가 이어 간다 — 사람이 고치면 저절로 이어진다.
+#     사람 토큰(24시간)이 만료되면 같은 비밀번호로 다시 로그인한다(NOMOS_PASSWORD 또는 입력 — NOMOS_TOKEN만 주면 만료 때 멈춘다). GET은 일시 오류를 다시 시도한다.
+npm run experiment:run -- --project <id> --login <대표> --requirements <파일> --repeat 1 --until 24 --run <이름>
+#     서버 레포가 없는 PC에서는 CLI로 같은 감독을 돌린다(상태 파일은 <NOMOS_HOME>/experiment-runs/ — 레포에서 돌던 실행을 옮기려면 그 파일을 복사):
+npx @capstone-nomos/cli@latest experiment --project <id> --login <대표> --requirements <파일> --repeat 1 --until 24 --run <이름>
+# 3'') 하나의 큰 앱을 키우는 실행(쌓기 모드) — 요구사항마다 한 번씩 차례로, 끝난 태스크는 서버가 main에 합친다(037).
+#      시작 전에 PATCH /projects/:id/settings { "questionMode": "experiment", "autoMerge": true } — autoMerge가 꺼져 있으면 감독이 시작하지 않는다. 레포는 새 빈 레포를 쓴다.
+npx @capstone-nomos/cli@latest experiment --project <id> --login <대표> --requirements scripts/examples/experiment-requirements-study-platform.json --build --until 12
 # 4) 보고 → 데이터셋 내보내기 → 정답 라벨(POST /questions/:id/gold) → 오프라인 평가(4절)
 npm run experiment:run -- --project <id> --login <대표> --report --run <이름>
 ```

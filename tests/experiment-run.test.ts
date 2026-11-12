@@ -13,11 +13,12 @@ import {
   requirementsSchema,
   roundTitle,
   Supervisor,
+  superviseWithRetry,
   type RunState,
   type StateStore,
   type SupervisorOptions,
 } from '../scripts/lib/experiment-run.js';
-import type { HttpMethod, NomosApi } from '../scripts/lib/nomos-http.js';
+import { NomosHttp, NomosHttpError, type HttpMethod, type NomosApi } from '../scripts/lib/nomos-http.js';
 
 // 무인 실험 감독(scripts/experiment-run.ts) — 가짜 서버 응답으로 흐름·이어 돌리기·태스크 정리·고장 감지를 본다.
 // 서버 쪽 자동 통과(초안 적용·계약 확정·승인)는 tests/experiment-autopilot.test.ts가 실제 서버로 본다 — 여기서는 그 결과 모양만 흉내 낸다.
@@ -25,9 +26,16 @@ import type { HttpMethod, NomosApi } from '../scripts/lib/nomos-http.js';
 type Task = { id: string; title: string; state: string; blockedReason: string | null; teamRole: string | null; kind: string; repoId: string; specId: string | null };
 
 // 감독이 부르는 API만 흉내 낸다. 상태는 테스트가 onPoll로 바꾼다(에이전트가 일하는 것처럼).
-function fakeServer(options: { questionMode?: string; projectStatus?: string; repoOwners?: string[]; memberRoles?: string[] } = {}) {
+function fakeServer(options: { questionMode?: string; projectStatus?: string; repoOwners?: string[]; memberRoles?: string[]; autoMerge?: boolean } = {}) {
   const s = {
-    project: { id: 'p1', name: '스터디', status: options.projectStatus ?? 'planning', questionRelay: true, questionMode: options.questionMode ?? 'experiment' },
+    project: {
+      id: 'p1',
+      name: '스터디',
+      status: options.projectStatus ?? 'planning',
+      questionRelay: true,
+      questionMode: options.questionMode ?? 'experiment',
+      autoMerge: options.autoMerge ?? false,
+    },
     plans: [] as Record<string, unknown>[],
     tasks: [] as Task[],
     contracts: [] as { featureKey: string; status: string; experimentRetries: number }[],
@@ -353,6 +361,144 @@ describe('고장 감지 — 멈추고 사람이 할 일을 알린다', () => {
 const servers: Server[] = [];
 afterEach(async () => {
   for (const s of servers.splice(0)) await new Promise<void>((resolve) => s.close(() => resolve()));
+});
+
+describe('24시간 무인 — --until·--keep-going·로그인 만료', () => {
+  it('--until: 마감 전이면 바퀴마다 회차를 repeat만큼 늘리고(r3, r4 …), 마감이 지나면 새 회차를 시작하지 않는다', async () => {
+    const { s, api } = fakeServer();
+    const store = memoryStore();
+    // 가짜 서버는 읽자마자 태스크를 끝내 시계가 가지 않는다 — 시각을 읽을 때마다 1초 흐르게 한다(회차 하나가 몇 초).
+    const lines: string[] = [];
+    let now = 0;
+    const io = { log: (l = '') => void lines.push(l), sleep: async (ms: number) => void (now += ms), now: () => (now += 1000) };
+    await new Supervisor(api, opts({ untilMs: 60_000 }), store, io).run();
+    const rounds = Object.keys(store.state!.requirements.list!.rounds).map(Number);
+    expect(Math.max(...rounds)).toBeGreaterThan(2);
+    expect(s.tasks.some((t) => t.title === roundTitle('F-1 API', 'e1', 3))).toBe(true);
+    expect(posts(s.calls).filter((p) => p === '/projects/p1/pm/features')).toHaveLength(1); // 기능 명세는 한 번만
+    expect(lines).toContain('마감이 지났다 — 새 회차를 시작하지 않는다');
+    expect(s.tasks.every((t) => t.state === 'DONE')).toBe(true);
+
+    // 같은 --run으로 다시 띄워도 마감이 늘지 않는다(상태 파일의 untilAt) — 이미 지났으니 새 회차 없이 끝난다.
+    const untilAt = store.state!.untilAt;
+    const before = s.tasks.length;
+    await new Supervisor(api, opts({ untilMs: 60_000 }), store, io).run();
+    expect(store.state!.untilAt).toBe(untilAt);
+    expect(s.tasks).toHaveLength(before);
+  });
+
+  it('--keep-going: 멈춰도 알리고 기다렸다가 상태 파일로 이어 가 끝까지 간다 — 같은 알림은 한 번만', async () => {
+    const { s, api } = fakeServer();
+    const store = memoryStore();
+    const { io, lines } = clockIo();
+    // r2 도중 BE 노트북이 꺼졌다가, 감독이 기다리는 사이 다시 켜진다.
+    let offlineChecks = 0;
+    s.onPoll = () => {
+      if (s.tasks.length > 2 && offlineChecks < 40) {
+        s.rooms[1]!.agent.online = false;
+        offlineChecks += 1;
+        return;
+      }
+      s.rooms[1]!.agent.online = true;
+      for (const t of s.tasks) if (t.state === 'READY' && s.project.status === 'active') t.state = 'DONE';
+    };
+    const notified: string[] = [];
+    const state = await superviseWithRetry(() => new Supervisor(api, opts({ offlineMs: 5_000 }), store, io), io, {
+      retryWaitMs: 60_000,
+      notify: async (m) => void notified.push(m),
+    });
+    expect(state.requirements.list!.status).toBe('done');
+    expect(lines.some((l) => l.startsWith('! 멈춤(1번째): BACKEND 에이전트가'))).toBe(true);
+    expect(notified.length).toBeGreaterThanOrEqual(1);
+    expect(new Set(notified).size).toBe(notified.length);
+    expect(s.tasks).toHaveLength(4); // 이어 가며 같은 회차 태스크를 다시 만들지 않는다
+  });
+
+  it('--keep-going도 기다려서 풀리지 않는 설정 문제(실험 모드 아님)는 바로 끝낸다', async () => {
+    const { api } = fakeServer({ questionMode: 'normal' });
+    const { io } = clockIo();
+    const err = await superviseWithRetry(() => new Supervisor(api, opts(), memoryStore(), io), io, { retryWaitMs: 60_000, notify: async () => undefined }).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(HaltError);
+    expect((err as HaltError).permanent).toBe(true);
+  });
+
+  it('HTTP: 401이면 다시 로그인해 1회 재시도, GET은 503·끊김을 다시 시도, POST는 다시 보내지 않는다', async () => {
+    let token = 'old';
+    let logins = 0;
+    let flaky = 2;
+    let posted = 0;
+    const server: Server = createServer((req, res) => {
+      const send = (status: number, body: unknown) => {
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(body));
+      };
+      if (req.url === '/api/auth/login') {
+        logins += 1;
+        token = `t${logins}`;
+        return send(200, { data: { accessToken: token } });
+      }
+      if (req.headers.authorization !== `Bearer ${token}`) return send(401, { error: { code: 'UNAUTHENTICATED', message: 'expired' } });
+      if (req.url === '/api/flaky' && flaky-- > 0) return send(503, { error: { code: 'X', message: 'deploying' } });
+      if (req.method === 'POST') {
+        posted += 1;
+        return send(503, { error: { code: 'X', message: 'deploying' } });
+      }
+      return send(200, { data: { ok: true } });
+    });
+    await new Promise<void>((r) => server.listen(0, r));
+    try {
+      const http = new NomosHttp(`http://127.0.0.1:${(server.address() as AddressInfo).port}`, 'stale', [1, 1, 1]);
+      http.setRelogin(async () => http.setToken((await http.call<{ accessToken: string }>('POST', '/auth/login', {})).accessToken));
+      expect(await http.call('GET', '/me')).toEqual({ ok: true }); // 401 → 다시 로그인 → 성공
+      expect(logins).toBe(1);
+      expect(await http.call('GET', '/flaky')).toEqual({ ok: true }); // 503 두 번 뒤 성공
+      await expect(http.call('POST', '/tasks', {})).rejects.toBeInstanceOf(NomosHttpError);
+      expect(posted).toBe(1);
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+});
+
+describe('쌓기 모드(--build) — 하나의 앱에 기능을 쌓는다', () => {
+  const TWO = requirementsSchema.parse([
+    { key: 'members', instruction: '회원 가입' },
+    { key: 'studies', instruction: '스터디 개설', repeat: 3 },
+  ]);
+
+  it('요구사항마다 한 번씩(r1만) 차례로 — --repeat·요구사항의 repeat는 쓰지 않는다', async () => {
+    const { s, api } = fakeServer({ autoMerge: true });
+    const store = memoryStore();
+    const { io, lines } = clockIo();
+    await new Supervisor(api, opts({ requirements: TWO, repeat: 2, build: true }), store, io).run();
+    expect(posts(s.calls).filter((p) => p === '/projects/p1/pm/features')).toHaveLength(2);
+    expect(posts(s.calls).filter((p) => p === '/projects/p1/tasks')).toEqual([]); // r2~ 복제를 만들지 않는다
+    expect(s.tasks).toHaveLength(4); // 요구사항 둘 × PM이 나눈 태스크 둘
+    expect(s.tasks.every((t) => parseRoundTitle(t.title) === null && t.state === 'DONE')).toBe(true);
+    expect(Object.keys(store.state!.requirements.studies!.rounds)).toEqual(['1']);
+    expect(lines).toContain('요구사항을 다 돌았다');
+  });
+
+  it('마감(--until)이 지나면 새 요구사항을 시작하지 않는다', async () => {
+    const { s, api } = fakeServer({ autoMerge: true });
+    const lines: string[] = [];
+    let now = 0;
+    const io = { log: (l = '') => void lines.push(l), sleep: async (ms: number) => void (now += ms), now: () => (now += 1000) };
+    await new Supervisor(api, opts({ requirements: TWO, build: true, untilMs: 3_000 }), memoryStore(), io).run();
+    expect(posts(s.calls).filter((p) => p === '/projects/p1/pm/features')).toHaveLength(1);
+    expect(lines).toContain('마감이 지났다 — 새 요구사항을 시작하지 않는다');
+  });
+
+  it('자동 병합(autoMerge)이 꺼진 프로젝트에서는 시작하지 않는다 — 기다려도 풀리지 않는 설정 문제', async () => {
+    const { s, api } = fakeServer({ autoMerge: false });
+    const err = await new Supervisor(api, opts({ build: true }), memoryStore(), clockIo().io).run().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(HaltError);
+    expect((err as HaltError).permanent).toBe(true);
+    expect((err as Error).message).toContain('autoMerge: true');
+    expect(posts(s.calls)).toEqual([]);
+  });
 });
 
 describe('보고(--report)', () => {

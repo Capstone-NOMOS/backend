@@ -396,7 +396,7 @@ describe('질문 중계 스위치 — 기본 켜짐, 끌 수 있게', () => {
     expect(off.status).toBe(200);
     expect((off.json.data as unknown as { questionRelay: boolean }).questionRelay).toBe(false);
     const { rows } = await pool.query(`SELECT on_behalf_of, payload FROM events WHERE type = 'PROJECT_SETTINGS_UPDATED'`);
-    expect(rows).toEqual([{ on_behalf_of: rep.userId, payload: { before: { questionRelay: true, questionMode: 'normal' }, after: { questionRelay: false, questionMode: 'normal' } } }]);
+    expect(rows).toEqual([{ on_behalf_of: rep.userId, payload: { before: { questionRelay: true, questionMode: 'normal', autoMerge: false }, after: { questionRelay: false, questionMode: 'normal', autoMerge: false } } }]);
 
     const w = await world(); // 시작한 프로젝트
     expect((await http('PATCH', `/projects/${w.projectId}/settings`, (await w.rep.token()), { questionRelay: false })).json.error?.code).toBe('PROJECT_STARTED');

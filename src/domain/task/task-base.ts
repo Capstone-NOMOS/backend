@@ -47,35 +47,41 @@ export type BaseBuilder = {
   build(input: BaseBuildInput): Promise<BaseBuildResult>;
 };
 
-const SHA40 = /^[0-9a-f]{40}$/;
+export const SHA40 = /^[0-9a-f]{40}$/;
 const message = (p: PredecessorBase) => `nomos: 선행 태스크 합침 — ${p.title.slice(0, 120)}`;
 
 // ── github ────────────────────────────────────────────────────────────────
 
-type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
+export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
+export type GithubRepoCall = (method: string, path: string, body?: unknown) => Promise<Response>;
 
-export function githubBaseBuilder(options: { fetchImpl?: FetchLike; apiBase?: string } = {}): BaseBuilder {
+// 대표의 GitHub 토큰으로 /repos/{fullName}{path}를 부르는 함수 — 시작 기준점(036)과 기본 브랜치 병합(037, default-merge.ts)이 같이 쓴다.
+export async function githubRepoCall(orgId: string, fullName: string, options: { fetchImpl?: FetchLike; apiBase?: string } = {}): Promise<GithubRepoCall> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const api = options.apiBase ?? 'https://api.github.com';
+  const sealed = await findRepresentativeGithubToken(pool, orgId);
+  if (sealed === null) throw new Error('GitHub 미연결 — 대표가 GitHub 계정을 연결하지 않았다');
+  const token = await decryptSecret(sealed);
+  return async (method, path, body) =>
+    fetchImpl(`${api}/repos/${fullName.split('/').map(encodeURIComponent).join('/')}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        'User-Agent': 'nomos-server',
+        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      signal: AbortSignal.timeout(15_000),
+    });
+}
+
+export function githubBaseBuilder(options: { fetchImpl?: FetchLike; apiBase?: string } = {}): BaseBuilder {
   return {
     kind: 'github',
     async build(input) {
-      const sealed = await findRepresentativeGithubToken(pool, input.orgId);
-      if (sealed === null) throw new Error('GitHub 미연결 — 대표가 GitHub 계정을 연결하지 않았다');
-      const token = await decryptSecret(sealed);
-      const call = async (method: string, path: string, body?: unknown): Promise<Response> =>
-        fetchImpl(`${api}/repos/${input.fullName.split('/').map(encodeURIComponent).join('/')}${path}`, {
-          method,
-          headers: {
-            Authorization: `Bearer ${token}`,
-            Accept: 'application/vnd.github+json',
-            'X-GitHub-Api-Version': '2022-11-28',
-            'User-Agent': 'nomos-server',
-            ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
-          },
-          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-          signal: AbortSignal.timeout(15_000),
-        });
+      const call = await githubRepoCall(input.orgId, input.fullName, options);
       const branch = taskBaseBranch(input.taskId);
 
       const head = await call('GET', `/git/ref/heads/${input.defaultBranch.split('/').map(encodeURIComponent).join('/')}`);
@@ -107,7 +113,7 @@ export function githubBaseBuilder(options: { fetchImpl?: FetchLike; apiBase?: st
 
 // ── mirror(로컬 개발) ─────────────────────────────────────────────────────
 
-const IDENTITY = { GIT_AUTHOR_NAME: 'nomos', GIT_AUTHOR_EMAIL: 'nomos@localhost', GIT_COMMITTER_NAME: 'nomos', GIT_COMMITTER_EMAIL: 'nomos@localhost' };
+export const IDENTITY = { GIT_AUTHOR_NAME: 'nomos', GIT_AUTHOR_EMAIL: 'nomos@localhost', GIT_COMMITTER_NAME: 'nomos', GIT_COMMITTER_EMAIL: 'nomos@localhost' };
 
 export function mirrorBaseBuilder(root: string = mirrorRoot()): BaseBuilder {
   return {
