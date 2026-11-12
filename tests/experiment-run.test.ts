@@ -26,9 +26,16 @@ import { NomosHttp, NomosHttpError, type HttpMethod, type NomosApi } from '../sc
 type Task = { id: string; title: string; state: string; blockedReason: string | null; teamRole: string | null; kind: string; repoId: string; specId: string | null };
 
 // 감독이 부르는 API만 흉내 낸다. 상태는 테스트가 onPoll로 바꾼다(에이전트가 일하는 것처럼).
-function fakeServer(options: { questionMode?: string; projectStatus?: string; repoOwners?: string[]; memberRoles?: string[] } = {}) {
+function fakeServer(options: { questionMode?: string; projectStatus?: string; repoOwners?: string[]; memberRoles?: string[]; autoMerge?: boolean } = {}) {
   const s = {
-    project: { id: 'p1', name: '스터디', status: options.projectStatus ?? 'planning', questionRelay: true, questionMode: options.questionMode ?? 'experiment' },
+    project: {
+      id: 'p1',
+      name: '스터디',
+      status: options.projectStatus ?? 'planning',
+      questionRelay: true,
+      questionMode: options.questionMode ?? 'experiment',
+      autoMerge: options.autoMerge ?? false,
+    },
     plans: [] as Record<string, unknown>[],
     tasks: [] as Task[],
     contracts: [] as { featureKey: string; status: string; experimentRetries: number }[],
@@ -452,6 +459,45 @@ describe('24시간 무인 — --until·--keep-going·로그인 만료', () => {
     } finally {
       await new Promise<void>((r) => server.close(() => r()));
     }
+  });
+});
+
+describe('쌓기 모드(--build) — 하나의 앱에 기능을 쌓는다', () => {
+  const TWO = requirementsSchema.parse([
+    { key: 'members', instruction: '회원 가입' },
+    { key: 'studies', instruction: '스터디 개설', repeat: 3 },
+  ]);
+
+  it('요구사항마다 한 번씩(r1만) 차례로 — --repeat·요구사항의 repeat는 쓰지 않는다', async () => {
+    const { s, api } = fakeServer({ autoMerge: true });
+    const store = memoryStore();
+    const { io, lines } = clockIo();
+    await new Supervisor(api, opts({ requirements: TWO, repeat: 2, build: true }), store, io).run();
+    expect(posts(s.calls).filter((p) => p === '/projects/p1/pm/features')).toHaveLength(2);
+    expect(posts(s.calls).filter((p) => p === '/projects/p1/tasks')).toEqual([]); // r2~ 복제를 만들지 않는다
+    expect(s.tasks).toHaveLength(4); // 요구사항 둘 × PM이 나눈 태스크 둘
+    expect(s.tasks.every((t) => parseRoundTitle(t.title) === null && t.state === 'DONE')).toBe(true);
+    expect(Object.keys(store.state!.requirements.studies!.rounds)).toEqual(['1']);
+    expect(lines).toContain('요구사항을 다 돌았다');
+  });
+
+  it('마감(--until)이 지나면 새 요구사항을 시작하지 않는다', async () => {
+    const { s, api } = fakeServer({ autoMerge: true });
+    const lines: string[] = [];
+    let now = 0;
+    const io = { log: (l = '') => void lines.push(l), sleep: async (ms: number) => void (now += ms), now: () => (now += 1000) };
+    await new Supervisor(api, opts({ requirements: TWO, build: true, untilMs: 3_000 }), memoryStore(), io).run();
+    expect(posts(s.calls).filter((p) => p === '/projects/p1/pm/features')).toHaveLength(1);
+    expect(lines).toContain('마감이 지났다 — 새 요구사항을 시작하지 않는다');
+  });
+
+  it('자동 병합(autoMerge)이 꺼진 프로젝트에서는 시작하지 않는다 — 기다려도 풀리지 않는 설정 문제', async () => {
+    const { s, api } = fakeServer({ autoMerge: false });
+    const err = await new Supervisor(api, opts({ build: true }), memoryStore(), clockIo().io).run().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(HaltError);
+    expect((err as HaltError).permanent).toBe(true);
+    expect((err as Error).message).toContain('autoMerge: true');
+    expect(posts(s.calls)).toEqual([]);
   });
 });
 

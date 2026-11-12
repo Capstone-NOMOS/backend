@@ -120,13 +120,15 @@ projectsRouter.delete(
   },
 );
 
-// 둘 중 하나 이상. 실험 모드는 질문 중계가 켜져 있을 때만(서비스가 422로 막는다).
+// 하나 이상. 실험 모드는 질문 중계가 켜져 있을 때만, 자동 병합은 실험 모드에서만(서비스가 422로 막는다).
 const settingsBodySchema = z
-  .object({ questionRelay: z.boolean().optional(), questionMode: z.enum(['normal', 'experiment']).optional() })
+  .object({ questionRelay: z.boolean().optional(), questionMode: z.enum(['normal', 'experiment']).optional(), autoMerge: z.boolean().optional() })
   .strict()
-  .refine((b) => b.questionRelay !== undefined || b.questionMode !== undefined, { message: 'questionRelay 또는 questionMode가 필요하다' });
+  .refine((b) => b.questionRelay !== undefined || b.questionMode !== undefined || b.autoMerge !== undefined, {
+    message: 'questionRelay·questionMode·autoMerge 중 하나가 필요하다',
+  });
 
-// PATCH /api/projects/:projectId/settings — 프로젝트 설정(대표 전용, 시작 전에만). 질문 중계 스위치·질문 모드(033).
+// PATCH /api/projects/:projectId/settings — 프로젝트 설정(대표 전용, 시작 전에만). 질문 중계 스위치·질문 모드(033)·완료 태스크 자동 병합(037).
 projectsRouter.patch(
   '/projects/:projectId/settings',
   validate({ params: projectIdParamsSchema, body: settingsBodySchema }),

@@ -56,6 +56,7 @@ export type EventType =
   | 'TASK_COMPLETED_MANUALLY'
   | 'PROJECT_SETTINGS_UPDATED'
   | 'EXPERIMENT_SKIPPED'
+  | 'TASK_MERGED_TO_DEFAULT'
   | 'RELEASE_REQUESTED'
   | 'RELEASE_DECIDED'
   | 'ACTION_DETECTED'
@@ -370,8 +371,8 @@ export type ProjectCreatedPayload = {
 // 시작 전 프로젝트 설정 변경 — 지금은 질문 중계 스위치뿐. 대조군 실험의 근거라 바뀐 사실을 남긴다.
 // 033: questionMode(normal·experiment)를 함께 남긴다. 옛 이벤트에는 없다(= normal).
 export type ProjectSettingsUpdatedPayload = {
-  before: { questionRelay: boolean; questionMode?: 'normal' | 'experiment' };
-  after: { questionRelay: boolean; questionMode?: 'normal' | 'experiment' };
+  before: { questionRelay: boolean; questionMode?: 'normal' | 'experiment'; autoMerge?: boolean };
+  after: { questionRelay: boolean; questionMode?: 'normal' | 'experiment'; autoMerge?: boolean };
 };
 
 // G1 — 이 시점의 멤버·태스크 수·승인한 계획을 남긴다. 이후 지표("이 구성으로 시작해서 어땠나")의 기준점이다.
@@ -677,6 +678,16 @@ export type ExperimentSkippedPayload = {
   reason: string;
   retries: number;
 };
+// 완료 태스크를 기본 브랜치에 합친 결과(037, 실험 모드 + auto_merge). 충돌이면 합치지 않고 남긴다(다시 시도하지 않는다 — 다음 태스크는 그 코드 없이 시작한다).
+// 지표: 충돌률 — 병렬로 같은 파일을 고친 태스크가 얼마나 겹치나.
+export type TaskMergedToDefaultPayload = {
+  taskId: string;
+  repoId: string;
+  commitSha: string;
+  defaultBranch: string;
+  result: 'merged' | 'already' | 'conflict';
+  mergeCommit: string | null;
+};
 export type PmPlanFailedPayload = { planId: string; reason: string };
 // 대표가 초안을 버렸다. 사유는 선택이다. 지표: PM 초안이 얼마나 반려되나(수정 요청과 구분된다).
 export type PlanRejectedPayload = {
@@ -752,6 +763,7 @@ export type EventPayloadMap = {
   TASK_COMPLETED_MANUALLY: TaskCompletedManuallyPayload;
   PROJECT_SETTINGS_UPDATED: ProjectSettingsUpdatedPayload;
   EXPERIMENT_SKIPPED: ExperimentSkippedPayload;
+  TASK_MERGED_TO_DEFAULT: TaskMergedToDefaultPayload;
   RELEASE_REQUESTED: ReleaseRequestedPayload;
   RELEASE_DECIDED: ReleaseDecidedPayload;
   ACTION_DETECTED: ActionDetectedPayload;

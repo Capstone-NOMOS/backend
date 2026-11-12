@@ -22,6 +22,8 @@ export type Project = {
   questionRelay: boolean;
   // 질문 모드(033) — normal | experiment(질문 상한 없음·라우팅 기록 뒤 첫 선택지로 자동 답·상담/PM 답 초안 생략). 시작 전에만 바꾼다.
   questionMode: QuestionMode;
+  // 완료 태스크를 기본 브랜치에 합치기(037) — 실험 모드 전용, 시작 전에만 바꾼다. 기능을 쌓아 큰 앱을 키우는 실험용(회차 반복 실험에서는 끈다).
+  autoMerge: boolean;
 };
 
 export type QuestionMode = 'normal' | 'experiment';
@@ -56,6 +58,7 @@ function toProject(row: QueryResultRow): Project {
     createdAt: row.created_at,
     questionRelay: row.question_relay !== false,
     questionMode: row.question_mode === 'experiment' ? 'experiment' : 'normal',
+    autoMerge: row.auto_merge === true,
   };
 }
 
@@ -484,12 +487,18 @@ export async function updateQuestionRelay(db: Queryable, projectId: string, enab
   return toProject(rows[0]!);
 }
 
-// 질문 설정(018 질문 중계 · 033 질문 모드)을 함께 바꾼다 — 둘은 묶여 있다(실험 모드는 중계가 켜져 있을 때만, DB CHECK).
-export async function updateQuestionSettings(db: Queryable, projectId: string, input: { questionRelay: boolean; questionMode: QuestionMode }): Promise<Project> {
-  const { rows } = await db.query(`UPDATE projects SET question_relay = $2, question_mode = $3 WHERE id = $1 RETURNING *`, [
+// 프로젝트 설정(018 질문 중계 · 033 질문 모드 · 037 자동 병합)을 함께 바꾼다 — 서로 묶여 있다(실험 모드는 중계가 켜져 있을 때만,
+// 자동 병합은 실험 모드에서만 — DB CHECK).
+export async function updateProjectSettingsRow(
+  db: Queryable,
+  projectId: string,
+  input: { questionRelay: boolean; questionMode: QuestionMode; autoMerge: boolean },
+): Promise<Project> {
+  const { rows } = await db.query(`UPDATE projects SET question_relay = $2, question_mode = $3, auto_merge = $4 WHERE id = $1 RETURNING *`, [
     projectId,
     input.questionRelay,
     input.questionMode,
+    input.autoMerge,
   ]);
   return toProject(rows[0]!);
 }

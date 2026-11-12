@@ -209,6 +209,9 @@ npm run experiment:run -- --project <id> --login <대표> --requirements <파일
 npm run experiment:run -- --project <id> --login <대표> --requirements <파일> --repeat 1 --until 24 --run <이름>
 #     서버 레포가 없는 PC에서는 CLI로 같은 감독을 돌린다(상태 파일은 <NOMOS_HOME>/experiment-runs/ — 레포에서 돌던 실행을 옮기려면 그 파일을 복사):
 npx @capstone-nomos/cli@latest experiment --project <id> --login <대표> --requirements <파일> --repeat 1 --until 24 --run <이름>
+# 3'') 하나의 큰 앱을 키우는 실행(쌓기 모드) — 요구사항마다 한 번씩 차례로, 끝난 태스크는 서버가 main에 합친다(037).
+#      시작 전에 PATCH /projects/:id/settings { "questionMode": "experiment", "autoMerge": true } — autoMerge가 꺼져 있으면 감독이 시작하지 않는다. 레포는 새 빈 레포를 쓴다.
+npx @capstone-nomos/cli@latest experiment --project <id> --login <대표> --requirements scripts/examples/experiment-requirements-study-platform.json --build --until 12
 # 4) 보고 → 데이터셋 내보내기 → 정답 라벨(POST /questions/:id/gold) → 오프라인 평가(4절)
 npm run experiment:run -- --project <id> --login <대표> --report --run <이름>
 ```

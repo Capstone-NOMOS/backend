@@ -307,7 +307,8 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
 - **파일 위치는 `import.meta.url` 기준이다**(`executor/paths.ts`). 패키지는 아무 폴더에서나 실행되므로 `path.resolve('dist/...')`처럼 cwd 기준으로 찾지 말 것 —
   MCP 서버 경로가 실제로 그렇게 backend 폴더에서만 맞았다. 설치·실행은 `npm run check:cli-package`가 pack한 패키지를 다른 폴더에서 돌려 확인한다(배포 워크플로가 publish 전에 돈다).
 - `connect`: 자격 증명이 없거나 다른 서버 것이거나 재발급이 4xx면 브라우저 승인 로그인 → 배정 전이면 15초마다 **재발급 후** `/agents/me`로 확인
-  (배정 전 토큰에는 `project_id`가 없다) → `start`. `--server` 기본값은 운영 주소(`connect.ts`의 `DEFAULT_SERVER`). 시작 전에 `git`·`claude`를 확인한다.
+  (배정 전 토큰에는 `project_id`가 없다) → `start`. `--server` 기본값은 운영 주소(`connect.ts`의 `DEFAULT_SERVER`). 시작 전에 `git`·`claude`와 **git `user.name`·`user.email`**을 확인한다
+  (`preflight.ts`, 레포 밖에서 읽는다) — 모델은 `git config`가 막혀 있어, 없으면 코드를 다 쓰고도 "Author identity unknown"으로 커밋하지 못해 제출 없이 멈췄다(새 PC 운영 실험).
 - **태스크의 레포는 CLI가 받는다**(`executor/repo-checkout.ts`): `~/.nomos/repos/<조직>/<레포>`에 브리핑의 `repo.cloneUrl`(NULL이면 `github.com/{fullName}`)로 클론하고,
   태스크마다 fetch해 `origin/<기본 브랜치>`에서 분기한다. `repos.json`에 적힌 경로가 있으면 그게 우선이다(fetch하지 않음, 시드·기존 클론용).
   서버가 준 주소라도 노트북에서 한 번 더 거른다(https·로컬 경로만, `-` 시작·`::`·자격 증명 거부, `git clone --`). git 비밀값은 서버가 주지 않는다 — 사용자의 git 자격 증명을 쓴다.
@@ -704,6 +705,12 @@ FE의 "받은 편지함"은 두 칸이다(대표 결정 2026-10-29). **둘 다 �
       `EXPERIMENT_VERIFYING_TIMEOUT_MS` 넘게 VERIFYING인 태스크를 BLOCKED(AGENT_STOPPED, cause `verification_timeout`) — 45분 감시는 CLAIMED·IN_PROGRESS만 봐서 VERIFYING이 영원히 남았다 —,
       놓친 신호를 메우는 자동 진행. 쿼리가 전부 question_mode로 거른다.
     - 켤 때 PM 예산이 요구사항 하나의 최대 어림보다 작으면 응답에 `warnings`(막지 않는다 — 예산 소진은 사람 없이 풀리지 않는 멈춤이라 미리 보이게).
+    - **완료 태스크 자동 병합(037, `projects.auto_merge`)** — 하나의 큰 앱을 기능마다 쌓아 키우는 실험용. 태스크 브랜치는 main에 합쳐지지 않아서 다음 요구사항의 태스크가
+      앞 기능 코드 없이 빈 레포에서 시작했다. 켜면 자동 진행이 DONE 태스크의 마지막 제출 커밋을 **끝난 순서대로** 기본 브랜치에 합친다(`task/default-merge.ts` —
+      github = 대표 토큰 merges API, mirror = merge-tree 후 clone_url에 push(force 없음), `COMMIT_INSPECTOR`를 따른다). 결과는 `TASK_MERGED_TO_DEFAULT`(merged·already·conflict)이고
+      **충돌은 남기고 다시 시도하지 않는다**(다음 태스크는 그 코드 없이 시작한다 — 충돌률이 지표다). 권한·네트워크 실패는 이벤트 없이 다음 신호·주기 정리에서 다시, 그 뒤 태스크는 기다린다(순서 유지).
+      **실험 모드에서만·시작 전에만** 켠다(422 `QUESTION_MODE_INVALID`, DB `projects_auto_merge_chk`) — 기본 모드에서 서버가 main을 바꾸면 G3의 판단을 빼앗는다.
+      **회차 반복 실험에서는 끈다** — 앞 회차 코드가 main에 남아 "회차마다 같은 출발점"이 깨진다. V3는 그대로 맞다(태스크 브랜치와 기본 브랜치의 분기점부터 본다).
   - **감독 스크립트** `npm run experiment:run`(`scripts/experiment-run.ts`, 대표 HTTP만 — 033의 `harvest:questions`를 대체): 요구사항 파일 `[{ key, instruction, repeat? }]`을
     하나씩 기능 명세로 요청하고, 서버가 끝까지 진행하면 시작·r1(PM이 나눈 태스크)·r2~(같은 묶음을 `[exp <run> r<n>]` 꼬리표로 새로) 순으로 돌린다. 같은 태스크를 재개하지 않는 이유: 재시도·반려 지표가 섞인다.
     정리: BLOCKED(AGENT_STOPPED) 재개 1회 → 또 멈추면 취소, ESCALATED 취소, 회차 시간 초과면 취소할 수 있는 것을 취소하고 다음 회차. **자동으로 풀 수 없는 고장**(같은 실패 연속 K번·
@@ -712,6 +719,8 @@ FE의 "받은 편지함"은 두 칸이다(대표 결정 2026-10-29). **둘 다 �
   - **CLI에도 같은 감독이 있다**(`npx @capstone-nomos/cli@latest experiment …`, CLI 0.1.21) — 실험 PC에 서버 레포를 받지 않게. 본체는 `src/executor/experiment-*.ts`·`human-http.ts` 한 벌이고
     `scripts/`의 진입점·`scripts/lib/{experiment-run,nomos-http}.ts`는 다시 내보내기만 한다(CLI 패키지 경계 — 서버 코드 import 금지). CLI의 상태 파일은 `<NOMOS_HOME>/experiment-runs/`.
     감독은 **대표 계정(사람 토큰)**만 쓰고 에이전트 자격 증명·폴더 잠금(home-lock)을 건드리지 않는다 — 에이전트와 같은 PC·같은 NOMOS_HOME에서 돌아도 된다.
+  - **쌓기 모드 `--build`**: 요구사항마다 한 번씩(r1만, 회차 복제 없음) 차례로 실행해 하나의 앱에 기능을 쌓는다. 프로젝트에 `autoMerge`가 꺼져 있으면 시작하지 않는다(permanent —
+    안 켜면 요구사항마다 빈 레포에서 다시 시작한다). `--until`과 함께면 마감 뒤 새 요구사항을 시작하지 않는다. 예시 요구사항 `scripts/examples/experiment-requirements-study-platform.json`(20개).
   - **24시간 무인**: `--until <시간>`은 요구사항을 한 바퀴씩, 바퀴마다 회차를 `--repeat`만큼 늘려 마감까지 돈다(마감 `untilAt`은 상태 파일에 — 다시 띄워도 늘지 않는다).
     `--keep-going`(until이 켠다)은 멈춤·오류에도 끝내지 않고 알린 뒤 `--retry-wait`(5분) 기다렸다 상태 파일로 이어 간다 — 기다려도 안 풀리는 설정 문제(`HaltError.permanent`: 실험 모드 아님·프로젝트 끝남)만 끝낸다.
     사람 토큰(24시간) 만료는 같은 비밀번호로 다시 로그인한다(`setRelogin`, 비밀번호는 메모리에만). **GET만** 일시 오류(끊김·502/503/504)를 다시 시도한다 — POST를 다시 보내면 태스크·기능 명세가 두 번 생긴다.

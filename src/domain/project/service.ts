@@ -56,7 +56,7 @@ import {
   listProjectsByOrg,
   markProjectStarted,
   summarizeProjectTasks,
-  updateQuestionSettings,
+  updateProjectSettingsRow,
   type QuestionMode,
   type AutonomyPreset,
   type Project,
@@ -323,24 +323,32 @@ export async function createProject(
   });
 }
 
-// 프로젝트 설정 변경(대표 전용) — 질문 중계 스위치(018)와 질문 모드(033). 시작(G1) 전에만 바꿀 수 있다:
+// 프로젝트 설정 변경(대표 전용) — 질문 중계 스위치(018)·질문 모드(033)·완료 태스크 자동 병합(037). 시작(G1) 전에만 바꿀 수 있다:
 // 실행 중에 바뀌면 같은 프로젝트 안에서 "중계 있음/없음"·"일반/실험" 실행이 섞여 대조 실험이 성립하지 않는다.
 // 실험 모드는 질문 중계가 켜져 있어야 의미가 있다(질문이 없으면 모을 것도 없다) — 둘 다 켜져야 한다(422 QUESTION_MODE_INVALID, DB CHECK도 같다).
+// 자동 병합은 실험 모드에서만 켠다(같은 422) — 사람이 보는 기본 모드에서 서버가 main을 바꾸면 G3(통합 확인)의 판단을 빼앗는다.
 export async function updateProjectSettings(
   actor: Actor,
   projectId: string,
-  input: { questionRelay?: boolean; questionMode?: QuestionMode },
+  input: { questionRelay?: boolean; questionMode?: QuestionMode; autoMerge?: boolean },
 ): Promise<{ project: Project; warnings: string[] }> {
   if (actor.orgRole !== 'REPRESENTATIVE') throw new AppError('NOT_REPRESENTATIVE', 'only the representative can change project settings');
   const project = await withTransaction(async (tx) => {
     const project = await assertProjectInOrg(tx, actor.orgId, projectId, 'update');
     if (project.startedAt !== null) throw new AppError('PROJECT_STARTED', 'project has started; settings are frozen');
-    const next = { questionRelay: input.questionRelay ?? project.questionRelay, questionMode: input.questionMode ?? project.questionMode };
+    const next = {
+      questionRelay: input.questionRelay ?? project.questionRelay,
+      questionMode: input.questionMode ?? project.questionMode,
+      autoMerge: input.autoMerge ?? project.autoMerge,
+    };
     if (next.questionMode === 'experiment' && !next.questionRelay) {
       throw new AppError('QUESTION_MODE_INVALID', 'experiment mode needs question relay on — turn both on (questionRelay: true, questionMode: experiment)');
     }
-    if (project.questionRelay === next.questionRelay && project.questionMode === next.questionMode) return project;
-    const updated = await updateQuestionSettings(tx, projectId, next);
+    if (next.autoMerge && next.questionMode !== 'experiment') {
+      throw new AppError('QUESTION_MODE_INVALID', 'autoMerge is for experiment mode only — set questionMode: experiment too (or autoMerge: false)');
+    }
+    if (project.questionRelay === next.questionRelay && project.questionMode === next.questionMode && project.autoMerge === next.autoMerge) return project;
+    const updated = await updateProjectSettingsRow(tx, projectId, next);
     await appendEvent(tx, {
       orgId: actor.orgId,
       projectId,
@@ -348,8 +356,8 @@ export async function updateProjectSettings(
       onBehalfOf: actor.userId,
       policyHash: project.policyHash,
       payload: {
-        before: { questionRelay: project.questionRelay, questionMode: project.questionMode },
-        after: { questionRelay: updated.questionRelay, questionMode: updated.questionMode },
+        before: { questionRelay: project.questionRelay, questionMode: project.questionMode, autoMerge: project.autoMerge },
+        after: { questionRelay: updated.questionRelay, questionMode: updated.questionMode, autoMerge: updated.autoMerge },
       },
     });
     return updated;
