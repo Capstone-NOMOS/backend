@@ -6,6 +6,8 @@ import { buildRoutingPrompt, parseRoutingResponse, ROUTING_PROMPT_VERSION, type 
 import { resolveClaudeCommand } from '../../src/executor/runner.js';
 import { jevQuestionRouter } from '../../src/domain/question/jev-router.js';
 import { openAiQuestionRouter } from '../../src/domain/question/openai-router.js';
+import { anthropicModel } from '../../src/domain/pm/anthropic-model.js';
+import { routeWithLlm } from '../../src/domain/question/llm-route-call.js';
 
 // 평가 장치용 라우터 구현들. 서버에는 아직 붙이지 않는다 — 여기서 비교해 보고 쓸 만한 것을 router-registry에 연결한다.
 // 서버 설정(env)을 import하지 않는다 — 서버 비밀값 없이 노트북에서 돈다.
@@ -76,4 +78,17 @@ export function openAiEvalRouter(model?: string): EvalRouter {
 
 export function jevEvalRouter(model?: string): EvalRouter {
   return withCost(jevQuestionRouter({ apiKey: requireKey('TYPESAFE_API_KEY'), model }));
+}
+
+// 운영 llm 라우터(QUESTION_ROUTER_LLM_PROVIDER=api)와 같은 호출 — Anthropic API를 직접, 같은 지침·노력(low)·한도(llm-route-call.ts).
+// 이름도 운영과 같은 모양(llm:anthropic:<모델>:<프롬프트 버전>)이라 결과를 나란히 놓을 수 있다. 키는 셸의 ANTHROPIC_API_KEY.
+// claude(CLI)는 이 PC의 Claude Code를 거쳐 프롬프트 캐시·도구 정의가 달라 OpenAI·Jev와 같은 조건이 아니다 — 라우터 비교에는 이쪽을 쓴다.
+export function claudeApiEvalRouter(model = 'claude-sonnet-5-5'): EvalRouter {
+  const pm = anthropicModel(requireKey('ANTHROPIC_API_KEY'));
+  const name = `llm:anthropic:${model}:${ROUTING_PROMPT_VERSION}`;
+  const routeWithCost = async (input: RoutingInput): Promise<RouterRun> => {
+    const decision = await routeWithLlm(pm, model, input, name);
+    return { ...decision, costUsd: decision.costUsd ?? null };
+  };
+  return { name, routeWithCost, route: routeWithCost };
 }
