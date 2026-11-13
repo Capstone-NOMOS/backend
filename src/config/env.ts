@@ -90,11 +90,12 @@ const envSchema = z
     EXPERIMENT_VERIFYING_TIMEOUT_MS: z.coerce.number().int().min(1000).default(20 * 60 * 1000),
     // 질문 라우터(025): llm = PM 모델(Claude)이 FE·BE·PM 중 고른다 · openai = OpenAI 모델(같은 프롬프트) · jev = TypeSafe의 결정 모델 Jev ·
     // decision = 임의의 외부 결정 모델(HTTP). 실패하면 대표(PM)에게 보내고 기록한다. 고른 라우터에 키·주소가 없으면 기동을 거부한다(아래 superRefine).
-    QUESTION_ROUTER: z.enum(['llm', 'openai', 'jev', 'decision']).default('llm'),
+    // openai-decisions = OpenAI의 결정 전용 API(POST /v1/decisions, gpt-6-luna) — Jev와 같은 종류. OPENAI_API_KEY를 같이 쓴다.
+    QUESTION_ROUTER: z.enum(['llm', 'openai', 'openai-decisions', 'jev', 'decision']).default('llm'),
     // llm 라우터만 따로 서버 키(ANTHROPIC_API_KEY)로 부를지. pm = PM과 같은 경로(PM_PROVIDER — relay면 대표 노트북의 pm-worker),
     // api = PM이 중계 모드여도 질문 판정만 서버가 API로 직접 부른다(라우터 비교를 OpenAI·Jev와 같은 조건 — 서버가 API를 직접 — 으로 맞춘다, 대표 결정 2026-11-13).
     QUESTION_ROUTER_LLM_PROVIDER: z.enum(['pm', 'api']).default('pm'),
-    // 평가용(026): 실제로 보내지는 않고 같은 질문에 함께 돌려 기록할 라우터들(쉼표 구분: llm,openai,jev,decision). 비우면 끈다.
+    // 평가용(026): 실제로 보내지는 않고 같은 질문에 함께 돌려 기록할 라우터들(쉼표 구분: llm,openai,openai-decisions,jev,decision). 비우면 끈다.
     QUESTION_SHADOW_ROUTERS: z.string().default(''),
     // Decision AI 라우터의 HTTP 주소. RoutingInput을 POST하고 { target, confidence?, reason?, costUsd? }를 받는다.
     DECISION_ROUTER_URL: z.string().url().optional(),
@@ -128,7 +129,7 @@ const envSchema = z
       }
     }
     // 실제로 보낼 라우터를 골랐는데 키·주소가 없으면 조용히 llm으로 내려가지 않고 기동을 막는다 — 비교 실험에서 다른 라우터의 결과가 섞인다.
-    const routerNeeds = { openai: 'OPENAI_API_KEY', jev: 'TYPESAFE_API_KEY', decision: 'DECISION_ROUTER_URL' } as const;
+    const routerNeeds = { openai: 'OPENAI_API_KEY', 'openai-decisions': 'OPENAI_API_KEY', jev: 'TYPESAFE_API_KEY', decision: 'DECISION_ROUTER_URL' } as const;
     if (v.QUESTION_ROUTER_LLM_PROVIDER === 'api' && v.ANTHROPIC_API_KEY === undefined) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['ANTHROPIC_API_KEY'], message: 'QUESTION_ROUTER_LLM_PROVIDER=api requires ANTHROPIC_API_KEY' });
     }

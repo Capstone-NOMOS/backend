@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { jevCriteria, jevQuestionRouter } from '../src/domain/question/jev-router.js';
 import { llmQuestionRouter } from '../src/domain/question/llm-router.js';
+import { decisionsRequestBody, openAiDecisionsQuestionRouter } from '../src/domain/question/openai-decisions-router.js';
 import { openAiQuestionRouter } from '../src/domain/question/openai-router.js';
 import { buildRoutingPrompt, oppositeRoleRouter, parseRoutingResponse, ROUTING_PROMPT_VERSION, type RoutingInput } from '../src/domain/question/router.js';
 
@@ -204,6 +205,39 @@ describe('Jev 라우터 (TypeSafe 결정 모델)', () => {
     const make = (status: number, body: unknown) => jevQuestionRouter({ apiKey: 'k', fetchImpl: fakeFetch(status, body, []) });
     await expect(make(429, { detail: 'rate limited' }).route(INPUT)).rejects.toThrow(/429/);
     await expect(make(200, { model: 'jev-1.14.0', answers: {} }).route(INPUT)).rejects.toThrow(/no choice answer/);
+    await expect(make(200, answer('QA', { QA: 1 })).route(INPUT)).rejects.toThrow(/unknown target/);
+  });
+});
+
+describe('OpenAI Decisions 라우터 (결정 전용 API)', () => {
+  const answer = (choice: string, probabilities: Record<string, number>, extra: Record<string, unknown> = {}) => ({
+    model: 'gpt-6-luna',
+    answers: [{ type: 'choice', name: 'owner', choice, confidence: probabilities[choice], probabilities: Object.entries(probabilities).map(([value, probability]) => ({ value, probability })) }],
+    usage: { input_tokens: 2_000, input_tokens_details: { cached_tokens: 1_000, cache_write_tokens: 0 }, output_tokens: 0 },
+    ...extra,
+  });
+
+  it('Jev와 같은 맥락·후보를 /v1/decisions의 choice 질문으로 보내고, 같은 해석·입력만 과금한 비용을 낸다', async () => {
+    const captured: Captured[] = [];
+    const router = openAiDecisionsQuestionRouter({ apiKey: 'sk-test', fetchImpl: fakeFetch(200, answer('BACKEND', { BACKEND: 0.9, SELF: 0.06, PM: 0.04 }), captured) });
+    const decision = await router.route({ ...INPUT, context: { orgId: 'org-secret' } });
+
+    // 캐시 안 된 1,000 × $0.10 + 캐시 읽기 1,000 × $0.01 (1M당) = $0.00011
+    expect(decision).toEqual({ target: 'BACKEND', confidence: 0.9, reason: '확률: BACKEND 0.90, SELF 0.06, PM 0.04', routedBy: `openai-decisions:gpt-6-luna:${ROUTING_PROMPT_VERSION}`, costUsd: 0.00011, modelLatencyMs: expect.any(Number) });
+    expect(router.name).toBe(decision.routedBy);
+    const req = captured[0]!;
+    expect(req.url).toBe('https://api.openai.com/v1/decisions');
+    const body = JSON.parse(String(req.init.body)) as { model: string; questions: { type: string; choices: { value: string }[] }[] };
+    expect(body).toEqual(decisionsRequestBody('gpt-6-luna', INPUT));
+    expect(body.questions[0]!.choices.map((c) => c.value)).toEqual(['BACKEND', 'PM', 'SELF']); // 자기 역할은 SELF 하나로(Jev와 같다)
+    expect(String(req.init.body)).not.toContain('org-secret');
+  });
+
+  it('거절·choice 없음·HTTP 오류·모르는 값은 예외다', async () => {
+    const make = (status: number, body: unknown) => openAiDecisionsQuestionRouter({ apiKey: 'k', fetchImpl: fakeFetch(status, body, []) });
+    await expect(make(200, { model: 'gpt-6-luna', answers: [{ type: 'refusal', name: 'owner' }] }).route(INPUT)).rejects.toThrow(/refused/);
+    await expect(make(200, { model: 'gpt-6-luna', answers: [] }).route(INPUT)).rejects.toThrow(/no choice answer/);
+    await expect(make(429, { error: { message: 'slow down' } }).route(INPUT)).rejects.toThrow(/429/);
     await expect(make(200, answer('QA', { QA: 1 })).route(INPUT)).rejects.toThrow(/unknown target/);
   });
 });

@@ -24,7 +24,7 @@ import { NomosHttp, readHidden } from './lib/nomos-http.js';
 
 const DEFAULT_SERVER = 'https://nomos-team.duckdns.org';
 const DATA_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'data');
-const ROUTERS = ['llm', 'openai', 'jev'] as const;
+const ROUTERS = ['llm', 'openai', 'openai-decisions', 'jev'] as const;
 type RouterKey = (typeof ROUTERS)[number];
 
 type Project = { id: string; name: string; status: string; questionMode?: string; createdAt: string };
