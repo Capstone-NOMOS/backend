@@ -24,7 +24,8 @@
     "experiment:run": "tsx scripts/experiment-run.ts",
     "router:live": "tsx scripts/router-live-check.ts",
     "routing:report": "tsx scripts/routing-report.ts",
-    "questions:extract": "tsx scripts/extract-experiment-questions.ts"
+    "questions:extract": "tsx scripts/extract-experiment-questions.ts",
+    "questions:export-all": "tsx scripts/export-all-routing-questions.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.129.0",
