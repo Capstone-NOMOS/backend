@@ -4,7 +4,8 @@
 // 평가는 항목의 input을 그대로 라우터에 넣는다(다시 조립하지 않는다).
 //
 //   npx tsx scripts/eval-question-router.ts opposite                       # 기본 데이터셋(scripts/data/question-routing.json)
-//   npx tsx scripts/eval-question-router.ts claude:sonnet --data team.json --repeat 2
+//   npx tsx scripts/eval-question-router.ts claude-api --data team.json --concurrency 1   # 운영 llm 라우터와 같은 API 호출(셸의 ANTHROPIC_API_KEY, 기본 claude-sonnet-5-5)
+//   npx tsx scripts/eval-question-router.ts claude:sonnet --data team.json --repeat 2      # 이 PC의 Claude Code(CLI) — 라우터 비교에는 claude-api
 //   npx tsx scripts/eval-question-router.ts openai:gpt-6.1-sol --data team.json   # OpenAI(셸의 OPENAI_API_KEY)
 //   npx tsx scripts/eval-question-router.ts jev --data team.json                  # TypeSafe Jev(셸의 TYPESAFE_API_KEY, 기본 jev-1.14.0)
 //   npx tsx scripts/eval-question-router.ts http://localhost:8080/route --data team.json   # 그 밖의 외부 결정 모델
@@ -15,7 +16,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { oppositeRoleRouter } from '../src/domain/question/router.js';
-import { claudeCliRouter, httpRouter, jevEvalRouter, openAiEvalRouter, type EvalRouter } from './lib/question-routers.js';
+import { claudeApiEvalRouter, claudeCliRouter, httpRouter, jevEvalRouter, openAiEvalRouter, type EvalRouter } from './lib/question-routers.js';
 import { parseDataset, runEvaluation, summarize, type LoadedDataset } from './lib/routing-dataset.js';
 
 function loadDataset(file: string): LoadedDataset {
@@ -59,11 +60,12 @@ if (dataset.items.length === 0) {
 
 function pickRouter(s: string): EvalRouter {
   if (s === 'opposite') return { ...oppositeRoleRouter, routeWithCost: async (i) => ({ ...(await oppositeRoleRouter.route(i)), costUsd: 0 }) };
+  if (s === 'claude-api' || s.startsWith('claude-api:')) return claudeApiEvalRouter(s.split(':')[1]);
   if (s === 'claude' || s.startsWith('claude:')) return claudeCliRouter(s.split(':')[1]);
   if (s === 'openai' || s.startsWith('openai:')) return openAiEvalRouter(s.split(':')[1]);
   if (s === 'jev' || s.startsWith('jev:')) return jevEvalRouter(s.split(':')[1]);
   if (s.startsWith('http')) return httpRouter(s);
-  throw new Error(`unknown router: ${s} (opposite | claude[:model] | openai[:model] | jev[:model] | http(s)://...)`);
+  throw new Error(`unknown router: ${s} (opposite | claude-api[:model] | claude[:model] | openai[:model] | jev[:model] | http(s)://...)`);
 }
 const router = pickRouter(routerSpec);
 
