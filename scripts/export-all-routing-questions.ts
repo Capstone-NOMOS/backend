@@ -1,7 +1,8 @@
 // NOMOS 전체(모든 조직·프로젝트)의 질문을 라우터 판정·판정 시간·비용과 함께 한 파일로 내보낸다 — 통합 라벨링·일치율 화면의 데이터.
 //
 //   EXPORT_DATABASE_URL=postgres://...@localhost:15432/nomos npm run questions:export-all
-//   [--out <파일>](기본 scripts/data/all-routing-questions-<시각>.json)
+//   [--out <파일>](기본 scripts/data/all-routing-questions-<시각>.json) [--include-deleted]
+//   삭제한 프로젝트(projects.deleted_at)의 질문은 기본으로 뺀다 — 서버 API·채점판처럼 없는 것으로 본다. --include-deleted면 포함하고 project.deleted로 표시한다.
 //
 // 운영 DB를 SSM 포트 포워딩으로 **읽기만** 한다 — 조직을 가로지르는 조회라 API에 두지 않는다(대표 결정 2026-11-13: 운영자 API를 만들지 않는다).
 // 안전장치(문서 경고가 아니라 구조로):
@@ -38,10 +39,12 @@ function agreementOf(routers: Partial<Record<RouterKey, string | null>>): 'disag
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   let outFile = '';
+  let includeDeleted = false;
   for (let i = 0; i < args.length; i += 1) {
     if (args[i] === '--out' && args[i + 1]) outFile = args[++i]!;
+    else if (args[i] === '--include-deleted') includeDeleted = true;
     else {
-      process.stderr.write(`모르는 인자: ${args[i]}\n사용법: EXPORT_DATABASE_URL=... npm run questions:export-all [-- --out 파일]\n`);
+      process.stderr.write(`모르는 인자: ${args[i]}\n사용법: EXPORT_DATABASE_URL=... npm run questions:export-all [-- --out 파일] [--include-deleted]\n`);
       process.exit(2);
     }
   }
@@ -70,8 +73,10 @@ async function main(): Promise<void> {
          JOIN projects p ON p.id = q.project_id
          JOIN organizations o ON o.id = p.org_id
          LEFT JOIN question_routing_runs r ON r.question_id = q.id
+        WHERE $1::boolean OR p.deleted_at IS NULL
         GROUP BY q.id, p.id, o.id
         ORDER BY q.created_at`,
+      [includeDeleted],
     );
     await client.query('COMMIT');
 
