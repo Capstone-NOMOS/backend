@@ -1,4 +1,5 @@
-# main에 들어오면 운영에 배포한다: 테스트 → 이미지 빌드·ECR 푸시 → EC2에서 deploy.sh.
+# main에 들어오면 운영에 배포한다: 이미지 빌드·ECR 푸시 → EC2에서 deploy.sh.
+# 배포 전 테스트(ci.yml 호출)는 지금 꺼 두었다(2026-11-13 대표 결정 — ci.yml 머리말 참고). 테스트는 로컬에서 돌리고 올린다.
 #
 # - AWS 자격 증명은 OIDC로 받는다. 액세스 키를 GitHub에 저장하지 않는다(역할 신뢰 정책: deploy/github-actions-trust.json).
 # - EC2에는 SSH가 아니라 SSM Run Command로 들어간다. 22번 포트를 열지 않고, 서버에 키를 두지 않는다.
@@ -23,14 +24,7 @@ permissions:
   contents: read
 
 jobs:
-  ci:
-    if: github.event_name == 'push' || inputs.tag == ''
-    uses: ./.github/workflows/ci.yml
-
   deploy:
-    needs: ci
-    # 롤백(tag 지정)이면 ci를 건너뛰므로 needs가 skipped여도 돈다. ci가 실패하면 돌지 않는다.
-    if: ${{ !cancelled() && (needs.ci.result == 'success' || (needs.ci.result == 'skipped' && inputs.tag != '')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # 변수(vars.*)는 production 환경에 둔다. 신뢰 정책의 sub가 environment:production이라 이 줄을 빼면 역할을 못 받는다.

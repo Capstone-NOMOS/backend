@@ -938,6 +938,8 @@ EC2 1대(Docker) + RDS PostgreSQL 16 + KMS + SSM. 콘솔 절차는 `docs/deploy-
 
 브랜치는 `dev`에서 따서 PR로 `dev`에 합치고, 배포할 때 `dev → main`으로 머지한다. **`main`에 들어온 것이 곧 운영이다.**
 
+**지금 CI는 꺼져 있다**(2026-11-13 대표 결정 — 발표 전 배포 속도 우선): `ci.yml`은 손으로만 돌고(Run workflow), `deploy.yml`은 테스트 없이 빌드·배포한다. 그동안 PR을 올리기 전에 로컬에서 `npm run typecheck && npm test`를 돌린다. 다시 켜는 방법은 `ci.yml` 머리말.
+
 - `ci.yml` — `dev` 대상 PR과 `dev` push에서 타입체크 + 전체 테스트. PostgreSQL 서비스 컨테이너를
   `vitest.config.ts`와 **같은 포트·DB 이름**(`55432/nomos_test`)으로 띄운다 — CI용 접속 문자열을 따로 두지 말 것.
   `dev → main` PR에서는 돌지 않는다 — 머지 직후 deploy가 같은 코드를 다시 테스트하므로 중복이다.
