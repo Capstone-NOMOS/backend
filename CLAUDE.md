@@ -631,6 +631,7 @@ FE의 "받은 편지함"은 두 칸이다(대표 결정 2026-10-29). **둘 다 �
   발표 비교는 **Claude·OpenAI·Jev 셋**이다. **입력을 한 벌로 둔다** — OpenAI는 `buildRoutingPrompt` 그대로, Jev는 같은 맥락(`buildRoutingContext`)을 state로·같은 후보 설명(`TARGET_DESCRIPTIONS`)을
   choice 기준으로 받고, 고른 값은 셋 다 `normalizeTarget`을 탄다. 한쪽 문장만 고치면 모델 비교가 프롬프트 비교가 된다(고치면 `ROUTING_PROMPT_VERSION`을 올린다).
   Jev의 기준에서 묻는 역할 자신은 SELF 하나로만 둔다 — 둘 다 두면 확률이 갈라진다. OpenAI·Jev 구현은 env를 import하지 않는다(오프라인 평가가 그대로 쓴다, 키는 셸 환경변수).
+  **llm 라우터의 호출 경로는 `QUESTION_ROUTER_LLM_PROVIDER`로 PM과 따로 고른다**(`pm` 기본 = PM_PROVIDER와 같음 · `api` = PM이 중계여도 판정만 서버 키로 직접, 키 없으면 기동 거부, `getRouterModel`) — 중계 llm은 Claude Code를 매번 새로 띄워 프롬프트 캐시를 못 쓰고 도구 정의가 붙어 비용이 OpenAI·Jev와 같은 조건이 아니었다(같은 가격대 모델인데 질문당 약 60배). 라우터 이름이 `llm:api:…`/`llm:relay:…`로 갈려 보고서에서 섞이지 않는다.
   비용은 실제 usage × 각 파일의 가격표이고 **표에 없는 모델은 null**(지어내지 않는다). 고른 라우터에 키·주소가 없으면 기동을 거부한다(조용히 llm으로 내려가면 비교 결과가 섞인다).
   그림자 라우터에 키가 없으면 기동 때 경고만 남기고 뺀다. 질문·명세 본문이 OpenAI·TypeSafe로 나간다(조직 id는 보내지 않는다).
   **지연은 둘이다(035)**: `latency_ms` = 서버가 라우터를 부른 순간 ~ 판정 도착(에이전트가 실제로 기다린 시간 — 중계 llm은 대기열·노트북 CLI 기동이 섞인다),
