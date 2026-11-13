@@ -543,7 +543,7 @@ describe('라우팅 평가 기록과 보고서', () => {
     const report = (await http('GET', `/projects/${w.projectId}/routing-report`, await w.rep.token())).json.data as unknown as {
       questions: number; labeled: number;
       routers: { router: string; mode: string; decisions: number; errors: number; alignmentRate: number | null; avgCostUsd: number | null; avgModelLatencyMs: number | null; modelLatencySamples: number }[];
-      rows: { decisions: Record<string, string | null>; goldTarget: string }[];
+      rows: { decisions: Record<string, string | null>; metrics: Record<string, { modelLatencyMs: number | null; costUsd: number | null }>; goldTarget: string }[];
     };
     expect(report).toMatchObject({ questions: 1, labeled: 1 });
     const by = Object.fromEntries(report.routers.map((r) => [r.router, r]));
@@ -553,6 +553,12 @@ describe('라우팅 평가 기록과 보고서', () => {
     // 조건 A(기존 다인 개발 — 질문한 사람에게)는 SELF로 본다.
     expect(by['baseline:asker']).toMatchObject({ mode: 'baseline', alignmentRate: 0 });
     expect(report.rows[0]).toMatchObject({ goldTarget: 'BACKEND', decisions: { 'llm:test': 'BACKEND', 'decision:test': 'PM', broken: null, 'baseline:asker': 'SELF' } });
+    // 질문별 판정 시간·비용 — 실제로 걸린 시간(latencyMs)은 싣지 않는다. 기준선은 판정을 부르지 않으므로 없다.
+    expect(report.rows[0]!.metrics).toEqual({
+      'llm:test': { modelLatencyMs: 1200, costUsd: 0.002 },
+      'decision:test': { modelLatencyMs: 250, costUsd: 0.0001 },
+      broken: { modelLatencyMs: null, costUsd: null },
+    });
   });
 
   it('먼저 시도한 라우터가 실패해 대표에게 보내지면 그 실패도 그 라우터의 기록으로 남는다', async () => {

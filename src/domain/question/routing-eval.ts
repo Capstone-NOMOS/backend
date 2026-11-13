@@ -132,7 +132,12 @@ export type RoutingReport = {
   byStage: StageStats[];
   // 질문부터 답까지(실제로 보낸 라우터 기준) — 답이 온 질문만.
   answer: { answered: number; medianMs: number | null };
-  rows: (Omit<EvalQuestionRow, 'runs'> & { decisions: Record<string, string | null> })[];
+  // metrics: 라우터 → 그 질문의 판정 시간·비용. 비교에 쓰는 값만 싣는다 — 실제로 걸린 시간(latency_ms)은 중계 대기열·노트북 CLI 기동이 섞여
+  // 라우터끼리 공정하게 비교할 수 없어 넣지 않는다(035). 모르는 값(옛 CLI 중계·실패·가격표에 없는 모델)은 null이다.
+  rows: (Omit<EvalQuestionRow, 'runs'> & {
+    decisions: Record<string, string | null>;
+    metrics: Record<string, { modelLatencyMs: number | null; costUsd: number | null }>;
+  })[];
 };
 
 function percentile(values: number[], p: number): number | null {
@@ -219,6 +224,7 @@ export async function routingReport(actor: UserContext, projectId: string): Prom
     rows: questions.map(({ runs, ...q }) => ({
       ...q,
       decisions: Object.fromEntries([[BASELINE, 'SELF'], ...runs.map((r) => [r.router, r.target] as const)]),
+      metrics: Object.fromEntries(runs.map((r) => [r.router, { modelLatencyMs: r.modelLatencyMs, costUsd: r.costUsd }] as const)),
     })),
   };
 }

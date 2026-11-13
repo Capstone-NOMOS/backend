@@ -646,6 +646,7 @@ FE의 "받은 편지함"은 두 칸이다(대표 결정 2026-10-29). **둘 다 �
   같은 입력으로 함께 돌린 판정(`shadow`)을 `question_routing_runs`에 남긴다(`question/routing-eval.ts`, 커밋 뒤 비동기 — 실패해도 질문 흐름을 막지 않는다).
   먼저 시도한 라우터가 실패해 대표에게 보내지면 그 실패도 그 라우터의 기록이다(실패율). 대표가 정답 담당자를 붙이고(`POST /questions/:id/gold`, `QUESTION_GOLD_LABELED`)
   `GET /projects/:id/routing-report`가 라우터별 일치율·분류 지연·요청당 비용을 낸다. `baseline:asker` = 조건 A(질문한 사람에게 — SELF).
+  질문 행(`rows[].metrics`)에는 라우터별 **판정 시간·비용만** 싣는다 — 실제로 걸린 시간(`latency_ms`)은 중계 대기열·CLI 기동이 섞여 질문 단위 비교를 부풀린다(`npm run questions:extract`가 이 값으로 평가 묶음을 뽑는다).
   Decision AI는 `DECISION_ROUTER_URL`(HTTP, `question/http-router.ts`) — 질문·명세가 외부로 나가므로 켜기 전에 팀이 동의한다.
   오프라인 데이터셋 비교(100문항)는 `scripts/eval-question-router.ts`가 같은 프롬프트·해석으로 한다.
   **라우터가 본 입력도 남긴다**(032 `agent_questions.routing_input` = `RoutingInputSnapshot`, 질문 INSERT와 같은 트랜잭션 — 명세·계약이 바뀌므로 다시 조립하지 말 것).
