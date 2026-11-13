@@ -615,7 +615,7 @@ components:
           type: array
           items:
             type: object
-            required: [questionId, askedAt, askerRole, status, firstQuestion, goldTarget, answeredAt, stage, answerSource, decisions]
+            required: [questionId, askedAt, askerRole, status, firstQuestion, goldTarget, answeredAt, stage, answerSource, decisions, metrics]
             properties:
               answerSource: { type: string, nullable: true, description: '답의 출처(auto_first_option = 실험 모드 자동 답 — 답까지 걸린 시간 지표에서 뺀다)' }
               questionId: { type: string, format: uuid }
@@ -627,6 +627,16 @@ components:
               goldTarget: { type: string, nullable: true }
               answeredAt: { type: string, format: date-time, nullable: true }
               decisions: { type: object, additionalProperties: { type: string, nullable: true }, description: '라우터 → 판정(FRONTEND·BACKEND·PM·SELF, 실패면 null)' }
+              metrics:
+                type: object
+                description: "라우터 → 이 질문의 판정 시간·비용(기준선 baseline:asker는 없다). 실제로 걸린 시간(분류 지연)은 싣지 않는다 — 중계 llm은 대기열·노트북 CLI 기동이 섞여 라우터 비교에 쓸 수 없다"
+                additionalProperties:
+                  type: object
+                  additionalProperties: false
+                  required: [modelLatencyMs, costUsd]
+                  properties:
+                    modelLatencyMs: { type: integer, nullable: true, description: '판정 시간(035, 판정자에게 도달 ~ 답). 모르면(옛 CLI 중계·실패) null' }
+                    costUsd: { type: number, nullable: true, description: '이 판정의 비용(USD). 모르면(실패·가격표에 없는 모델) null' }
     AgentConnectCode:
       type: object
       required: [code, expiresAt, command]
