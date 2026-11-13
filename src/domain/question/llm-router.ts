@@ -1,5 +1,5 @@
 import { env } from '../../config/env.js';
-import { getPmModel } from '../pm/model.js';
+import { getRouterModel } from '../pm/model.js';
 import { costOfAttempts } from '../pm/pricing.js';
 import { relayWorkerLastSeen } from '../pm/relay.js';
 import { buildRoutingPrompt, parseRoutingResponse, ROUTING_JSON_SCHEMA, ROUTING_PROMPT_VERSION, type QuestionRouter } from './router.js';
@@ -17,8 +17,8 @@ const ROUTER_MAX_TOKENS = 2_000;
 export const llmQuestionRouter: QuestionRouter = {
   name: `llm:pm-model:${ROUTING_PROMPT_VERSION}`,
   async route(input) {
-    const model = getPmModel();
-    if (!model) throw new Error('no PM model configured (ANTHROPIC_API_KEY or PM_PROVIDER=relay)');
+    const model = getRouterModel();
+    if (!model) throw new Error('no router model configured (ANTHROPIC_API_KEY, PM_PROVIDER=relay or QUESTION_ROUTER_LLM_PROVIDER)');
     const orgId = input.context?.orgId;
     if (!orgId) throw new Error('router needs the organization');
     if (model.kind === 'relay') {

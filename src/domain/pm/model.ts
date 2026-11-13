@@ -107,7 +107,18 @@ export function setPmModel(next: PmModel | null): PmModel | null {
 export function getPmModel(): PmModel | null {
   if (override) return override;
   if (env.PM_PROVIDER === 'relay') return relayModel;
+  return apiModel();
+}
+
+function apiModel(): PmModel | null {
   if (!env.ANTHROPIC_API_KEY) return null;
   cached ??= anthropicModel(env.ANTHROPIC_API_KEY);
   return cached;
+}
+
+// 질문 라우터(llm)가 쓰는 모델. QUESTION_ROUTER_LLM_PROVIDER=api면 PM이 중계 모드여도 서버 키로 직접 부르고, pm이면 PM과 같은 경로다.
+// 테스트가 끼운 가짜 모델은 어느 쪽이든 그대로 쓴다.
+export function getRouterModel(): PmModel | null {
+  if (override) return override;
+  return env.QUESTION_ROUTER_LLM_PROVIDER === 'api' ? apiModel() : getPmModel();
 }
