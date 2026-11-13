@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 
 const DATA_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'data');
-const ROUTERS = ['llm', 'openai', 'jev'] as const;
+const ROUTERS = ['llm', 'openai', 'openai-decisions', 'jev'] as const;
 type RouterKey = (typeof ROUTERS)[number];
 type Metric = { modelLatencyMs: number | null; costUsd: number | null };
 

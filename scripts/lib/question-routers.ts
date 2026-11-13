@@ -6,6 +6,7 @@ import { buildRoutingPrompt, parseRoutingResponse, ROUTING_PROMPT_VERSION, type 
 import { resolveClaudeCommand } from '../../src/executor/runner.js';
 import { jevQuestionRouter } from '../../src/domain/question/jev-router.js';
 import { openAiQuestionRouter } from '../../src/domain/question/openai-router.js';
+import { openAiDecisionsQuestionRouter } from '../../src/domain/question/openai-decisions-router.js';
 import { anthropicModel } from '../../src/domain/pm/anthropic-model.js';
 import { routeWithLlm } from '../../src/domain/question/llm-route-call.js';
 
@@ -74,6 +75,10 @@ function withCost(router: QuestionRouter): EvalRouter {
 
 export function openAiEvalRouter(model?: string): EvalRouter {
   return withCost(openAiQuestionRouter({ apiKey: requireKey('OPENAI_API_KEY'), model, effort: 'low' }));
+}
+
+export function openAiDecisionsEvalRouter(model?: string): EvalRouter {
+  return withCost(openAiDecisionsQuestionRouter({ apiKey: requireKey('OPENAI_API_KEY'), model }));
 }
 
 export function jevEvalRouter(model?: string): EvalRouter {

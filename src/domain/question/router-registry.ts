@@ -3,6 +3,7 @@ import { logger } from '../../config/logger.js';
 import { httpQuestionRouter } from './http-router.js';
 import { jevQuestionRouter } from './jev-router.js';
 import { llmQuestionRouter } from './llm-router.js';
+import { openAiDecisionsQuestionRouter } from './openai-decisions-router.js';
 import { openAiQuestionRouter } from './openai-router.js';
 import { PM_TARGET, type QuestionRouter, type RoutingDecision, type RoutingInput } from './router.js';
 
@@ -17,6 +18,8 @@ export function routerByName(name: string): QuestionRouter | null {
   if (name === 'openai') {
     return env.OPENAI_API_KEY ? openAiQuestionRouter({ apiKey: env.OPENAI_API_KEY, model: env.OPENAI_ROUTER_MODEL, effort: env.OPENAI_ROUTER_EFFORT }) : null;
   }
+  // OpenAI Decisions API(결정 전용, gpt-6-luna) — 같은 OPENAI_API_KEY. Jev와 같은 종류의 비교 축.
+  if (name === 'openai-decisions') return env.OPENAI_API_KEY ? openAiDecisionsQuestionRouter({ apiKey: env.OPENAI_API_KEY }) : null;
   if (name === 'jev') return env.TYPESAFE_API_KEY ? jevQuestionRouter({ apiKey: env.TYPESAFE_API_KEY, model: env.JEV_MODEL }) : null;
   if (name === 'decision') return env.DECISION_ROUTER_URL ? httpQuestionRouter(env.DECISION_ROUTER_URL) : null;
   return null;

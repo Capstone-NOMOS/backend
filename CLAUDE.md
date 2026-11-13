@@ -628,7 +628,7 @@ FE의 "받은 편지함"은 두 칸이다(대표 결정 2026-10-29). **둘 다 �
   **대표가 확정한다** — PM 초안은 답이 되지 않는다(`agent_questions_pm_human_chk`). 답할 수 있는 사람은 대표뿐(PM 역할 멤버가 없다). 초안을 못 만들면 대표가 직접 답한다.
   `TEAM_ROLES`에 PM을 넣지 말 것 — 태스크·경로 소유권의 역할이 아니라 질문 대상만이다(`QuestionTarget = TeamRole | 'PM'`).
 - **라우터는 `QUESTION_ROUTER`로 고른다**(`router-registry.ts`): `llm`(운영 기본 — PM 모델(Claude), `question/llm-router.ts`)·`openai`(`openai-router.ts`)·`jev`(TypeSafe 결정 모델, `jev-router.ts`)·`decision`(임의 HTTP).
-  발표 비교는 **Claude·OpenAI·Jev 셋**이다. **입력을 한 벌로 둔다** — OpenAI는 `buildRoutingPrompt` 그대로, Jev는 같은 맥락(`buildRoutingContext`)을 state로·같은 후보 설명(`TARGET_DESCRIPTIONS`)을
+  발표 비교는 **Claude·OpenAI·Jev 셋**이다. **결정 전용 API끼리는 `openai-decisions`(OpenAI Decisions API `POST /v1/decisions`, `gpt-6-luna`만, 입력만 과금)와 Jev**를 비교한다(대표 결정 2026-11-13) — `openai`(Responses API)에 luna를 넣는 것은 범용 호출이라 결정 전용이 아니다. 입력은 Jev와 한 벌(`jevCriteria`를 choices로, 같은 맥락을 input으로). **입력을 한 벌로 둔다** — OpenAI는 `buildRoutingPrompt` 그대로, Jev는 같은 맥락(`buildRoutingContext`)을 state로·같은 후보 설명(`TARGET_DESCRIPTIONS`)을
   choice 기준으로 받고, 고른 값은 셋 다 `normalizeTarget`을 탄다. 한쪽 문장만 고치면 모델 비교가 프롬프트 비교가 된다(고치면 `ROUTING_PROMPT_VERSION`을 올린다).
   Jev의 기준에서 묻는 역할 자신은 SELF 하나로만 둔다 — 둘 다 두면 확률이 갈라진다. OpenAI·Jev 구현은 env를 import하지 않는다(오프라인 평가가 그대로 쓴다, 키는 셸 환경변수).
   **llm 라우터의 호출 경로는 `QUESTION_ROUTER_LLM_PROVIDER`로 PM과 따로 고른다**(`pm` 기본 = PM_PROVIDER와 같음 · `api` = PM이 중계여도 판정만 서버 키로 직접, 키 없으면 기동 거부, `getRouterModel`) — 중계 llm은 Claude Code를 매번 새로 띄워 프롬프트 캐시를 못 쓰고 도구 정의가 붙어 비용·시간이 OpenAI·Jev와 같은 조건이 아니었다(질문당 약 60배 — 운영 OpenAI가 작은 모델 gpt-6-luna였던 몫이 더 크다. 비교는 같은 가격대 gpt-6.1-sol로 한다). 라우터 이름이 `llm:anthropic:…`(API)/`llm:relay:…`(중계)로 갈려 보고서에서 섞이지 않는다.
