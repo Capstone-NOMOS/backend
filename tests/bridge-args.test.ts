@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { allowedBashRules, allowedToolNames, buildClaudeArgs, buildMcpConfig } from '../src/bridge/claude-args.js';
 
 const OPTIONS = {
-  prompt: '태스크 T-042를 구현하세요',
   mcpConfigPath: 'C:/work/t-042/.nomos-mcp.json',
   cwd: 'C:/work/t-042',
 };
@@ -66,12 +65,12 @@ describe('MCP 격리', () => {
     }
   });
 
-  it('프롬프트는 -p의 값이고, 가변 인자(--allowedTools)가 맨 뒤다', () => {
+  it('프롬프트는 인자로 넘기지 않는다(stdin) — 가변 인자(--allowedTools)가 맨 뒤다', () => {
     const args = buildClaudeArgs(OPTIONS);
 
-    // 프롬프트를 맨 뒤 위치 인자로 두면 --allowedTools가 도구 이름으로 삼킨다.
+    // 명령줄에 실으면 Windows 32k자 한도에서 spawn이 ENAMETOOLONG으로 실패한다(runner.ts가 stdin으로 넣는다).
     expect(args[0]).toBe('-p');
-    expect(args[1]).toBe(OPTIONS.prompt);
+    expect(args[1]).toBe('--output-format');
     expect(args[args.length - 2]).toBe('--allowedTools');
   });
 
