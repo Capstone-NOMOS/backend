@@ -6,6 +6,7 @@
 //   --server <주소>(기본 운영) --total <N>(기본 100) --out <파일>(기본 scripts/data/experiment-questions-<시각>.json)
 //   --project·--full은 id 앞부분만 써도 된다. --only <파일>이면 그 파일의 질문만 같은 순서로 다시 뽑는다(판정·판정 시간·비용만 새로).
 //   npm run questions:extract -- --login orepresent1103 --login orepresent1112 --prev e0106f9d --prev 777fa7da --fill <새 실험 id> --total 100
+//   npm run questions:extract -- --login orepresent1112 --fill latest --total 100      # 이번 실험만(가장 최근에 만든 실험 모드 프로젝트)
 //
 // --prev/--fill이면(대표 결정 2026-11-15): ① --prev 프로젝트들의 구현 중 질문 전부(같은 태스크 반복은 하나만) ② --fill 프로젝트의 구현 중 질문
 //   ③ --fill 프로젝트에서 라우터 판정이 갈린 질문(오래된 것부터) ④ 남은 자리는 질문한 역할(PM·BACKEND·FRONTEND)을 번갈아 골라 고르게 채운다
@@ -127,10 +128,17 @@ async function main(): Promise<void> {
       out(`[${loginId}] 조직이 없다 — 건너뜀`);
       continue;
     }
-    const wanted = [...args.projects, ...args.full, ...args.prev, ...args.fill];
-    const projects = (await api.call<{ projects: Project[] }>('GET', `/orgs/${me.orgId}/projects`)).projects.filter((p) =>
-      wanted.length > 0 ? wanted.some((w) => p.id.startsWith(w)) : p.questionMode === 'experiment',
-    );
+    const listed = (await api.call<{ projects: Project[] }>('GET', `/orgs/${me.orgId}/projects`)).projects;
+    // --fill latest = 이 계정의 실험 모드 프로젝트 중 가장 최근에 만든 것(프로젝트 번호를 몰라도 되게). 찾으면 그 id로 바꿔 둔다.
+    if (args.fill.includes('latest')) {
+      const latest = listed.filter((p) => p.questionMode === 'experiment').sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+      if (latest) {
+        args.fill = args.fill.map((w) => (w === 'latest' ? latest.id : w));
+        out(`[${loginId}] --fill latest → ${latest.name} (${latest.id}, ${latest.createdAt.slice(0, 10)}, ${latest.status})`);
+      }
+    }
+    const wanted = [...args.projects, ...args.full, ...args.prev, ...args.fill].filter((w) => w !== 'latest');
+    const projects = listed.filter((p) => (wanted.length > 0 ? wanted.some((w) => p.id.startsWith(w)) : p.questionMode === 'experiment'));
     if (projects.length === 0) out(`[${loginId}] 실험 모드 프로젝트가 없다`);
     for (const p of projects) {
       const items = (await api.call<{ items: DatasetItem[] }>('GET', `/projects/${p.id}/routing-dataset`)).items;
