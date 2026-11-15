@@ -9,7 +9,7 @@
 //   npm run questions:extract -- --login orepresent1112 --fill latest --total 100      # 이번 실험만(가장 최근에 만든 실험 모드 프로젝트)
 //
 // --prev/--fill이면(대표 결정 2026-11-15): ① --prev 프로젝트들의 구현 중 질문 전부(같은 태스크 반복은 하나만) ② --fill 프로젝트의 구현 중 질문
-//   ③ --fill 프로젝트에서 라우터 판정이 갈린 질문(오래된 것부터) ④ 남은 자리는 질문한 역할(PM·BACKEND·FRONTEND)을 번갈아 골라 고르게 채운다
+//   ③ --fill 프로젝트에서 라우터 판정이 갈린 질문(자리보다 많으면 질문한 역할·기능을 번갈아) ④ 남은 자리는 질문한 역할(PM·BACKEND·FRONTEND)을 번갈아 골라 고르게 채운다
 //   (역할마다 일치 → 비교 불가 순, 오래된 것부터). 같은 문장의 질문은 한 번만. 질문한 역할이 없는 쪽은 건너뛴다(기획 단계 질문은 PM·BE만 묻는다).
 //
 // --full이 있으면(대표 결정 2026-11-13 두 번째): --full 프로젝트는 질문 전부, 나머지 프로젝트는 구현 중 질문(같은 태스크에서 나온 것은 한 번만) + 판정이 갈린 기획 단계 질문만.
@@ -324,26 +324,43 @@ async function writePrevFillMode(args: ReturnType<typeof parseArgs>, all: Picked
   for (const q of all.filter((x) => inPrev(x) && x.stage === 'implementation')) take(q, 'prev_implementation');
   // ② 이번 실험의 구현 중 질문
   for (const q of all.filter((x) => inFill(x) && x.stage === 'implementation')) if (!full()) take(q, 'implementation');
-  // ③ 이번 실험에서 라우터 판정이 갈린 질문
-  const fillRest = all.filter((x) => inFill(x) && x.stage !== 'implementation');
-  for (const q of fillRest.filter((x) => x.agreement === 'disagree')) if (!full()) take(q, 'planning_disagree');
-  // ④ 남은 자리는 질문한 역할을 번갈아(PM → BE → FE) — 역할마다 일치 → 비교 불가 순, 오래된 것부터
-  const chosen = new Set(picked.map((q) => q.id));
-  const queues = new Map<string, Picked[]>(
-    ASKER_ORDER.map((role) => {
-      const mine = fillRest.filter((x) => x.input.askerRole === role && !chosen.has(x.id) && x.agreement !== 'disagree');
-      return [role, [...mine.filter((x) => x.agreement === 'agree'), ...mine.filter((x) => x.agreement === 'incomparable')]];
-    }),
-  );
-  while (!full() && [...queues.values()].some((qs) => qs.length > 0)) {
-    for (const role of ASKER_ORDER) {
-      if (full()) break;
-      const qs = queues.get(role)!;
-      while (qs.length > 0) {
-        if (take(qs.shift()!, 'balanced')) break;
+  // 같은 묶음 안에서 기능(featureKey)을 번갈아 — 오래된 것부터 자르면 앞쪽 기능만 남는다.
+  const spreadByFeature = (qs: Picked[]): Picked[] => {
+    const groups = new Map<string, Picked[]>();
+    for (const q of qs) {
+      const key = q.input.spec?.featureKey ?? q.id;
+      groups.set(key, [...(groups.get(key) ?? []), q]);
+    }
+    const lists = [...groups.values()];
+    const spread: Picked[] = [];
+    for (let i = 0; lists.some((l) => i < l.length); i += 1) for (const l of lists) if (i < l.length) spread.push(l[i]!);
+    return spread;
+  };
+  // 질문한 역할을 번갈아(PM → BE → FE) 하나씩 — 한 역할이 바닥나면 나머지끼리.
+  const roundRobin = (pool: Picked[], selectedAs: Picked['selectedAs'], order: (mine: Picked[]) => Picked[]) => {
+    const queues = new Map<string, Picked[]>(ASKER_ORDER.map((role) => [role, order(pool.filter((x) => x.input.askerRole === role))]));
+    while (!full() && [...queues.values()].some((qs) => qs.length > 0)) {
+      for (const role of ASKER_ORDER) {
+        if (full()) break;
+        const qs = queues.get(role)!;
+        while (qs.length > 0) {
+          if (take(qs.shift()!, selectedAs)) break;
+        }
       }
     }
-  }
+  };
+  // ③ 이번 실험에서 라우터 판정이 갈린 질문 — 자리보다 많으면 역할·기능을 번갈아
+  const fillRest = all.filter((x) => inFill(x) && x.stage !== 'implementation');
+  roundRobin(fillRest.filter((x) => x.agreement === 'disagree'), 'planning_disagree', spreadByFeature);
+  // ④ 남은 자리는 질문한 역할을 번갈아 — 역할마다 일치 → 비교 불가 순
+  const chosen = new Set(picked.map((q) => q.id));
+  roundRobin(
+    fillRest.filter((x) => !chosen.has(x.id) && x.agreement !== 'disagree'),
+    'balanced',
+    (mine) => [...spreadByFeature(mine.filter((x) => x.agreement === 'agree')), ...spreadByFeature(mine.filter((x) => x.agreement === 'incomparable'))],
+  );
+  // 출력은 시각순으로(채점할 때 기능 흐름대로 읽히게).
+  picked.sort((a, b) => a.askedAt.localeCompare(b.askedAt));
 
   out();
   const count = (f: (q: Picked) => boolean) => picked.filter(f).length;
@@ -352,7 +369,8 @@ async function writePrevFillMode(args: ReturnType<typeof parseArgs>, all: Picked
   out(`질문한 역할: ${ASKER_ORDER.map((r) => `${r} ${count((q) => q.input.askerRole === r)}`).join(' · ')}`);
   out(`단계: 구현 ${count((q) => q.stage === 'implementation')} · 기능 명세 ${count((q) => q.stage === 'feature_spec')} · 계약 ${count((q) => q.stage === 'contract')}`);
   const fillDisagree = fillRest.filter((x) => x.agreement === 'disagree').length;
-  if (count((q) => q.selectedAs === 'planning_disagree') < fillDisagree) out(`  (판정이 갈린 질문 ${fillDisagree}개 중 목표에 맞춰 오래된 것부터 넣었다)`);
+  out(`  이번 실험의 판정 갈림 ${fillDisagree}개 (역할별 ${ASKER_ORDER.map((r) => `${r} ${fillRest.filter((x) => x.agreement === 'disagree' && x.input.askerRole === r).length}`).join(' · ')})`);
+  if (count((q) => q.selectedAs === 'planning_disagree') < fillDisagree) out('  (자리보다 많아 질문한 역할·기능을 번갈아 넣었다)');
   out();
   for (const [i, q] of picked.entries()) {
     const r = ROUTERS.filter((k) => q.routers[k] !== undefined).map((k) => `${k}=${q.routers[k] ?? '실패'}`).join(' ');
