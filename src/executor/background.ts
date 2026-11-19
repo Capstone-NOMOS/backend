@@ -55,7 +55,7 @@ export function runningDaemon(): DaemonInfo | null {
 // --background를 뺀 같은 인자로 connect를 분리된 자식으로 띄운다. 이 프로세스는 바로 끝나도 자식은 계속 돈다.
 export function startDaemon(input: { cliPath: string; args: string[]; server: string }): DaemonInfo {
   const existing = runningDaemon();
-  if (existing) throw new Error(`이미 백그라운드에서 돌고 있다(pid ${existing.pid}, 서버 ${existing.server}). 끄려면 nomos stop`);
+  if (existing) throw new Error(`이미 백그라운드에서 실행 중이에요 (pid ${existing.pid}, 서버 ${existing.server}). 끄려면 nomos stop을 실행해 주세요.`);
   mkdirSync(logDir(), { recursive: true });
   const logFile = path.join(logDir(), 'connect.log');
   const fd = openSync(logFile, 'a');
@@ -67,7 +67,7 @@ export function startDaemon(input: { cliPath: string; args: string[]; server: st
     env: { ...process.env, NOMOS_BACKGROUND: '1' },
   });
   closeSync(fd);
-  if (child.pid === undefined) throw new Error('백그라운드 프로세스를 띄우지 못했다');
+  if (child.pid === undefined) throw new Error('백그라운드로 실행하지 못했어요');
   child.unref();
   const info: DaemonInfo = { pid: child.pid, startedAt: new Date().toISOString(), server: input.server, logFile, args };
   mkdirSync(nomosHome(), { recursive: true });

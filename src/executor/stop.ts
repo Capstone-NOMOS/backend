@@ -6,7 +6,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 // 실행이 끝까지 가면 룸에 "생각 중"만 남았다. 서버는 해제하면서 열린 실행을 이미 닫는다(outcome disconnected) — 그래서 종료 보고도 보내지 않는다.
 
 export const AGENT_DISCONNECTED = 'AGENT_DISCONNECTED';
-export const DISCONNECTED_MESSAGE = '이 에이전트의 연결이 해제돼 실행 중인 작업을 멈췄다 — 다시 쓰려면 connect를 실행하라';
+export const DISCONNECTED_MESSAGE = '이 에이전트의 연결이 해제돼서 하던 작업을 멈췄어요. 다시 쓰려면 nomos connect를 실행해 주세요.';
 // connect·start가 연결 해제로 끝날 때의 종료 코드(0이 아니다 — 스크립트·백그라운드 감시가 정상 종료와 가를 수 있게).
 export const DISCONNECTED_EXIT_CODE = 3;
 

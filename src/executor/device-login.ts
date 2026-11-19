@@ -76,9 +76,9 @@ export async function deviceLogin(deps: DeviceLoginDeps): Promise<DeviceLoginRes
   let intervalSec = Number(started.interval) || 5;
   const deadline = Date.now() + (Number(started.expiresIn) || 600) * 1000;
 
-  out(`브라우저에서 승인하세요: ${complete}`);
-  out(`코드: ${String(started.userCode)}   (웹 화면의 코드와 같은지 확인하세요)`);
-  if (!(await openUrl(complete))) out('브라우저를 열지 못했습니다 — 위 주소를 직접 여세요.');
+  out(`브라우저에서 승인해 주세요: ${complete}`);
+  out(`코드: ${String(started.userCode)}   (웹 화면에 보이는 코드와 같은지 확인해 주세요)`);
+  if (!(await openUrl(complete))) out('브라우저를 열지 못했어요. 위 주소를 직접 열어 주세요.');
 
   while (Date.now() < deadline) {
     await sleep(intervalSec * 1000);
@@ -90,9 +90,9 @@ export async function deviceLogin(deps: DeviceLoginDeps): Promise<DeviceLoginRes
         intervalSec = Number(polled.interval) || intervalSec + 5;
         continue;
       case 'denied':
-        throw new DeviceLoginError('승인이 거부됐습니다. 직접 실행한 게 맞다면 login을 다시 실행하세요.');
+        throw new DeviceLoginError('승인이 거부됐어요. 직접 실행한 게 맞다면 다시 실행해 주세요.');
       case 'expired':
-        throw new DeviceLoginError('코드가 만료됐습니다(10분). login을 다시 실행하세요.');
+        throw new DeviceLoginError('코드가 만료됐어요 (10분). 다시 실행해 주세요.');
       case 'approved':
         return {
           credentials: {
@@ -104,8 +104,8 @@ export async function deviceLogin(deps: DeviceLoginDeps): Promise<DeviceLoginRes
           account: polled.account as DeviceLoginResult['account'],
         };
       default:
-        throw new DeviceLoginError(`알 수 없는 응답: ${JSON.stringify(polled)}`);
+        throw new DeviceLoginError(`서버에서 알 수 없는 응답이 왔어요: ${JSON.stringify(polled)}`);
     }
   }
-  throw new DeviceLoginError('코드가 만료됐습니다(10분). login을 다시 실행하세요.');
+  throw new DeviceLoginError('코드가 만료됐어요 (10분). 다시 실행해 주세요.');
 }

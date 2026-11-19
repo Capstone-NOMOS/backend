@@ -84,7 +84,7 @@ describe('deviceLogin — 응답별 동작', () => {
     ]);
     const lines: string[] = [];
     await deviceLogin({ baseUrl: 'https://api.example', agentName: 'mbp', fetchImpl, openUrl: async () => false, sleep: async () => {}, out: (l) => lines.push(l) });
-    expect(lines.join('\n')).toContain('직접 여세요');
+    expect(lines.join('\n')).toContain('직접 열어 주세요');
   });
 
   it.each([

@@ -14,7 +14,7 @@ export type AgentSelf = { projectId: string; teamRole: string | null; maxConcurr
 export type AgentAccount = { agentName: string; loginId: string | null; nickname: string | null; orgName: string | null };
 
 export function accountLine(a: { loginId: string | null; nickname: string | null; orgName: string | null }, agentName: string): string {
-  return `${a.nickname ?? a.loginId ?? '?'} (${a.loginId ?? '?'})${a.orgName ? ` · 조직 ${a.orgName}` : ' · 조직 없음'} — 에이전트 ${agentName}`;
+  return `${a.nickname ?? a.loginId ?? '?'} (${a.loginId ?? '?'}) · ${a.orgName ? `조직 ${a.orgName}` : '조직 없음'} · 에이전트 이름 ${agentName}`;
 }
 
 export type ConnectDeps = {
@@ -40,17 +40,17 @@ export async function connect(deps: ConnectDeps): Promise<AgentSelf> {
   if (deps.codeLogin) {
     await deps.codeLogin();
   } else if (!current || current.baseUrl !== deps.server) {
-    if (current) deps.log(`기존 자격 증명(${current.baseUrl})을 ${deps.server}용으로 교체한다`);
+    if (current) deps.log(`${current.baseUrl}에 연결돼 있던 로그인 정보를 ${deps.server}용으로 바꿀게요`);
     await deps.login();
   } else if ((await deps.refresh()) === 'rejected') {
-    deps.log('저장된 자격 증명이 더 이상 통하지 않는다 — 다시 로그인한다');
+    deps.log('저장된 로그인 정보가 만료돼서 다시 로그인할게요');
     await deps.login();
   } else {
     // 재사용하는 자격 증명이 누구 것인지 보여 준다 — 같은 노트북에서 계정을 바꾸면 예전 계정으로 붙었다(통합 테스트).
     const account = await deps.account?.().catch(() => null);
     if (account) {
-      deps.log(`연결됨: ${accountLine(account, account.agentName)} (저장된 자격 증명)`);
-      deps.log('다른 계정으로 연결하려면 웹의 "에이전트 연결"에서 받은 명령(--code)을 실행하라');
+      deps.log(`연결됐어요: ${accountLine(account, account.agentName)}`);
+      deps.log('다른 계정으로 연결하려면 웹의 "에이전트 연결"에서 받은 명령(--code 포함)을 실행해 주세요');
     }
   }
 
@@ -58,18 +58,18 @@ export async function connect(deps: ConnectDeps): Promise<AgentSelf> {
   for (;;) {
     const self = await deps.describeSelf();
     if (self) {
-      deps.log(`배정 확인 — 프로젝트 ${self.projectId}, 역할 ${self.teamRole ?? '없음'}`);
+      deps.log(`프로젝트에 배정돼 있어요 (역할 ${self.teamRole ?? '없음'})`);
       return self;
     }
     if (!announced) {
-      deps.log(`아직 프로젝트에 배정되지 않았다. 대표에게 에이전트 "${deps.agentName}"의 배정을 요청하라.`);
-      deps.log('배정되면 자동으로 시작한다 — 이 창을 켜 두면 된다 (Ctrl+C로 종료)');
+      deps.log(`아직 프로젝트에 배정되지 않았어요. 대표에게 이 노트북의 에이전트(이름: ${deps.agentName})를 프로젝트에 넣어 달라고 해 주세요.`);
+      deps.log('배정되면 자동으로 시작되니 이 창은 켜 둔 채로 기다려 주세요 (끄려면 Ctrl+C)');
       announced = true;
     }
     await deps.sleep(deps.intervalMs ?? 15_000);
     // 배정 전에 받은 토큰에는 project_id가 없다. 재발급해야 배정이 토큰에 실린다.
     if ((await deps.refresh()) === 'rejected') {
-      deps.log('자격 증명이 거부됐다 — 다시 로그인한다');
+      deps.log('로그인 정보가 거부돼서 다시 로그인할게요');
       await deps.login();
     }
   }
@@ -91,7 +91,7 @@ export function serverCalls(store: CredentialStore, fetchImpl: typeof fetch = fe
       });
       if (res.status >= 400 && res.status < 500) return 'rejected';
       const json = (await res.json().catch(() => ({}))) as { data?: { accessToken?: string } };
-      if (!res.ok || !json.data?.accessToken) throw new Error(`토큰 재발급 실패: ${res.status}`);
+      if (!res.ok || !json.data?.accessToken) throw new Error(`토큰을 새로 받지 못했어요 (HTTP ${res.status})`);
       store.updateAccessToken(json.data.accessToken);
       return 'ok';
     },
@@ -109,7 +109,7 @@ export function serverCalls(store: CredentialStore, fetchImpl: typeof fetch = fe
     // 방금 재발급한 토큰으로 묻는다. 배정 전이면 서버가 403 NOT_PROJECT_MEMBER — null.
     async describeSelf(): Promise<AgentSelf | null> {
       const credentials = store.read();
-      if (!credentials) throw new Error('자격 증명이 없다');
+      if (!credentials) throw new Error('로그인 정보가 없어요');
       const res = await fetchImpl(`${credentials.baseUrl}/api/agents/me`, {
         headers: { Authorization: `Bearer ${credentials.accessToken}` },
       });

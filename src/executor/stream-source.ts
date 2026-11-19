@@ -97,7 +97,7 @@ export function streamTaskSource(deps: StreamDeps): TaskSource & { readonly conn
         refreshedInARow = false;
         questionSignals.add('*');
         contractSignals.add('*');
-        deps.log(`서버 푸시 연결됨 — 프로젝트 ${msg.projectId ?? '?'}`);
+        deps.log('서버와 실시간으로 연결됐어요');
       } else if (msg.type === 'tasks') {
         latest = msg.tasks ?? [];
         wake();
@@ -108,7 +108,7 @@ export function streamTaskSource(deps: StreamDeps): TaskSource & { readonly conn
         if (typeof msg.targetRole === 'string') contractSignals.add(msg.targetRole);
         wake();
       } else if (msg.type === 'error') {
-        deps.log(`서버 푸시 거부: ${msg.code ?? '?'} ${msg.message ?? ''}`.trim());
+        deps.log(`서버가 실시간 연결을 거부했어요: ${msg.code ?? '?'} ${msg.message ?? ''}`.trim());
       }
     };
     socket.onerror = () => {};
@@ -118,12 +118,12 @@ export function streamTaskSource(deps: StreamDeps): TaskSource & { readonly conn
       ws = null;
       if (closed) return;
       if (ev.code === 4403) {
-        deps.log('이 에이전트는 프로젝트 멤버가 아니다 — 푸시를 멈춘다(폴링으로 계속 확인한다)');
+        deps.log('이 에이전트가 프로젝트 멤버가 아니라서 실시간 연결을 끊었어요. 대신 주기적으로 확인할게요.');
         wake();
         return;
       }
       if (ev.code === 4401 && ev.reason === 'AGENT_DISCONNECTED') {
-        deps.log('서버가 이 에이전트의 연결 해제로 푸시를 닫았다');
+        deps.log('이 에이전트의 연결이 해제돼서 서버가 실시간 연결을 닫았어요');
         deps.onAgentDisconnected?.();
         wake();
         return;
@@ -133,10 +133,10 @@ export function streamTaskSource(deps: StreamDeps): TaskSource & { readonly conn
         deps
           .refresh()
           .then(() => connect())
-          .catch((err: unknown) => deps.log(`토큰 재발급 실패 — 푸시를 멈춘다: ${err instanceof Error ? err.message : String(err)}`));
+          .catch((err: unknown) => deps.log(`토큰을 새로 받지 못해서 실시간 연결을 멈췄어요 (${err instanceof Error ? err.message : String(err)})`));
         return;
       }
-      if (wasConnected) deps.log(`서버 푸시 끊김(${ev.code}) — 다시 연결한다. 그동안은 폴링한다`);
+      if (wasConnected) deps.log(`실시간 연결이 끊겼어요 (${ev.code}). 다시 연결하는 동안에는 주기적으로 확인할게요.`);
       wake();
       schedule();
     };
