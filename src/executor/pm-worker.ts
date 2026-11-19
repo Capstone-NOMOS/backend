@@ -153,7 +153,7 @@ export async function handleNextPmJob(
 ): Promise<boolean> {
   const job = (await client.nextPmJob()) as PmJob | null;
   if (!job) return false;
-  log(`PM 작업 ${job.id} (${job.planId ? `계획 ${job.planId}, ` : ''}${PURPOSE_LABEL[job.purpose] ?? job.purpose}) — claude 실행 중`);
+  log(`PM 작업을 받았어요: ${PURPOSE_LABEL[job.purpose] ?? job.purpose}${job.planId ? ` (계획 ${job.planId})` : ''}. Claude를 실행하고 있어요`);
   const started = Date.now();
   let result: PmJobResult | { error: string };
   try {
@@ -163,10 +163,10 @@ export async function handleNextPmJob(
   }
   const sec = Math.round((Date.now() - started) / 1000);
   if ('error' in result) {
-    log(`실패(${sec}s): ${result.error}`);
+    log(`  실패했어요 (${sec}초): ${result.error}`);
     await client.failPmJob(job.id, result.error.slice(0, 2000));
   } else {
-    log(`완료(${sec}s${result.modelLatencyMs !== null ? `, 모델 ${(result.modelLatencyMs / 1000).toFixed(1)}s` : ''}, 출력 ${result.usage.outputTokens} 토큰) — 서버로 보냄`);
+    log(`  끝나서 서버로 보냈어요 (${sec}초${result.modelLatencyMs !== null ? `, 모델 ${(result.modelLatencyMs / 1000).toFixed(1)}초` : ''}, 출력 ${result.usage.outputTokens} 토큰)`);
     await client.submitPmJobResult(job.id, result);
   }
   return true;

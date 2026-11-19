@@ -13,7 +13,7 @@ export function mcpServerPath(): string {
   // 소스에서 tsx로 실행(npm run executor, src/executor/cli.ts) → 서버 빌드 결과 dist/bridge/mcp-server.js
   const built = fileURLToPath(new URL('../../dist/bridge/mcp-server.js', import.meta.url));
   if (existsSync(built)) return built;
-  throw new Error(`MCP 서버 파일을 찾지 못했다(${sibling}). 소스에서 실행 중이면 npm run build를 먼저 하라`);
+  throw new Error(`MCP 서버 파일을 찾지 못했어요 (${sibling}). 소스에서 실행 중이라면 npm run build를 먼저 해 주세요.`);
 }
 
 // 패키지 버전. 패키지에서는 packages/cli/package.json, 소스에서는 backend의 package.json이 읽힌다.

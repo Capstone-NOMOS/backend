@@ -8,7 +8,7 @@ export function removeQuietly(dir: string, warn: (line: string) => void = defaul
     rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     return true;
   } catch (err) {
-    warn(`임시 폴더를 지우지 못했습니다(남겨 둠): ${dir} — ${(err as Error).message}`);
+    warn(`임시 폴더를 지우지 못해서 남겨 뒀어요: ${dir} (${(err as Error).message})`);
     return false;
   }
 }

@@ -144,10 +144,10 @@ function parseQuestion(v: unknown): ContractQuestion | null {
 
 export function parseContractDraft(output: unknown): ContractDraft {
   const value = typeof output === 'string' ? (JSON.parse(output) as unknown) : output;
-  if (!value || typeof value !== 'object') throw new Error('계약 초안 형식이 아니다');
+  if (!value || typeof value !== 'object') throw new Error('모델 응답이 계약 초안 형식이 아니에요');
   const v = value as Record<string, unknown>;
-  if (typeof v.openapiYaml !== 'string' || v.openapiYaml.trim() === '') throw new Error('계약 초안에 openapiYaml이 없다');
-  if (typeof v.summary !== 'string' || v.summary.trim() === '') throw new Error('계약 초안에 summary가 없다');
+  if (typeof v.openapiYaml !== 'string' || v.openapiYaml.trim() === '') throw new Error('계약 초안에 openapiYaml이 없어요');
+  if (typeof v.summary !== 'string' || v.summary.trim() === '') throw new Error('계약 초안에 summary가 없어요');
   const seen = new Set<string>();
   const openQuestions: (ContractQuestion | string)[] = [];
   for (const item of Array.isArray(v.openQuestions) ? v.openQuestions : []) {

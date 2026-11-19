@@ -36,8 +36,8 @@ export function acquireHomeLock(command: string): void {
   const held = existsSync(file) ? readHomeLock() : null;
   if (held && held.pid !== process.pid && alive(held.pid)) {
     throw new Error(
-      `이 폴더(${nomosHome()})는 다른 nomos 프로세스(pid ${held.pid}, ${held.command}, ${held.startedAt}부터)가 쓰고 있다. ` +
-        '한 노트북에서 에이전트를 여럿 돌리려면 창마다 NOMOS_HOME을 다르게 지정한다 — cmd: set NOMOS_HOME=%USERPROFILE%\.nomos-fe / PowerShell: $env:NOMOS_HOME="$HOME\.nomos-fe"',
+      `이 폴더(${nomosHome()})는 이미 다른 nomos가 쓰고 있어요 (pid ${held.pid}, ${held.command}, ${held.startedAt}부터). ` +
+        '한 노트북에서 에이전트를 여러 개 돌리려면 창마다 NOMOS_HOME을 다르게 지정해 주세요. cmd: set NOMOS_HOME=%USERPROFILE%\.nomos-fe / PowerShell: $env:NOMOS_HOME="$HOME\.nomos-fe"',
     );
   }
   mkdirSync(path.dirname(file), { recursive: true });

@@ -124,7 +124,7 @@ export function parseConsultDraft(output: unknown, questions: string[]): Consult
   const parsed = (typeof output === 'string' ? JSON.parse(output.trim().replace(/^```(?:json)?\s*|\s*```$/g, '')) : output) as {
     answers?: unknown;
   };
-  if (!Array.isArray(parsed?.answers)) throw new Error('answers 배열이 없다');
+  if (!Array.isArray(parsed?.answers)) throw new Error('모델 응답에 answers 배열이 없어요');
   const byIndex = new Map<number, Record<string, unknown>>();
   for (const item of parsed.answers as Record<string, unknown>[]) {
     if (item && typeof item.index === 'number') byIndex.set(item.index, item);
@@ -135,7 +135,7 @@ export function parseConsultDraft(output: unknown, questions: string[]): Consult
   questions.forEach((q, i) => {
     const item = byIndex.get(i + 1);
     const answer = item?.answer;
-    if (typeof answer !== 'string' || !answer.trim()) throw new Error(`답이 없는 질문: ${i + 1}. ${q}`);
+    if (typeof answer !== 'string' || !answer.trim()) throw new Error(`답이 빠진 질문이 있어요: ${i + 1}. ${q}`);
     answers[q] = answer;
     // 형식이 틀리면 "정해지지 않음"으로 본다 — 확신 없는 답이 사람 확인 없이 나가지 않게.
     decided[q] = item?.decided === true;

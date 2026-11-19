@@ -188,7 +188,7 @@ export class ActivityReporter {
         } catch (err) {
           if (!this.warned) {
             this.warned = true;
-            this.log(`룸 활동 보고 실패(실행은 계속한다): ${err instanceof Error ? err.message : String(err)}`);
+            this.log(`웹 화면에 진행 상황을 보내지 못했어요. 작업은 그대로 진행해요 (${err instanceof Error ? err.message : String(err)})`);
           }
         }
       }

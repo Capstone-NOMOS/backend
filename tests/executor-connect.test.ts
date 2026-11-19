@@ -86,8 +86,8 @@ describe('connect — 단계별 동작', () => {
     const { deps, calls, lines } = fakeDeps({ selves: [null, null, SELF] });
     expect(await connect(deps)).toEqual(SELF);
     expect(calls).toEqual(['refresh', 'describe', 'sleep', 'refresh', 'describe', 'sleep', 'refresh', 'describe']);
-    expect(lines.filter((l) => l.includes('배정되지 않았다'))).toHaveLength(1);
-    expect(lines.join('\n')).toContain('"mbp"');
+    expect(lines.filter((l) => l.includes('배정되지 않았어요'))).toHaveLength(1);
+    expect(lines.join('\n')).toContain('(이름: mbp)');
   });
 });
 
@@ -205,7 +205,7 @@ describe('connect — 연결 코드와 계정 표시', () => {
       account: async () => ({ agentName: 'mbp', loginId: 'minsu', nickname: '민수', orgName: 'Acme' }),
     });
     await connect(deps);
-    expect(lines).toContain('연결됨: 민수 (minsu) · 조직 Acme — 에이전트 mbp (저장된 자격 증명)');
+    expect(lines).toContain('연결됐어요: 민수 (minsu) · 조직 Acme · 에이전트 이름 mbp');
     expect(lines.some((l) => l.includes('--code'))).toBe(true);
   });
 

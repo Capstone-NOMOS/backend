@@ -21,8 +21,8 @@ function gitIdentity(key: 'user.name' | 'user.email'): ToolCheck {
   return {
     name: `git ${key}`,
     ok: r.ok && r.detail !== '',
-    detail: r.ok && r.detail !== '' ? r.detail : '설정돼 있지 않다',
-    hint: `git config --global ${key} ${key === 'user.name' ? '"이름"' : '"메일 주소"'} 로 설정하세요 — 에이전트가 커밋할 때 쓴다`,
+    detail: r.ok && r.detail !== '' ? r.detail : '설정돼 있지 않아요',
+    hint: `git config --global ${key} ${key === 'user.name' ? '"이름"' : '"메일 주소"'} 로 설정해 주세요. 에이전트가 커밋할 때 이 정보를 써요.`,
   };
 }
 
@@ -31,12 +31,12 @@ export function checkTools(): ToolCheck[] {
   const claudeCmd = resolveClaudeCommand(['--version']);
   const claude = versionOf(claudeCmd.command, claudeCmd.commandArgs);
   return [
-    { name: 'git', ...git, hint: 'https://git-scm.com 에서 설치하세요' },
+    { name: 'git', ...git, hint: 'https://git-scm.com 에서 설치해 주세요' },
     ...(git.ok ? [gitIdentity('user.name'), gitIdentity('user.email')] : []),
     {
       name: 'claude',
       ...claude,
-      hint: 'Claude Code를 설치하고(npm install -g @anthropic-ai/claude-code) 터미널에서 claude를 한 번 실행해 로그인하세요',
+      hint: 'Claude Code를 설치하고(npm install -g @anthropic-ai/claude-code) 터미널에서 claude를 한 번 실행해 로그인해 주세요',
     },
   ];
 }
