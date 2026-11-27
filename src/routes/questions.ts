@@ -1,6 +1,6 @@
 import { Router, type Request } from 'express';
 import { z } from 'zod';
-import { answerQuestion, askQuestion, detachFromQuestion, getQuestionForAgent, listConsultJobs, listProjectDecisions, listProjectQuestions, submitDraft, listMyQuestions } from '../domain/question/service.js';
+import { answerQuestion, askQuestion, rerouteQuestion, detachFromQuestion, getQuestionForAgent, listConsultJobs, listProjectDecisions, listProjectQuestions, submitDraft, listMyQuestions } from '../domain/question/service.js';
 import { TEAM_ROLES } from '../domain/roles.js';
 import type { UserContext } from '../domain/project/visibility.js';
 import { ROUTING_STAGES } from '../domain/question/router.js';
@@ -147,6 +147,19 @@ questionsRouter.post(
     const { questionId } = req.params as z.infer<typeof questionParams>;
     const { answers } = req.body as z.infer<typeof answerBody>;
     res.status(200).json({ data: await answerQuestion(actorOf(req), questionId, answers) });
+  },
+);
+
+// POST /api/questions/:questionId/reroute — 지금 대상 역할 담당 또는 대표가 질문을 다른 역할로 다시 보낸다(038, 대기 중인 질문만).
+const rerouteBody = z.object({ targetRole: z.enum([...TEAM_ROLES, 'PM']), reason: z.string().trim().max(500).nullable().optional() }).strict();
+questionsRouter.post(
+  '/questions/:questionId/reroute',
+  validate({ params: questionParams, body: rerouteBody }),
+  authenticate,
+  async (req, res) => {
+    const { questionId } = req.params as z.infer<typeof questionParams>;
+    const { targetRole, reason } = req.body as z.infer<typeof rerouteBody>;
+    res.status(200).json({ data: await rerouteQuestion(actorOf(req), questionId, targetRole, reason || null) });
   },
 );
 
