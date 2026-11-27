@@ -14,7 +14,9 @@ import { blockTaskForQuestion, escalateQuestionTask, findSpecForTask, findTaskBy
 import { routeQuestion } from './router-registry.js';
 import { afterQuestionAsked } from './after-ask.js';
 import { afterAnswerCommitted, afterAnswerInTx } from './answer-effects.js';
-import { toRoutingSnapshot, type QuestionTarget, type RoutingInput } from './router.js';
+import { PM_TARGET, toRoutingSnapshot, type QuestionTarget, type RoutingInput } from './router.js';
+import { questionsChanged } from '../dispatch/questions-changed.js';
+import { schedulePmDraft } from './pm-draft.js';
 import { ALL_DECISION_STATUSES, ANSWERED_DECISION_STATUSES, selectDecisions, type QuestionDecision } from './decisions.js';
 import { findApprovedContractForSpec } from '../contract/repository.js';
 import type { AgentContext } from '../task/service.js';
@@ -26,6 +28,7 @@ import {
   listRoleRepos,
   listUndraftedForRole,
   markAnsweredByHuman,
+  rerouteQuestion as rerouteQuestionRow,
   saveDraft,
   type AgentQuestion,
   type AnswerSource,
@@ -336,7 +339,7 @@ export async function submitDraft(ctx: AgentContext, questionId: string, draft: 
   const autoAnswered = question.questions.every((q) => draft.decided[q.question] === true);
   const project = (await findProjectById(pool, question.projectId))!;
   const result = await withTransaction(async (tx) => {
-    if (!(await saveDraft(tx, questionId, draft, ctx.agentId, autoAnswered))) {
+    if (!(await saveDraft(tx, questionId, draft, ctx.agentId, autoAnswered, question.targetRole))) {
       throw new AppError('QUESTION_CLOSED', 'question is no longer waiting for a draft');
     }
     const effects = autoAnswered ? await afterAnswerInTx(tx, (await findQuestion(tx, questionId))!) : { resumedTask: false, settled: null };
@@ -424,4 +427,72 @@ export async function answerQuestion(actor: UserContext, questionId: string, ans
   });
   afterAnswerCommitted(result.answered.projectId, result.effects);
   return result.answered;
+}
+
+// 재지정(038) — 라우터가 보낸 대상이 그 결정을 내릴 사람이 아니면, 지금 대상 역할 담당 또는 대표가 다른 역할로 다시 보낸다.
+// 바뀌는 것은 "지금 답할 역할"(target_role)뿐이고, 답할 자격·받은 편지함·상담 실행·결정 전달은 모두 이 값을 읽으므로 그대로 따라간다.
+// - 대기 중(pending)인 질문만. 에이전트가 이미 답한(agent_answered) 질문은 답이 묻는 쪽에 갔다 — 다르게 정하려면 뒤집기(answer)를 쓴다.
+// - 질문한 역할로도 보낼 수 있다("그건 FE가 정할 일") — 그 역할의 **사람** 담당이 답한다. 상담 실행은 돌리지 않는다
+//   (묻는 에이전트가 이미 자기 레포를 보고 모르겠다고 물은 것이다 — listUndraftedForRole도 이런 질문을 거른다).
+// - 옛 대상의 상담 초안은 지운다. 새 대상이 다른 FE·BE면 그 역할 Executor를 깨우고, PM이면 PM 답 초안을 쓴다(처음 질문할 때와 같다).
+// - 라우팅 평가 기록은 건드리지 않는다 — 라우터의 처음 판정은 rerouted_from에 남고 평가는 그 값을 읽는다.
+export async function rerouteQuestion(
+  actor: UserContext,
+  questionId: string,
+  to: QuestionTarget,
+  reason: string | null,
+): Promise<AgentQuestion> {
+  const existing = await findQuestion(pool, questionId);
+  if (!existing) throw new AppError('QUESTION_NOT_FOUND', `question ${questionId} not found`);
+  const project = await findProjectById(pool, existing.projectId);
+  if (!project) throw new AppError('QUESTION_NOT_FOUND', `question ${questionId} not found`);
+  if (project.orgId !== actor.orgId) throw new AppError('CROSS_ORG_ACCESS', 'cannot access another organization');
+  const current = await settleExpiry(existing, actor.orgId);
+  if (current.status !== 'pending') {
+    throw new AppError('QUESTION_CLOSED', `question is already ${current.status} — only a pending question can be rerouted`);
+  }
+
+  // 답할 자격과 같은 정의(answerQuestion) — 지금 대상 역할 담당 또는 대표.
+  const members = await listProjectMembers(pool, current.projectId);
+  const ownsTarget = members.some((m) => m.teamRole === current.targetRole && m.userId === actor.userId);
+  const isRep = actor.orgRole === 'REPRESENTATIVE';
+  if (!ownsTarget && !isRep) {
+    throw new AppError('NOT_QUESTION_TARGET', `only the ${current.targetRole} owner or the representative can reroute`);
+  }
+  const violations: Violation[] = [];
+  if (to === current.targetRole) violations.push({ where: 'targetRole', message: `이미 ${to}에게 가 있다` });
+  if (violations.length > 0) throw new AppError('QUESTION_INVALID', 'invalid reroute', violations);
+
+  const from = current.targetRole;
+  const rerouted = await withTransaction(async (tx) => {
+    if (!(await rerouteQuestionRow(tx, questionId, from, to))) {
+      throw new AppError('QUESTION_CLOSED', 'question was answered, expired or rerouted concurrently');
+    }
+    await appendEvent(tx, {
+      orgId: actor.orgId,
+      projectId: current.projectId,
+      type: 'QUESTION_REROUTED',
+      onBehalfOf: actor.userId,
+      policyHash: project.policyHash,
+      payload: {
+        questionId,
+        taskId: current.taskId,
+        stage: current.stage,
+        planId: current.planId,
+        contractId: current.contractId,
+        fromRole: from,
+        targetRole: to,
+        reroutedByRole: ownsTarget ? 'TARGET_OWNER' : 'REPRESENTATIVE',
+        reason,
+        clearedDraft: current.draft !== null,
+      },
+    });
+    return (await findQuestion(tx, questionId))!;
+  });
+  // 커밋 뒤 — 새 대상에게 질문할 때와 같은 후처리. 실험 모드(033)는 상담·PM 초안이 없다(자동 답이 처리한다).
+  if (project.questionMode !== 'experiment') {
+    if (to !== rerouted.askerRole) questionsChanged(rerouted.projectId, to);
+    if (to === PM_TARGET && rerouted.stage !== 'feature_spec') schedulePmDraft(questionId, actor.orgId);
+  }
+  return rerouted;
 }

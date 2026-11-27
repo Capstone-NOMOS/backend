@@ -1013,7 +1013,8 @@ Table agent_questions {
   plan_id uuid [ref: > plans.id, note: '★ 033: feature_spec 질문이 나온 기능 명세 초안']
   contract_id uuid [ref: > contracts.id, note: '★ 033: contract 질문이 나온 계약']
   asker_role text [not null, note: 'FRONTEND | BACKEND | PM(★ 033 기능 명세 초안)']
-  target_role text [not null, note: '답할 역할 — 서버의 질문 라우터가 정한다']
+  target_role text [not null, note: '지금 답할 역할 — 서버의 질문 라우터가 정한다. ★ 038 재지정하면 바뀐다']
+  rerouted_from text [note: '★ 038: 재지정 전 라우터가 처음 정한 대상(재지정 안 했으면 NULL). 라우팅 평가는 COALESCE(rerouted_from, target_role)로 읽는다']
   routed_by text [not null, note: "라우터 구현(domain/question/router.ts). 기본 'role_rule:opposite'"]
   routing jsonb [not null, default: '{}', note: '라우터 판정 상세 {confidence, reason, latencyMs, fallback}']
   questions jsonb [not null, note: 'Claude Code AskUserQuestion 형식 그대로(1~4개)']
@@ -1051,6 +1052,7 @@ Table agent_questions {
     agent_questions_answered_by_chk (answered_by IS NOT NULL) = (status = 'answered' AND answer_source IS DISTINCT FROM 'auto_first_option')
     agent_questions_auto_answer_chk answer_source IS DISTINCT FROM 'auto_first_option' OR status = 'answered'
     idx_agent_questions_plan (plan_id) WHERE plan_id IS NOT NULL · idx_agent_questions_contract (contract_id) WHERE contract_id IS NOT NULL
+    ★ 038 agent_questions_rerouted_from_chk rerouted_from IS NULL OR rerouted_from IN ('FRONTEND','BACKEND','PM')
   '''
 }
 

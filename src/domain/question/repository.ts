@@ -32,6 +32,8 @@ export type AgentQuestion = {
   askedByAgentId: string | null;
   askerRole: RoutingAsker;
   targetRole: QuestionTarget;
+  // 038: 재지정 전에 라우터가 처음 정한 대상(재지정된 적 없으면 null). targetRole은 지금 답할 역할이다.
+  reroutedFrom: QuestionTarget | null;
   routedBy: string;
   routing: RoutingDetail;
   questions: AskedQuestion[];
@@ -60,6 +62,7 @@ function toQuestion(row: QueryResultRow): AgentQuestion {
     askedByAgentId: row.asked_by_agent ?? null,
     askerRole: row.asker_role,
     targetRole: row.target_role,
+    reroutedFrom: row.rerouted_from ?? null,
     routedBy: row.routed_by,
     routing: row.routing,
     questions: row.questions,
@@ -164,6 +167,19 @@ export async function markAutoAnswered(db: Queryable, id: string, answers: Recor
   return rowCount === 1;
 }
 
+// 재지정(038) — 대기 중이고 대상이 아직 from일 때만 바뀐다(동시에 답·만료·다른 재지정이 오면 한쪽만 이긴다).
+// 옛 대상의 상담 초안은 지운다(그 관점으로 쓴 것이라 새 대상에게 참고가 되지 않는다). 처음 판정은 rerouted_from에 한 번만 남긴다.
+export async function rerouteQuestion(db: Queryable, id: string, from: QuestionTarget, to: QuestionTarget): Promise<boolean> {
+  const { rowCount } = await db.query(
+    `UPDATE agent_questions
+        SET target_role = $3, rerouted_from = COALESCE(rerouted_from, target_role),
+            draft = NULL, drafted_by_agent = NULL, drafted_at = NULL
+      WHERE id = $1 AND status = 'pending' AND target_role = $2 AND expires_at > now()`,
+    [id, from, to],
+  );
+  return rowCount === 1;
+}
+
 // 기획 단계 질문(033) — 계획(기능 명세 초안) 또는 계약에 붙은 질문.
 export type PlanningSubject = { kind: 'plan'; planId: string } | { kind: 'contract'; contractId: string };
 
@@ -203,7 +219,15 @@ export async function expirePendingQuestionsOf(db: Queryable, subject: PlanningS
 
 // 상담 실행의 초안을 저장한다(처음 한 번만). asAnswer면 초안이 곧 답이다(전부 decided) — agent_answered.
 // agentId가 null이면 PM 초안이다(025, 대표 노트북 또는 서버 키로 돈다 — DB가 PM 질문에서만 허용한다). PM 초안은 답이 되지 않는다.
-export async function saveDraft(db: Queryable, id: string, draft: QuestionDraft, agentId: string | null, asAnswer: boolean): Promise<boolean> {
+// targetRole: 초안을 쓴 쪽이 본 대상. 그 사이 재지정(038)됐으면 저장하지 않는다 — 옛 대상의 관점으로 쓴 초안이 새 대상의 질문에 붙지 않게.
+export async function saveDraft(
+  db: Queryable,
+  id: string,
+  draft: QuestionDraft,
+  agentId: string | null,
+  asAnswer: boolean,
+  targetRole: QuestionTarget,
+): Promise<boolean> {
   const { rowCount } = await db.query(
     `UPDATE agent_questions
         SET draft = $2, drafted_by_agent = $3, drafted_at = now(),
@@ -211,8 +235,8 @@ export async function saveDraft(db: Queryable, id: string, draft: QuestionDraft,
             answers = CASE WHEN $4 THEN $5::jsonb ELSE answers END,
             answer_source = CASE WHEN $4 THEN 'agent' ELSE answer_source END,
             answered_at = CASE WHEN $4 THEN now() ELSE answered_at END
-      WHERE id = $1 AND status = 'pending' AND draft IS NULL AND expires_at > now()`,
-    [id, JSON.stringify(draft), agentId, asAnswer, JSON.stringify(draft.answers)],
+      WHERE id = $1 AND status = 'pending' AND draft IS NULL AND expires_at > now() AND target_role = $6`,
+    [id, JSON.stringify(draft), agentId, asAnswer, JSON.stringify(draft.answers), targetRole],
   );
   return rowCount === 1;
 }
@@ -238,6 +262,8 @@ export async function listUndraftedForRole(db: Queryable, projectId: string, rol
   const { rows } = await db.query(
     `SELECT q.* FROM agent_questions q JOIN projects p ON p.id = q.project_id
       WHERE q.project_id = $1 AND q.target_role = $2 AND q.status = 'pending' AND q.draft IS NULL AND q.expires_at > now()
+        -- 질문한 역할로 재지정된 질문(038)은 사람 담당이 답한다 — 묻는 에이전트가 이미 자기 레포를 보고 모른다고 물었다.
+        AND q.target_role <> q.asker_role
         -- 실험 모드(033)는 상담 실행을 하지 않는다 — 라우팅 기록 뒤 첫 선택지로 자동 답한다.
         AND p.question_mode = 'normal'
       ORDER BY q.created_at, q.id
@@ -400,7 +426,8 @@ export async function listRoutingDatasetRows(
   const { rows } = await db.query(
     `SELECT id, routing_input, gold_target, created_at, routed_by, answer_source,
             COALESCE(routing_input->>'stage', 'implementation') AS stage,
-            CASE WHEN status = 'self_owned' THEN 'SELF' ELSE target_role END AS target
+            -- 라우터가 실제로 보낸 판정 — 재지정(038)했으면 처음 대상(rerouted_from). 재지정은 평가 숫자를 바꾸지 않는다.
+            CASE WHEN status = 'self_owned' THEN 'SELF' ELSE COALESCE(rerouted_from, target_role) END AS target
        FROM agent_questions
       WHERE project_id = $1 AND routing_input IS NOT NULL AND (NOT $2 OR gold_target IS NOT NULL)
         AND ($3::text IS NULL OR COALESCE(routing_input->>'stage', 'implementation') = $3)
