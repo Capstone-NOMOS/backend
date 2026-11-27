@@ -288,7 +288,7 @@ describe('Executor 쪽 수신(streamTaskSource)', () => {
         ids = (await source.nextTasks(5)).map((t) => t.id);
       }
       expect(ids).toEqual([task.id]);
-      expect(lines.join('\n')).toContain('서버 푸시 연결됨');
+      expect(lines.join('\n')).toContain('실시간으로 연결됐어요');
     } finally {
       source.close();
     }

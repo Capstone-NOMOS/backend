@@ -32,7 +32,7 @@ export function readCredentials(): Credentials | null {
   if (!existsSync(file)) return null;
   const parsed = JSON.parse(readFileSync(file, 'utf-8')) as Partial<Credentials>;
   if (!parsed.baseUrl || !parsed.accessToken || !parsed.refreshToken || !parsed.agentId) {
-    throw new Error(`${file}에 baseUrl·accessToken·refreshToken·agentId가 모두 있어야 합니다`);
+    throw new Error(`로그인 정보 파일(${file})이 손상됐어요. nomos connect를 다시 실행해 주세요.`);
   }
   return parsed as Credentials;
 }

@@ -82,7 +82,7 @@ function exitDisconnected(): never {
 function createClient(): NomosClient {
   const credentials = readCredentials();
   if (!credentials) {
-    throw new Error(`${credentialsPath()}가 없습니다. 먼저 connect(또는 login)를 실행하세요`);
+    throw new Error(`로그인 정보(${credentialsPath()})가 없어요. 먼저 nomos connect를 실행해 주세요.`);
   }
   return new NomosClient({
     baseUrl: credentials.baseUrl,
@@ -138,16 +138,16 @@ async function consultPending(client: NomosClient, role: string): Promise<void> 
     try {
       const active = [...activeWorkspaces.values()].find((w) => repos.some((r) => r.fullName === w.repo));
       const repo = active ? { fullName: active.repo } : repos[0];
-      if (!repo) throw new Error('이 역할이 소유한 레포가 프로젝트에 없다');
+      if (!repo) throw new Error('이 역할이 맡은 레포가 프로젝트에 없어요');
       const dir = active ? active.dir : ensureRepo({ fullName: repo.fullName, cloneUrl: repos[0]!.cloneUrl }, { log }).path;
-      log(`상담 실행: ${job.askerRole}의 질문 ${job.questions.length}개 — ${repo.fullName}${active ? ' (진행 중인 작업공간)' : ''}`);
+      log(`${job.askerRole} 쪽에서 온 질문 ${job.questions.length}개의 답을 ${repo.fullName}에서 찾고 있어요${active ? ' (작업 중인 폴더 기준)' : ''}`);
       const draft = await runConsult({ dir, role, repoName: repo.fullName, question: job, signal: agentStop.signal });
       const result = await client.submitDraft(job.id, draft);
-      log(result.status === 'agent_answered' ? '  초안 올림 — 전부 코드에 정해져 있어 바로 답이 됐다(사람 확인 대기)' : '  초안 올림 — 정해지지 않은 결정이 있어 담당자에게 넘어갔다');
+      log(result.status === 'agent_answered' ? '  코드에 이미 정해져 있는 내용이라 바로 답을 올렸어요' : '  아직 정해지지 않은 부분이 있어서 담당자에게 넘겼어요');
     } catch (err) {
       consultGaveUp.add(job.id);
       // 연결 해제로 멈췄으면 사유는 이미 남겼다(그 뒤의 보고는 401이라 보내지 않는다).
-      if (!agentStop.stopped) log(`  상담 실패 — 담당자가 직접 답한다: ${err instanceof Error ? err.message : String(err)}`);
+      if (!agentStop.stopped) log(`  답을 찾지 못해서 담당자가 직접 답하게 돼요 (${err instanceof Error ? err.message : String(err)})`);
     } finally {
       consulting.delete(job.id);
     }
@@ -172,7 +172,7 @@ async function contractPending(client: NomosClient): Promise<void> {
       const active = [...activeWorkspaces.values()].find((w) => repos.some((r) => r.fullName === w.repo));
       const repo = active ? repos.find((r) => r.fullName === active.repo)! : repos[0];
       if (!repo) {
-        for (const job of jobs) await reportContractFailure(client, job, new Error('BACKEND가 소유한 레포가 프로젝트에 없다'));
+        for (const job of jobs) await reportContractFailure(client, job, new Error('백엔드가 맡은 레포가 프로젝트에 없어요'));
         return;
       }
       // 레포 최신화는 묶음당 한 번(C).
@@ -182,13 +182,13 @@ async function contractPending(client: NomosClient): Promise<void> {
       const firsts = jobs.filter((j) => j.attempt === 1);
       let batched = new Map<string, ContractDraft>();
       if (firsts.length >= 2) {
-        log(`계약 묶음 작성: ${firsts.map((j) => j.featureKey).join(', ')} (${firsts.length}개, 1회차) — ${repo.fullName}`);
+        log(`API 계약 ${firsts.length}개(${firsts.map((j) => j.featureKey).join(', ')})를 한 번에 쓰고 있어요 (${repo.fullName})`);
         try {
           batched = await runContractBatch({ dir, repoName: repo.fullName, jobs: firsts, approved, signal: agentStop.signal });
           const missing = firsts.filter((j) => !batched.has(j.featureKey)).map((j) => j.featureKey);
-          if (missing.length > 0) log(`  묶음에서 빠진 기능 ${missing.join(', ')} — 하나씩 다시 쓴다`);
+          if (missing.length > 0) log(`  ${missing.join(', ')}는 빠져서 따로 다시 쓸게요`);
         } catch (err) {
-          log(`  묶음 작성 실패 — 하나씩 쓴다: ${err instanceof Error ? err.message : String(err)}`);
+          log(`  한 번에 쓰지 못해서 하나씩 쓸게요 (${err instanceof Error ? err.message : String(err)})`);
         }
       }
 
@@ -196,18 +196,18 @@ async function contractPending(client: NomosClient): Promise<void> {
         if (agentStop.stopped) break;
         try {
           const ready = batched.get(job.featureKey);
-          if (!ready) log(`계약 작성: ${job.featureKey} ${job.specTitle} (${job.attempt}회차) — ${repo.fullName}`);
+          if (!ready) log(`API 계약을 쓰고 있어요: ${job.featureKey} ${job.specTitle}${job.attempt > 1 ? ` (${job.attempt}번째)` : ''} (${repo.fullName})`);
           let draft = ready ?? (await runContractDraft({ dir, repoName: repo.fullName, job, approved, signal: agentStop.signal }));
           try {
             await client.submitContractDraft(job.id, { attempt: job.attempt, ...draft });
           } catch (err) {
             if (!(err instanceof NomosApiError && err.code === 'CONTRACT_INVALID')) throw err;
             const problems = Array.isArray(err.details) ? err.details.map(String) : [err.message];
-            log(`  ${job.featureKey} 형식 위반 ${problems.length}개 — 한 번 고쳐 쓴다`);
+            log(`  ${job.featureKey} 형식이 맞지 않는 곳이 ${problems.length}개 있어서 한 번 고쳐 쓸게요`);
             draft = await runContractDraft({ dir, repoName: repo.fullName, job, approved, problems, signal: agentStop.signal });
             await client.submitContractDraft(job.id, { attempt: job.attempt, ...draft });
           }
-          log(`  ${job.featureKey} 초안 올림 — BE 담당이 웹에서 확정하거나 수정을 요청한다`);
+          log(`  ${job.featureKey} 초안을 올렸어요. 백엔드 담당자가 웹에서 확정하거나 수정을 요청할 수 있어요`);
         } catch (err) {
           await reportContractFailure(client, job, err);
         }
@@ -224,23 +224,23 @@ async function reportContractFailure(client: NomosClient, job: ContractJobPayloa
   if (agentStop.stopped) return;
   // 그 사이 수정 요청이 와서 회차가 바뀌었다 — 새 회차는 다음 확인에서 다시 쓴다.
   if (err instanceof NomosApiError && err.code === 'CONTRACT_STALE') {
-    log(`  ${job.featureKey} — 그 사이 계약이 바뀌었다, 이 회차는 버린다`);
+    log(`  ${job.featureKey}: 그 사이 계약이 바뀌어서 이번 초안은 버렸어요`);
     return;
   }
   const reason = err instanceof Error ? err.message : String(err);
-  log(`  ${job.featureKey} 계약 작성 실패 — BE 담당이 다시 요청할 수 있다: ${reason}`);
+  log(`  ${job.featureKey} 계약을 쓰지 못했어요. 백엔드 담당자가 웹에서 다시 요청할 수 있어요 (${reason})`);
   await client.failContractDraft(job.id, { attempt: job.attempt, reason: reason.slice(0, 1000) }).catch(() => {});
 }
 
 async function handleTask(client: NomosClient, projectId: string, task: TaskSummary): Promise<void> {
-  log(`태스크 ${task.id} — ${task.title}`);
+  log(`작업을 시작해요: ${task.title} (${task.id})`);
   const briefing = (await client.getBriefing(task.id)) as unknown as Briefing;
 
   // cloneUrl이 없는 옛 서버(브리핑에 필드 자체가 없음)도 github.com/{fullName}으로 받는다.
   const checkout = ensureRepo({ fullName: briefing.repo.fullName, cloneUrl: briefing.repo.cloneUrl ?? null }, { log });
   // 서버가 만든 시작 기준점이 있으면 거기서 분기한다(선행 코드가 이미 합쳐져 있다). 받지 못하면 기본 브랜치에서 따고 선행을 직접 합친다.
   const serverBase = briefing.base && fetchCommit(checkout.path, briefing.base.branchName, briefing.base.commitSha) ? briefing.base : null;
-  if (briefing.base && !serverBase) log(`서버 기준점 ${briefing.base.branchName}을 받지 못했다 — 선행을 직접 합친다`);
+  if (briefing.base && !serverBase) log(`서버가 준 시작 지점(${briefing.base.branchName})을 받지 못해서 앞선 작업은 여기서 직접 합칠게요`);
   const workspace = prepareWorkspace({
     repoPath: checkout.path,
     projectId,
@@ -251,17 +251,17 @@ async function handleTask(client: NomosClient, projectId: string, task: TaskSumm
     settings: briefing.claudeSettings,
     policyHash: briefing.policyHash,
   });
-  log(`작업공간 ${workspace.dir} (브랜치 ${workspace.branch})`);
+  log(`작업 폴더: ${workspace.dir} (브랜치 ${workspace.branch})`);
   // 선행 작업 위에서 시작한다 — 새로 딴 브랜치일 때만(이어 가는 브랜치에는 이미 들어 있다).
   let predecessorMerge: PredecessorMerge | undefined;
   if (workspace.startedFresh && serverBase && (briefing.predecessors?.length ?? 0) > 0) {
     // 서버가 이미 합쳤다 — 프롬프트에 "선행 코드가 들어 있다"만 알린다.
     predecessorMerge = { merged: briefing.predecessors!, failed: [] };
-    log(`  서버 기준점에서 시작: ${serverBase.branchName} (${serverBase.commitSha.slice(0, 12)}) — 선행 ${briefing.predecessors!.length}개 포함`);
+    log(`  앞선 작업 ${briefing.predecessors!.length}개가 합쳐진 상태에서 시작해요 (${serverBase.branchName} ${serverBase.commitSha.slice(0, 12)})`);
   } else if (workspace.startedFresh && (briefing.predecessors?.length ?? 0) > 0) {
     predecessorMerge = mergePredecessors(workspace.dir, briefing.predecessors!);
-    for (const p of predecessorMerge.merged) log(`  선행 합침: ${p.title} (${p.commitSha.slice(0, 12)})`);
-    for (const f of predecessorMerge.failed) log(`  선행 합치지 못함: ${f.predecessor.title} — ${f.reason}`);
+    for (const p of predecessorMerge.merged) log(`  앞선 작업을 합쳤어요: ${p.title} (${p.commitSha.slice(0, 12)})`);
+    for (const f of predecessorMerge.failed) log(`  앞선 작업을 합치지 못했어요: ${f.predecessor.title} (${f.reason})`);
   }
   activeWorkspaces.set(task.id, { dir: workspace.dir, repo: briefing.repo.fullName });
   // 프롬프트에 넣는 노트·결정 = 제출 때 "받은 것"으로 함께 보낼 노트·결정. MCP 서버(submit_artifact)가 읽는다.
@@ -284,7 +284,7 @@ async function handleTask(client: NomosClient, projectId: string, task: TaskSumm
     .startRun(task.id)
     .then(() => true)
     .catch((err: unknown) => {
-      log(`룸에 실행 시작을 알리지 못했다(실행은 계속한다): ${err instanceof Error ? err.message : String(err)}`);
+      log(`웹 화면에 시작을 알리지 못했어요. 작업은 그대로 진행해요 (${err instanceof Error ? err.message : String(err)})`);
       return false;
     });
   const reporter = runOpen ? new ActivityReporter(client, task.id, log) : null;
@@ -314,7 +314,7 @@ async function handleTask(client: NomosClient, projectId: string, task: TaskSumm
   // 작업공간은 지우지 않는다(남기는 규칙 그대로).
   if (result.outcome === 'aborted') {
     await reporter?.close().catch(() => {});
-    log(`태스크 ${task.id} 실행을 멈췄다(연결 해제). 작업공간은 남긴다: ${workspace.dir}`);
+    log(`연결이 해제돼서 작업을 멈췄어요. 작업 폴더는 남겨 뒀어요: ${workspace.dir}`);
     return;
   }
   const committed = headSha(workspace.dir) !== before;
@@ -336,24 +336,24 @@ async function handleTask(client: NomosClient, projectId: string, task: TaskSumm
         ...(result.outcome === 'stalled' ? { lastMessage: (summary.lastMessage ? `${stalledNote} — 마지막 말: ${summary.lastMessage}` : stalledNote).slice(0, 2000) } : {}),
       })
       .then((r) => {
-        if (r.blocked) log('제출 없이 끝나 태스크가 멈춤(BLOCKED)으로 바뀌었다 — 대표가 원인을 해결하고 재개하면 다시 가져간다');
+        if (r.blocked) log('제출하지 못하고 끝나서 이 작업은 멈춤 상태가 됐어요. 담당자가 웹에서 원인을 확인하고 재개하면 다시 가져올게요.');
       })
-      .catch((err: unknown) => log(`룸에 실행 종료를 알리지 못했다: ${err instanceof Error ? err.message : String(err)}`));
+      .catch((err: unknown) => log(`웹 화면에 종료를 알리지 못했어요 (${err instanceof Error ? err.message : String(err)})`));
   }
 
   // 자동 재시도는 넣지 않는다. tasks.retry_count는 서버가 관리하는 값이고,
   // Executor가 멋대로 돌리면 M4(재작업률)가 오염된다.
   if (result.outcome === 'completed' && committed) {
-    log(`완료 (${Math.round(result.durationMs / 1000)}초). 커밋 있음 — 제출은 모델이 이미 했을 것`);
+    log(`작업이 끝났어요 (${Math.round(result.durationMs / 1000)}초). 이어서 검사를 돌릴게요.`);
     await reportBridgeStages(client, task.id, workspace.dir, briefing.specTests);
   } else if (result.outcome === 'completed') {
-    log(`정상 종료했지만 커밋이 없다. 태스크는 그대로 둔다. 로그: ${result.logPath}`);
+    log(`작업은 끝났는데 커밋이 없어요. 자세한 기록: ${result.logPath}`);
   } else if (result.outcome === 'stalled') {
-    log(`${Math.round(DEFAULT_IDLE_MS / 60_000)}분 동안 모델 출력이 없어 끊었다(응답 없음). 재시도하지 않는다. 로그: ${result.logPath}`);
+    log(`${Math.round(DEFAULT_IDLE_MS / 60_000)}분 동안 응답이 없어서 멈췄어요. 자세한 기록: ${result.logPath}`);
   } else if (result.outcome === 'timeout') {
-    log(`30분 초과로 종료했다. 재시도하지 않는다. 로그: ${result.logPath}`);
+    log(`30분이 넘어서 멈췄어요. 자세한 기록: ${result.logPath}`);
   } else {
-    log(`비정상 종료 (exit=${result.exitCode}). 재시도하지 않는다. 로그: ${result.logPath}`);
+    log(`작업이 비정상적으로 끝났어요 (종료 코드 ${result.exitCode}). 자세한 기록: ${result.logPath}`);
   }
 }
 
@@ -367,7 +367,7 @@ async function reportBridgeStages(
 ): Promise<void> {
   const [latest] = await client.listArtifacts(taskId);
   if (!latest) {
-    log('산출물이 없다 — V2·V4를 붙일 곳이 없어 건너뛴다');
+    log('제출된 결과가 없어서 검사는 건너뛸게요');
     return;
   }
   const artifactId = String(latest.id);
@@ -377,17 +377,17 @@ async function reportBridgeStages(
     await runLint(workspaceDir),
   ];
   for (const report of reports) {
-    log(`${report.stage} ${report.result} (${Math.round(report.durationMs / 1000)}초)`);
+    log(`${report.stage === 'V2' ? '명세 시험' : '린트'}: ${{ PASS: '통과', FAIL: '실패', SKIPPED: '건너뜀' }[report.result]} (${Math.round(report.durationMs / 1000)}초)`);
     try {
       const summary = (await client.reportVerification(artifactId, report)) as {
         outcome?: string;
         taskState?: string;
       };
-      log(`  보고됨 — 결론 ${summary.outcome ?? '?'} / 태스크 ${summary.taskState ?? '?'}`);
+      log(`  서버에 보냈어요 (작업 상태 ${summary.taskState ?? '?'})`);
     } catch (err) {
       // 보고 실패로 작업 자체를 되돌리지 않는다. 서버에는 아직 결과가 없으므로
       // 태스크는 VERIFYING에 머물고, 사람이 보면 무엇이 빠졌는지 알 수 있다.
-      log(`  보고 실패: ${err instanceof Error ? err.message : String(err)}`);
+      log(`  서버에 보내지 못했어요 (${err instanceof Error ? err.message : String(err)})`);
     }
   }
 }
@@ -400,7 +400,7 @@ async function once(): Promise<void> {
 
   const [task] = await source.nextTasks(1);
   if (!task) {
-    log('지금 가져갈 수 있는 태스크가 없다(프로젝트 시작 전이거나, 선행 태스크가 끝나지 않았거나, READY가 없다)');
+    log('지금 가져올 작업이 없어요. 프로젝트가 아직 시작 전이거나 앞선 작업이 끝나지 않았을 수 있어요.');
     return;
   }
   await handleTask(client, self.projectId, task);
@@ -417,7 +417,7 @@ async function start(): Promise<'disconnected' | 'unassigned'> {
     accessToken: () => readCredentials()!.accessToken,
     refresh: async () => {
       if ((await serverCalls({ read: readCredentials, updateAccessToken }).refresh()) === 'rejected') {
-        throw new Error('refresh token이 거부됐다 — connect를 다시 실행하라');
+        throw new Error('로그인이 만료됐어요. nomos connect를 다시 실행해 주세요.');
       }
     },
     fallback: () => pollingTaskSource(client).nextTasks(Number.MAX_SAFE_INTEGER),
@@ -425,7 +425,7 @@ async function start(): Promise<'disconnected' | 'unassigned'> {
     // 서버가 연결 해제로 스트림을 닫았다(4401 AGENT_DISCONNECTED) — 실행 중인 Claude를 멈춘다.
     onAgentDisconnected: () => agentStop.stop(),
   });
-  log(`시작 — 프로젝트 ${self.projectId}, 역할 ${self.teamRole}, 동시 실행 ${self.maxConcurrent} (${source.kind})`);
+  log(`준비됐어요. 작업이 들어오면 바로 시작할게요 (역할 ${self.teamRole ?? '없음'}, 동시에 ${self.maxConcurrent}개까지)`);
 
   const inFlight = new Set<string>();
   // 태스크 하나가 끝나면 자리가 난다 — 다음 푸시나 간격을 기다리지 않고 바로 다시 본다.
@@ -447,7 +447,7 @@ async function start(): Promise<'disconnected' | 'unassigned'> {
         for (const task of (await source.nextTasks(capacity + inFlight.size)).filter((t) => !inFlight.has(t.id)).slice(0, capacity)) {
           inFlight.add(task.id);
           void track(() => handleTask(client, self.projectId, task))
-            .catch((err) => log(`태스크 ${task.id} 실패: ${err instanceof Error ? err.message : String(err)}`))
+            .catch((err) => log(`작업이 실패했어요: ${task.title} (${err instanceof Error ? err.message : String(err)})`))
             .finally(() => {
               inFlight.delete(task.id);
               activeWorkspaces.delete(task.id);
@@ -463,25 +463,25 @@ async function start(): Promise<'disconnected' | 'unassigned'> {
       }
       // 배정이 풀렸다(대표의 해제·프로젝트 중단, 서버 021). 같은 목록을 계속 물어도 거부된다.
       if (err instanceof NomosApiError && err.code === 'NOT_PROJECT_MEMBER' && inFlight.size === 0) {
-        log('프로젝트 배정이 풀렸다(해제 또는 프로젝트 중단)');
+        log('이 에이전트가 프로젝트에서 빠졌어요 (배정 해제 또는 프로젝트 중단)');
         source.close();
         return 'unassigned';
       }
-      log(`태스크 목록 실패: ${err instanceof Error ? err.message : String(err)}`);
+      log(`작업 목록을 가져오지 못했어요. 잠시 뒤 다시 확인할게요 (${err instanceof Error ? err.message : String(err)})`);
     }
     // 다른 역할이 이 역할에 물은 질문 — 질문이 생기면 서버가 { type: 'questions' }로 깨운다. 신호가 없으면 1분마다만 확인한다.
     try {
       // 역할이 없는 에이전트(역할 제한 없는 배정)는 상담할 소관도 없다.
       if (self.teamRole && source.consultDue(self.teamRole)) await consultPending(client, self.teamRole);
     } catch (err) {
-      log(`상담할 질문 목록 실패: ${err instanceof Error ? err.message : String(err)}`);
+      log(`답할 질문 목록을 가져오지 못했어요 (${err instanceof Error ? err.message : String(err)})`);
     }
     // API 계약 작성(023) — BACKEND만. 기능 명세가 확정되면 서버가 { type: 'contracts' }로 깨운다.
     try {
       if (self.teamRole === 'BACKEND' && source.contractDue(self.teamRole)) await contractPending(client);
     } catch (err) {
       // 옛 서버(023 전)에는 이 API가 없다 — 조용히 넘어간다.
-      if (!(err instanceof NomosApiError && err.status === 404)) log(`계약 작업 목록 실패: ${err instanceof Error ? err.message : String(err)}`);
+      if (!(err instanceof NomosApiError && err.status === 404)) log(`API 계약 작업 목록을 가져오지 못했어요 (${err instanceof Error ? err.message : String(err)})`);
     }
     await Promise.race([source.waitForChange(POLL_INTERVAL_MS), new Promise<void>((resolve) => (finished = resolve)), agentStop.whenStopped()]);
   }
@@ -492,7 +492,7 @@ function normalizeBaseUrl(raw: string | undefined): string {
   const url = new URL(raw ?? DEFAULT_SERVER);
   const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
   if (url.protocol !== 'https:' && !local) {
-    throw new Error(`원격 서버는 https여야 한다: ${raw}`);
+    throw new Error(`서버 주소는 https로 시작해야 해요: ${raw}`);
   }
   return url.origin;
 }
@@ -542,16 +542,15 @@ async function loginTo(baseUrl: string, agentName: string, viaConnectKey: boolea
     const { credentials, account } = await deviceLogin({ baseUrl, agentName });
     writeCredentials(credentials);
     // 연결된 계정을 반드시 보여 준다 — 내가 아닌 계정이면 누군가 내 코드를 승인한 것이다.
-    const org = account.orgName ? ` · 조직 ${account.orgName}` : ' · 조직 없음';
-    log(`연결됨: ${account.nickname ?? account.loginId ?? '?'} (${account.loginId ?? '?'})${org} — 에이전트 ${agentName}`);
-    log(`${credentialsPath()}에 저장했다. 내 계정이 아니면 바로 웹에서 이 에이전트를 확인하라.`);
+    log(`연결됐어요: ${accountLine(account, agentName)}`);
+    log('내 계정이 아니라면 웹에서 이 에이전트를 바로 연결 해제해 주세요.');
     return;
   }
 
   // 연결 키는 NOMOS_CONNECT_KEY로도 받는다 — 인자로 받으면 셸 기록에 남는다.
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
-    const connectKey = (process.env.NOMOS_CONNECT_KEY ?? (await rl.question('연결 키 (가입할 때 받은 값): '))).trim();
+    const connectKey = (process.env.NOMOS_CONNECT_KEY ?? (await rl.question('가입할 때 받은 연결 키를 붙여 넣어 주세요: '))).trim();
     rl.close();
     const data = await postJson(`${baseUrl}/api/agents/connect`, {
       connectKey,
@@ -566,7 +565,7 @@ async function loginTo(baseUrl: string, agentName: string, viaConnectKey: boolea
       refreshToken: String(data.refreshToken),
       agentId: String(data.agentId),
     });
-    log(`${credentialsPath()}에 저장했다 (에이전트 ${String(data.agentId)})`);
+    log(`연결됐어요. 로그인 정보는 ${credentialsPath()}에 저장했어요.`);
   } finally {
     rl.close();
   }
@@ -584,8 +583,8 @@ async function loginWithCode(baseUrl: string, agentName: string, code: string): 
   });
   const account = data.account as { loginId: string | null; nickname: string | null; orgName: string | null };
   // 연결된 계정을 반드시 보여 준다 — 남이 준 명령이면 내 노트북이 그 사람의 에이전트가 된다.
-  log(`연결됨: ${accountLine(account, agentName)}`);
-  log(`${credentialsPath()}에 저장했다. 내 계정이 아니면 바로 Ctrl+C로 멈추고 웹에서 이 에이전트를 연결 해제하라.`);
+  log(`연결됐어요: ${accountLine(account, agentName)}`);
+  log('내 계정이 아니라면 Ctrl+C로 멈추고 웹에서 이 에이전트를 연결 해제해 주세요.');
 }
 
 async function login(argv: string[]): Promise<void> {
@@ -595,22 +594,22 @@ async function login(argv: string[]): Promise<void> {
   const baseUrl = normalizeBaseUrl(args.positional ?? args.server);
   const previous = readCredentials();
   if (previous && previous.baseUrl !== baseUrl) {
-    log(`기존 자격 증명(${previous.baseUrl})을 ${baseUrl}용으로 교체한다`);
+    log(`${previous.baseUrl}에 연결돼 있던 로그인 정보를 ${baseUrl}용으로 바꿀게요`);
   }
   await loginTo(baseUrl, args.name?.trim() || os.hostname(), args.connectKey);
-  log('대표에게 이 에이전트를 프로젝트에 배정해 달라고 한 뒤 connect를 실행하라(배정되면 자동으로 시작한다)');
+  log('이제 대표에게 이 에이전트를 프로젝트에 넣어 달라고 한 뒤 nomos connect를 실행해 주세요.');
 }
 
 async function connectCommand(argv: string[]): Promise<void> {
   const args = parseArgs(argv);
   const server = normalizeBaseUrl(args.server ?? args.positional ?? process.env.NOMOS_SERVER);
   const agentName = args.name?.trim() || os.hostname();
-  log(`NOMOS CLI ${cliVersion()} — 서버 ${server}`);
+  log(`NOMOS CLI ${cliVersion()} · 서버 ${server}`);
 
   const missing = checkTools().filter((t) => !t.ok);
   if (missing.length > 0) {
-    for (const t of missing) log(`${t.name}을 실행할 수 없다: ${t.detail}\n        → ${t.hint}`);
-    throw new Error('필요한 도구가 없어 시작하지 않는다');
+    for (const t of missing) log(`${t.name} 확인 실패: ${t.detail}\n        → ${t.hint}`);
+    throw new Error('필요한 준비가 덜 돼서 시작하지 않았어요. 위 안내대로 설정한 뒤 다시 실행해 주세요.');
   }
 
   // 백그라운드(창 없이) — 같은 인자로 connect를 분리된 자식으로 띄우고 여기서 끝난다. 브라우저 승인 로그인은 화면이 필요하므로
@@ -618,12 +617,12 @@ async function connectCommand(argv: string[]): Promise<void> {
   if (args.background) {
     const saved = readCredentials();
     if (!args.code && (!saved || saved.baseUrl !== server)) {
-      throw new Error('백그라운드로 띄우려면 먼저 한 번 connect로 로그인하거나, 웹의 연결 명령(--code)에 --background를 붙여라');
+      throw new Error('백그라운드로 실행하려면 먼저 nomos connect로 한 번 로그인해 주세요. 웹에서 받은 --code 명령 뒤에 --background를 붙여도 돼요.');
     }
     const info = startDaemon({ cliPath: process.argv[1]!, args: argv, server });
-    log(`백그라운드에서 실행한다 — pid ${info.pid}. 창을 닫아도 계속 돈다`);
-    log(`로그: ${info.logFile}`);
-    log('상태: nomos status · 끄기: nomos stop · 진행 상황은 웹의 룸에서 본다');
+    log(`백그라운드에서 실행했어요 (pid ${info.pid}). 이 창은 닫아도 돼요.`);
+    log(`실행 기록: ${info.logFile}`);
+    log('상태 보기는 nomos status, 끄기는 nomos stop이에요. 진행 상황은 웹의 룸에서 볼 수 있어요.');
     return;
   }
   // 한 NOMOS_HOME = 한 에이전트(home-lock.ts). 백그라운드를 띄우는 부모는 바로 끝나므로 잡지 않고, 실제로 도는 자식이 여기서 잡는다.
@@ -647,7 +646,7 @@ async function connectCommand(argv: string[]): Promise<void> {
     });
     const reason = await start();
     if (reason === 'disconnected') exitDisconnected();
-    log('다시 배정을 기다린다');
+    log('다시 배정되기를 기다릴게요');
   }
 }
 
@@ -670,9 +669,9 @@ async function doctor(argv: string[]): Promise<void> {
     process.stdout.write(`${JSON.stringify(report)}\n`);
   } else {
     log(`버전 ${report.version} (node ${report.node})`);
-    log(`MCP 서버: ${mcp.ok ? 'OK' : '없음'} — ${mcp.detail}`);
-    for (const t of report.tools) log(`${t.name}: ${t.ok ? t.detail : `없음 — ${t.hint}`}`);
-    log(`연결된 서버: ${server ?? '없음 (connect를 실행하라)'}`);
+    log(`MCP 서버: ${mcp.ok ? '정상' : '없음'} (${mcp.detail})`);
+    for (const t of report.tools) log(`${t.name}: ${t.ok ? t.detail : `문제 있음. ${t.hint}`}`);
+    log(`연결된 서버: ${server ?? '없음 (nomos connect를 실행해 주세요)'}`);
   }
   // 패키지 자체가 깨진 경우만 실패로 끝낸다. git·claude가 없는 건 안내로 충분하다.
   if (!mcp.ok) process.exitCode = 1;
@@ -681,14 +680,14 @@ async function doctor(argv: string[]): Promise<void> {
 // 배정 전에 받은 토큰에는 project_id가 없다. 배정 뒤 한 번 재발급해야 태스크 API를 쓸 수 있다.
 async function refresh(): Promise<void> {
   const credentials = readCredentials();
-  if (!credentials) throw new Error(`${credentialsPath()}가 없다. 먼저 connect(또는 login)를 실행하라`);
+  if (!credentials) throw new Error(`로그인 정보(${credentialsPath()})가 없어요. 먼저 nomos connect를 실행해 주세요.`);
   const data = await postJson(`${credentials.baseUrl}/api/agents/token/refresh`, { refreshToken: credentials.refreshToken });
   updateAccessToken(String(data.accessToken));
   try {
     const self = await createClient().describeSelf();
-    log(`재발급 완료 — 프로젝트 ${self.projectId}, 역할 ${self.teamRole ?? '없음'}`);
+    log(`토큰을 새로 받았어요 (프로젝트 ${self.projectId}, 역할 ${self.teamRole ?? '없음'})`);
   } catch (err) {
-    log(`재발급은 됐지만 아직 프로젝트에 배정되지 않은 것 같다: ${err instanceof Error ? err.message : String(err)}`);
+    log(`토큰은 새로 받았는데 아직 프로젝트에 배정되지 않은 것 같아요 (${err instanceof Error ? err.message : String(err)})`);
   }
 }
 
@@ -697,14 +696,14 @@ const PM_POLL_INTERVAL_MS = 3_000;
 async function pmWorker(): Promise<void> {
   acquireHomeLock('pm-worker');
   const client = createClient();
-  log('pm-worker 시작 — 대표가 PM에 계획을 요청하면 여기서 claude가 돈다 (Ctrl+C로 종료)');
+  log('PM 작업을 기다리고 있어요. 웹에서 PM에게 요청하면 이 노트북에서 Claude가 실행돼요 (끄려면 Ctrl+C)');
   for (;;) {
     try {
       if (await handleNextPmJob(client, log)) continue;
     } catch (err) {
       // 설정이 틀린 경우는 기다려도 풀리지 않는다 — 바로 멈춘다.
       if (err instanceof NomosApiError && (err.code === 'PM_RELAY_DISABLED' || err.code === 'NOT_REPRESENTATIVE')) throw err;
-      log(`폴링 실패: ${err instanceof Error ? err.message : String(err)}`);
+      log(`서버에서 PM 작업을 확인하지 못했어요 (${err instanceof Error ? err.message : String(err)})`);
     }
     await new Promise((resolve) => setTimeout(resolve, PM_POLL_INTERVAL_MS));
   }
@@ -713,11 +712,11 @@ async function pmWorker(): Promise<void> {
 function daemonStatus(): void {
   const info = runningDaemon();
   if (!info) {
-    log('백그라운드에서 돌고 있는 connect가 없다 (켜려면 connect --background)');
+    log('백그라운드에서 실행 중인 에이전트가 없어요 (켜려면 nomos connect --background)');
     return;
   }
-  log(`실행 중 — pid ${info.pid}, ${info.startedAt}부터, 서버 ${info.server}`);
-  log(`로그: ${info.logFile}`);
+  log(`실행 중이에요 (pid ${info.pid}, ${info.startedAt}부터, 서버 ${info.server})`);
+  log(`실행 기록: ${info.logFile}`);
   for (const line of tailLog(info.logFile)) process.stdout.write(`  ${line}\n`);
 }
 
@@ -733,7 +732,7 @@ async function main(): Promise<void> {
   if (command === 'status') return daemonStatus();
   if (command === 'stop') {
     const stopped = stopDaemon();
-    log(stopped ? `백그라운드 connect를 껐다(pid ${stopped.pid})` : '백그라운드에서 돌고 있는 connect가 없다');
+    log(stopped ? `백그라운드 에이전트를 껐어요 (pid ${stopped.pid})` : '백그라운드에서 실행 중인 에이전트가 없어요');
     return;
   }
   if (command === 'refresh') return refresh();
@@ -747,19 +746,19 @@ async function main(): Promise<void> {
   if (command === 'experiment') return experimentCli(process.argv.slice(3), { command: 'nomos experiment', runsDir: path.join(nomosHome(), 'experiment-runs') });
   if (command === 'clean') {
     const { pruned, removed } = cleanWorkspaces();
-    log(`worktree prune: ${pruned.join(', ') || '없음'} / 삭제: ${removed ?? '없음'}`);
+    log(`정리했어요. worktree: ${pruned.join(', ') || '없음'} / 지운 폴더: ${removed ?? '없음'}`);
     return;
   }
   process.stderr.write(
     [
       '사용법: nomos <명령>',
-      '  connect [--code 코드] [--server 주소] [--name 이름] [--background]  로그인 → 배정 대기 → 작업 시작 (--code: 웹이 준 1회용 코드, --background: 창 없이)',
-      '  status | stop                                백그라운드 connect 상태 보기 · 끄기',
+      '  connect [--code 코드] [--server 주소] [--name 이름] [--background]  로그인하고 작업을 받아 실행해요 (--code: 웹에서 받은 1회용 코드, --background: 창 없이 실행)',
+      '  status | stop                                백그라운드 실행 상태 보기 · 끄기',
       '  doctor                                       설치 상태 점검',
-      '  login [주소] [--name 이름] [--connect-key]   로그인만',
+      '  login [주소] [--name 이름] [--connect-key]   로그인만 해요',
       '  refresh | once | start | clean | --version',
-      '  pm-worker                                    (대표 전용, 서버가 PM_PROVIDER=relay일 때) PM 모델 호출을 이 노트북의 Claude Code로',
-      '  experiment --project <id> --login <대표> --requirements <파일> [--until 24]   (대표 전용) 실험 모드 프로젝트 무인 감독 — 인자 없이 실행하면 사용법',
+      '  pm-worker                                    (대표 전용) PM 작업을 이 노트북의 Claude Code로 실행해요',
+      '  experiment --project <id> --login <대표> --requirements <파일> [--until 24]   (대표 전용) 실험 모드 프로젝트를 자동으로 돌려요. 인자 없이 실행하면 사용법이 나와요',
       '',
     ].join('\n'),
   );

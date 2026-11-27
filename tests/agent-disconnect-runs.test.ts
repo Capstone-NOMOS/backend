@@ -213,12 +213,12 @@ describe('CLI — 연결이 해제되면 connect 루프가 0이 아닌 코드로
       const exited = new Promise<number | null>((resolve) => child.on('close', (code) => resolve(code)));
       // 시작했다는 줄을 본 뒤 해제한다.
       for (let i = 0; i < 200 && !out.includes('시작 —'); i++) await new Promise((r) => setTimeout(r, 100));
-      expect(out).toContain('시작 —');
+      expect(out).toContain('준비됐어요');
       expect((await http('DELETE', `/agents/${w.fe_.agentId}`, await w.fe.token())).status).toBe(200);
 
       const code = await exited;
       expect(code).toBe(DISCONNECTED_EXIT_CODE);
-      expect(out).toContain('이 에이전트의 연결이 해제돼 실행 중인 작업을 멈췄다 — 다시 쓰려면 connect를 실행하라');
+      expect(out).toContain('이 에이전트의 연결이 해제돼서 하던 작업을 멈췄어요. 다시 쓰려면 nomos connect를 실행해 주세요.');
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

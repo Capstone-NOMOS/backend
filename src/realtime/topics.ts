@@ -91,6 +91,8 @@ export const TOPICS_BY_EVENT: Record<EventType, Mapping> = {
   QUESTION_ANSWERED: { project: ['questions', 'tasks'], org: ['questions', 'inbox'] },
   QUESTION_EXPIRED: { project: ['questions', 'tasks'], org: ['questions', 'inbox'] },
   QUESTION_DRAFTED: { project: ['questions', 'tasks'], org: ['questions', 'inbox'] },
+  // 038: 답할 사람이 바뀐다 — 옛 대상·새 대상의 "내가 답할 질문"·처리할 일이 함께 바뀐다.
+  QUESTION_REROUTED: { project: ['questions'], org: ['questions', 'inbox'] },
   TASK_BLOCKED_ON_QUESTION: { project: ['tasks', 'questions'] },
 
   PM_PLAN_REQUESTED: { project: ['plans'], org: ['inbox'] },

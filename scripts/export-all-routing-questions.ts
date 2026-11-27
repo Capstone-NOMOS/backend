@@ -61,7 +61,8 @@ async function main(): Promise<void> {
   try {
     await client.query('BEGIN READ ONLY');
     const { rows } = await client.query(
-      `SELECT q.id, q.stage, q.asker_role, q.target_role, q.routed_by, q.status, q.questions, q.routing_input,
+      // target_role: 라우터가 실제로 보낸 판정 — 재지정(038)했으면 처음 대상. 재지정은 평가 숫자를 바꾸지 않는다.
+      `SELECT q.id, q.stage, q.asker_role, COALESCE(q.rerouted_from, q.target_role) AS target_role, q.routed_by, q.status, q.questions, q.routing_input,
               q.answer_source, q.gold_target, q.created_at,
               p.id AS project_id, p.name AS project_name, p.question_mode, p.deleted_at IS NOT NULL AS project_deleted,
               o.id AS org_id, o.name AS org_name,

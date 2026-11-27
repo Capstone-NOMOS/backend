@@ -67,11 +67,11 @@ export async function prepareDependencies(dir: string, log: (line: string) => vo
       await exec(cmd, step.args, dir);
       steps.push({ manager: step.manager, command, ok: true });
       if (step.manager === 'python') venvBin = pythonBin(dir);
-      log(`의존성 설치: ${command} — OK`);
+      log(`의존성을 설치했어요: ${command}`);
     } catch (err) {
       const detail = err instanceof Error ? err.message.split('\n')[0]!.slice(0, 200) : String(err);
       steps.push({ manager: step.manager, command, ok: false, detail });
-      log(`의존성 설치 실패(태스크는 진행한다): ${command} — ${detail}`);
+      log(`의존성 설치에 실패했지만 작업은 계속해요: ${command} (${detail})`);
     }
   }
   return { steps, venvBin };

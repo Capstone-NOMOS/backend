@@ -5,6 +5,12 @@
 //   npm run questions:extract -- --login orepresent1103 --login orepresent1112 --full 777fa7da --project e0106f9d   # 한 프로젝트는 전부, 다른 쪽은 구현(중복 제거)+갈림만
 //   --server <주소>(기본 운영) --total <N>(기본 100) --out <파일>(기본 scripts/data/experiment-questions-<시각>.json)
 //   --project·--full은 id 앞부분만 써도 된다. --only <파일>이면 그 파일의 질문만 같은 순서로 다시 뽑는다(판정·판정 시간·비용만 새로).
+//   npm run questions:extract -- --login orepresent1103 --login orepresent1112 --prev e0106f9d --prev 777fa7da --fill <새 실험 id> --total 100
+//   npm run questions:extract -- --login orepresent1112 --fill latest --total 100      # 이번 실험만(가장 최근에 만든 실험 모드 프로젝트)
+//
+// --prev/--fill이면(대표 결정 2026-11-15): ① --prev 프로젝트들의 구현 중 질문 전부(같은 태스크 반복은 하나만) ② --fill 프로젝트의 구현 중 질문
+//   ③ --fill 프로젝트에서 라우터 판정이 갈린 질문(오래된 것부터) ④ 남은 자리는 질문한 역할(PM·BACKEND·FRONTEND)을 번갈아 골라 고르게 채운다
+//   (역할마다 일치 → 비교 불가 순, 오래된 것부터). 같은 문장의 질문은 한 번만. 질문한 역할이 없는 쪽은 건너뛴다(기획 단계 질문은 PM·BE만 묻는다).
 //
 // --full이 있으면(대표 결정 2026-11-13 두 번째): --full 프로젝트는 질문 전부, 나머지 프로젝트는 구현 중 질문(같은 태스크에서 나온 것은 한 번만) + 판정이 갈린 기획 단계 질문만.
 //   --total은 쓰지 않는다(채우지 않는다).
@@ -46,12 +52,12 @@ function out(line = ''): void {
 }
 
 function usage(message: string): never {
-  process.stderr.write(`${message}\n사용법: npm run questions:extract -- --login <대표> [--login <대표2>] [--project <id> ...] [--full <id>] [--only <파일>] [--total N] [--server 주소] [--out 파일]\n`);
+  process.stderr.write(`${message}\n사용법: npm run questions:extract -- --login <대표> [--login <대표2>] [--project <id> ...] [--full <id>] [--prev <id> --fill <id>] [--only <파일>] [--total N] [--server 주소] [--out 파일]\n`);
   process.exit(2);
 }
 
 function parseArgs(argv: string[]) {
-  const a = { server: DEFAULT_SERVER, logins: [] as string[], projects: [] as string[], full: [] as string[], total: 100, out: '', only: '' };
+  const a = { server: DEFAULT_SERVER, logins: [] as string[], projects: [] as string[], full: [] as string[], prev: [] as string[], fill: [] as string[], total: 100, out: '', only: '' };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
     const value = () => {
@@ -63,6 +69,8 @@ function parseArgs(argv: string[]) {
     else if (arg === '--login') a.logins.push(value());
     else if (arg === '--project') a.projects.push(value());
     else if (arg === '--full') a.full.push(value());
+    else if (arg === '--prev') a.prev.push(value());
+    else if (arg === '--fill') a.fill.push(value());
     else if (arg === '--total') {
       a.total = Number(value());
       if (!Number.isInteger(a.total) || a.total < 1) usage('--total은 1 이상의 정수다');
@@ -86,15 +94,17 @@ type Picked = DatasetItem & {
   // 라우터별 판정 시간(model_latency_ms)·비용 — 실제로 걸린 시간은 중계 대기열·CLI 기동이 섞여 부풀므로 싣지 않는다.
   routerMetrics: Partial<Record<RouterKey, Metric>>;
   agreement: 'disagree' | 'agree' | 'incomparable';
-  selectedAs: 'implementation' | 'planning_disagree' | 'planning_agree' | 'planning_fill' | 'full';
+  selectedAs: 'implementation' | 'planning_disagree' | 'planning_agree' | 'planning_fill' | 'full' | 'prev_implementation' | 'balanced';
 };
 
-// 갈림 = 판정을 낸 라우터끼리 서로 다르다(하나가 실패해도 나머지 둘이 다르면 갈림). 일치 = **세 라우터 모두** 판정을 냈고 같다 —
-// 하나가 실패(null)한 채 나머지 둘만 같은 것은 세 라우터 일치가 아니라서 비교 불가로 둔다(채우기 맨 뒤).
+// 갈림 = 판정을 낸 라우터끼리 서로 다르다(하나가 실패해도 나머지 둘이 다르면 갈림). 일치 = 그 질문에 **기록이 있는 라우터 모두**(둘 이상) 판정을 냈고 같다 —
+// 하나가 실패(null)한 채 나머지만 같은 것은 일치가 아니라서 비교 불가로 둔다. 실험마다 붙인 라우터가 달라서(일반 openai → openai-decisions)
+// 네 이름 전부를 요구하면 어느 실험도 일치가 나오지 않는다 — 그 질문에 기록이 있는 라우터끼리 본다.
 function agreementOf(routers: Partial<Record<RouterKey, string | null>>): Picked['agreement'] {
-  const decided = ROUTERS.map((k) => routers[k]).filter((t): t is string => typeof t === 'string');
+  const recorded = ROUTERS.filter((k) => routers[k] !== undefined);
+  const decided = recorded.map((k) => routers[k]).filter((t): t is string => typeof t === 'string');
   if (decided.length >= 2 && new Set(decided).size > 1) return 'disagree';
-  return decided.length === ROUTERS.length ? 'agree' : 'incomparable';
+  return recorded.length >= 2 && decided.length === recorded.length ? 'agree' : 'incomparable';
 }
 
 async function login(server: string, loginId: string): Promise<NomosHttp> {
@@ -118,10 +128,17 @@ async function main(): Promise<void> {
       out(`[${loginId}] 조직이 없다 — 건너뜀`);
       continue;
     }
-    const wanted = [...args.projects, ...args.full];
-    const projects = (await api.call<{ projects: Project[] }>('GET', `/orgs/${me.orgId}/projects`)).projects.filter((p) =>
-      wanted.length > 0 ? wanted.some((w) => p.id.startsWith(w)) : p.questionMode === 'experiment',
-    );
+    const listed = (await api.call<{ projects: Project[] }>('GET', `/orgs/${me.orgId}/projects`)).projects;
+    // --fill latest = 이 계정의 실험 모드 프로젝트 중 가장 최근에 만든 것(프로젝트 번호를 몰라도 되게). 찾으면 그 id로 바꿔 둔다.
+    if (args.fill.includes('latest')) {
+      const latest = listed.filter((p) => p.questionMode === 'experiment').sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+      if (latest) {
+        args.fill = args.fill.map((w) => (w === 'latest' ? latest.id : w));
+        out(`[${loginId}] --fill latest → ${latest.name} (${latest.id}, ${latest.createdAt.slice(0, 10)}, ${latest.status})`);
+      }
+    }
+    const wanted = [...args.projects, ...args.full, ...args.prev, ...args.fill].filter((w) => w !== 'latest');
+    const projects = listed.filter((p) => (wanted.length > 0 ? wanted.some((w) => p.id.startsWith(w)) : p.questionMode === 'experiment'));
     if (projects.length === 0) out(`[${loginId}] 실험 모드 프로젝트가 없다`);
     for (const p of projects) {
       const items = (await api.call<{ items: DatasetItem[] }>('GET', `/projects/${p.id}/routing-dataset`)).items;
@@ -156,6 +173,10 @@ async function main(): Promise<void> {
   }
   if (args.full.length > 0) {
     await writeFullMode(args, all.sort(byTime));
+    return;
+  }
+  if (args.prev.length > 0 || args.fill.length > 0) {
+    await writePrevFillMode(args, all.sort(byTime));
     return;
   }
   const implementation = all.filter((q) => q.stage === 'implementation').sort(byTime);
@@ -264,6 +285,77 @@ async function writeFullMode(args: ReturnType<typeof parseArgs>, all: Picked[]):
   out();
   for (const [i, q] of picked.entries()) {
     const r = ROUTERS.map((k) => `${k}=${q.routers[k] === undefined ? '-' : (q.routers[k] ?? '실패')}`).join(' ');
+    out(`${String(i + 1).padStart(3)}. [${q.selectedAs}] ${q.project.name} · ${q.stage} · ${q.input.askerRole} · ${r}`);
+    out(`     ${q.input.task ? `(${q.input.task.title}) ` : ''}${questionKey(q).slice(0, 200)}`);
+  }
+  const file = args.out || path.join(DATA_DIR, `experiment-questions-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.json`);
+  await mkdir(path.dirname(file), { recursive: true });
+  printMetricCoverage(picked);
+  await writeFile(file, `${JSON.stringify({ version: 2, items: picked }, null, 2)}\n`);
+  out();
+  out(`저장: ${file}`);
+}
+
+const ASKER_ORDER = ['PM', 'BACKEND', 'FRONTEND'] as const;
+
+async function writePrevFillMode(args: ReturnType<typeof parseArgs>, all: Picked[]): Promise<void> {
+  const inPrev = (q: Picked) => args.prev.some((w) => q.project.id.startsWith(w));
+  const inFill = (q: Picked) => args.fill.some((w) => q.project.id.startsWith(w));
+  const picked: Picked[] = [];
+  const seenTask = new Set<string>();
+  const seenText = new Set<string>();
+  let duplicates = 0;
+  // 같은 태스크(회차 반복)·같은 문장은 한 번만.
+  const take = (q: Picked, selectedAs: Picked['selectedAs']): boolean => {
+    const taskKey = dedupKey(q);
+    const textKey = questionKey(q);
+    if (seenTask.has(taskKey) || seenText.has(textKey)) {
+      duplicates += 1;
+      return false;
+    }
+    seenTask.add(taskKey);
+    seenText.add(textKey);
+    picked.push({ ...q, selectedAs });
+    return true;
+  };
+  const full = () => picked.length >= args.total;
+
+  // ① 이전 실험의 구현 중 질문 전부
+  for (const q of all.filter((x) => inPrev(x) && x.stage === 'implementation')) take(q, 'prev_implementation');
+  // ② 이번 실험의 구현 중 질문
+  for (const q of all.filter((x) => inFill(x) && x.stage === 'implementation')) if (!full()) take(q, 'implementation');
+  // ③ 이번 실험에서 라우터 판정이 갈린 질문
+  const fillRest = all.filter((x) => inFill(x) && x.stage !== 'implementation');
+  for (const q of fillRest.filter((x) => x.agreement === 'disagree')) if (!full()) take(q, 'planning_disagree');
+  // ④ 남은 자리는 질문한 역할을 번갈아(PM → BE → FE) — 역할마다 일치 → 비교 불가 순, 오래된 것부터
+  const chosen = new Set(picked.map((q) => q.id));
+  const queues = new Map<string, Picked[]>(
+    ASKER_ORDER.map((role) => {
+      const mine = fillRest.filter((x) => x.input.askerRole === role && !chosen.has(x.id) && x.agreement !== 'disagree');
+      return [role, [...mine.filter((x) => x.agreement === 'agree'), ...mine.filter((x) => x.agreement === 'incomparable')]];
+    }),
+  );
+  while (!full() && [...queues.values()].some((qs) => qs.length > 0)) {
+    for (const role of ASKER_ORDER) {
+      if (full()) break;
+      const qs = queues.get(role)!;
+      while (qs.length > 0) {
+        if (take(qs.shift()!, 'balanced')) break;
+      }
+    }
+  }
+
+  out();
+  const count = (f: (q: Picked) => boolean) => picked.filter(f).length;
+  out(`뽑은 질문 ${picked.length}개(목표 ${args.total}) — 이전 구현 ${count((q) => q.selectedAs === 'prev_implementation')} · 이번 구현 ${count((q) => q.selectedAs === 'implementation')}` +
+    ` · 판정 갈림 ${count((q) => q.selectedAs === 'planning_disagree')} · 역할 고르게 채움 ${count((q) => q.selectedAs === 'balanced')} (중복으로 뺀 것 ${duplicates})`);
+  out(`질문한 역할: ${ASKER_ORDER.map((r) => `${r} ${count((q) => q.input.askerRole === r)}`).join(' · ')}`);
+  out(`단계: 구현 ${count((q) => q.stage === 'implementation')} · 기능 명세 ${count((q) => q.stage === 'feature_spec')} · 계약 ${count((q) => q.stage === 'contract')}`);
+  const fillDisagree = fillRest.filter((x) => x.agreement === 'disagree').length;
+  if (count((q) => q.selectedAs === 'planning_disagree') < fillDisagree) out(`  (판정이 갈린 질문 ${fillDisagree}개 중 목표에 맞춰 오래된 것부터 넣었다)`);
+  out();
+  for (const [i, q] of picked.entries()) {
+    const r = ROUTERS.filter((k) => q.routers[k] !== undefined).map((k) => `${k}=${q.routers[k] ?? '실패'}`).join(' ');
     out(`${String(i + 1).padStart(3)}. [${q.selectedAs}] ${q.project.name} · ${q.stage} · ${q.input.askerRole} · ${r}`);
     out(`     ${q.input.task ? `(${q.input.task.title}) ` : ''}${questionKey(q).slice(0, 200)}`);
   }

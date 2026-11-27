@@ -300,6 +300,8 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     const questionId = asked.data.id as string;
     await call('GET', `/projects/${projectId}/questions`, rep);
     await call('GET', '/me/questions', rep);
+    // 재지정(038) — 대표가 PM 소관으로 다시 보낸다(답할 자격은 그대로 대표에게 있다).
+    await call('POST', `/questions/${questionId}/reroute`, rep, { targetRole: 'PM', reason: '정책 결정' });
     await call('POST', `/questions/${questionId}/answer`, rep, { answers: { [question]: '{ members: [...] }' } });
     await call('GET', `/projects/${projectId}/decisions?status=all`, rep);
     // 라우팅 평가(026) — 정답 담당자 붙이기와 보고서

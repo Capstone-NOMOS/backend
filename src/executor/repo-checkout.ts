@@ -26,18 +26,18 @@ function isFullName(value: string): boolean {
 // https(자격 증명 없는)·로컬 절대 경로·file://만. `-`로 시작(옵션 주입)·ext::·ssh·http는 거부.
 export function resolveCloneSource(fullName: string, cloneUrl: string | null): string {
   if (cloneUrl === null) {
-    if (!isFullName(fullName)) throw new Error(`레포 이름이 owner/repo 형식이 아니다: ${fullName}`);
+    if (!isFullName(fullName)) throw new Error(`레포 이름이 owner/repo 형식이 아니에요: ${fullName}`);
     return `https://github.com/${fullName}.git`;
   }
   const value = cloneUrl.trim();
-  if (value.startsWith('-') || value.includes('::')) throw new Error(`받을 수 없는 clone 주소: ${cloneUrl}`);
+  if (value.startsWith('-') || value.includes('::')) throw new Error(`이 주소로는 레포를 받을 수 없어요: ${cloneUrl}`);
   if (/^https:\/\//i.test(value)) {
     const url = new URL(value);
-    if (url.username || url.password) throw new Error('clone 주소에 자격 증명이 들어 있다 — 받지 않는다');
+    if (url.username || url.password) throw new Error('레포 주소에 로그인 정보가 들어 있어서 받지 않았어요');
     return value;
   }
   if (/^file:\/\//i.test(value) || path.isAbsolute(value)) return value;
-  throw new Error(`받을 수 없는 clone 주소(https·로컬 경로만): ${cloneUrl}`);
+  throw new Error(`이 주소로는 레포를 받을 수 없어요. https 주소나 로컬 경로만 돼요: ${cloneUrl}`);
 }
 
 function isGitRepo(dir: string): boolean {
@@ -62,29 +62,29 @@ export function ensureRepo(repo: { fullName: string; cloneUrl: string | null }, 
 
   const mapped = (deps.readMap ?? readRepoMap)()[repo.fullName];
   if (mapped) {
-    if (!isGitRepo(mapped)) throw new Error(`${repoMapPath()}의 "${repo.fullName}" 경로(${mapped})가 git 레포가 아니다`);
+    if (!isGitRepo(mapped)) throw new Error(`${repoMapPath()}에 적힌 "${repo.fullName}" 경로(${mapped})가 git 레포가 아니에요`);
     return { path: mapped, managed: false, baseRef: (b) => b };
   }
 
-  if (!isFullName(repo.fullName)) throw new Error(`레포 이름이 owner/repo 형식이 아니다: ${repo.fullName}`);
+  if (!isFullName(repo.fullName)) throw new Error(`레포 이름이 owner/repo 형식이 아니에요: ${repo.fullName}`);
   const [owner, name] = repo.fullName.split('/') as [string, string];
   const dir = path.join(deps.root ?? managedReposRoot(), owner, name);
 
   if (isGitRepo(dir)) {
-    log(`레포 최신화: ${repo.fullName}`);
+    log(`레포를 최신 상태로 맞추고 있어요: ${repo.fullName}`);
     git(['fetch', '--prune', 'origin'], dir);
   } else {
-    if (existsSync(dir)) throw new Error(`${dir}가 있지만 git 레포가 아니다. 지우고 다시 실행하라`);
+    if (existsSync(dir)) throw new Error(`${dir} 폴더가 있는데 git 레포가 아니에요. 지우고 다시 실행해 주세요.`);
     const source = resolveCloneSource(repo.fullName, repo.cloneUrl);
-    log(`레포 받는 중: ${repo.fullName} → ${dir}`);
+    log(`레포를 받고 있어요: ${repo.fullName} → ${dir}`);
     mkdirSync(path.dirname(dir), { recursive: true });
     try {
       // `--`로 주소가 옵션으로 해석되지 않게 한 겹 더 막는다(서버 mirror 검사기와 같은 방식).
       git(['clone', '--', source, dir], path.dirname(dir));
     } catch (err) {
       throw new Error(
-        `${repo.fullName}을 받지 못했다. 이 노트북의 git이 그 레포에 접근할 수 있어야 한다(gh auth login 또는 Git Credential Manager). ` +
-          `이미 받아 둔 레포를 쓰려면 ${repoMapPath()}에 {"${repo.fullName}": "경로"}를 적어라. (${err instanceof Error ? err.message : String(err)})`,
+        `${repo.fullName} 레포를 받지 못했어요. 이 노트북의 git이 그 레포에 접근할 수 있어야 해요(gh auth login 또는 Git Credential Manager). ` +
+          `이미 받아 둔 레포를 쓰려면 ${repoMapPath()}에 {"${repo.fullName}": "경로"}를 적어 주세요. (${err instanceof Error ? err.message : String(err)})`,
       );
     }
   }

@@ -15,7 +15,6 @@ export function allowedToolNames(): string[] {
 }
 
 export type ClaudeRunOptions = {
-  prompt: string;
   mcpConfigPath: string;
   // 태스크마다 다른 작업공간. settings.json은 브릿지가 여기에 깔아둔다.
   cwd: string;
@@ -28,10 +27,10 @@ export type ClaudeRunOptions = {
 // GitHub MCP가 살아 있으면 에이전트가 submit_artifact를 건너뛰고 직접 push할 수 있고,
 // 그러면 제출 시점 경로 검증(V3)이 아무것도 못 막는다. 두 플래그는 항상 함께 간다.
 export function buildClaudeArgs(options: ClaudeRunOptions): string[] {
-  // 프롬프트는 반드시 -p의 **값**으로 준다. 맨 뒤에 위치 인자로 붙이면
-  // --allowedTools가 가변 인자라 프롬프트를 도구 이름으로 삼켜버리고,
-  // claude는 "Input must be provided…"로 죽는다 (실제로 겪었다).
-  const args = ['-p', options.prompt, '--output-format', 'stream-json', '--verbose'];
+  // 프롬프트는 인자로 넘기지 않고 **stdin**으로 준다(runner.ts). Windows 명령줄은 약 32k자에서 끊겨, 기능이 쌓여 프롬프트(명세·계약·노트·결정)가
+  // 길어지면 spawn이 ENAMETOOLONG으로 claude를 아예 띄우지 못했다 — Executor가 같은 태스크를 끝없이 다시 띄웠다(25개 쌓기 실험).
+  // PM 워커·상담·계약 작성과 같은 방식이다. 위치 인자로 붙이지 말 것: --allowedTools가 가변 인자라 도구 이름으로 삼킨다.
+  const args = ['-p', '--output-format', 'stream-json', '--verbose'];
   if (options.model) args.push('--model', options.model);
   args.push('--mcp-config', options.mcpConfigPath, '--strict-mcp-config');
   // 파일 편집은 작업 폴더 안에서 자동 승인한다 — settings.json의 deny(.env·contracts 등)는 여전히 이긴다.

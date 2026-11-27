@@ -96,7 +96,6 @@ export type RunInput = {
 
 export async function runClaude(input: RunInput): Promise<RunResult> {
   const args = buildClaudeArgs({
-    prompt: input.prompt,
     mcpConfigPath: input.mcpConfigPath,
     cwd: input.workspaceDir,
     ...(input.model === undefined ? {} : { model: input.model }),
@@ -107,12 +106,15 @@ export async function runClaude(input: RunInput): Promise<RunResult> {
   const startedAt = Date.now();
 
   return new Promise<RunResult>((resolve) => {
-    // stdin을 열어두면 claude가 파이프 입력을 몇 초간 기다린다. 쓸 일이 없으니 닫는다.
+    // 프롬프트는 stdin으로 넣고 바로 닫는다(claude-args.ts — 명령줄 길이 한도). 닫지 않으면 claude가 입력을 더 기다린다.
     const child = spawn(command, commandArgs, {
       cwd: input.workspaceDir,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'],
       env: input.pathPrepend ? withPathPrepended(claudeEnv(), input.pathPrepend) : claudeEnv(),
     });
+    // 프로세스가 입력을 읽기 전에 끝나면 쓰기가 EPIPE로 실패한다 — 결과는 종료 처리가 보고하므로 여기서는 삼킨다.
+    child.stdin.on('error', () => {});
+    child.stdin.end(input.prompt);
 
     const chunks: string[] = [];
     const collect = (c: Buffer) => chunks.push(c.toString());

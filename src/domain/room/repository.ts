@@ -157,6 +157,7 @@ export const TASK_FEED_EVENTS = [
   // 질문 중계(018). 묻는 쪽 태스크의 룸에 더해, 답할 역할(targetRole)의 룸에도 나온다(아래 쿼리).
   'QUESTION_ASKED',
   'QUESTION_DRAFTED',
+  'QUESTION_REROUTED',
   'QUESTION_ANSWERED',
   'QUESTION_EXPIRED',
   'TASK_BLOCKED_ON_QUESTION',
@@ -262,11 +263,14 @@ export async function listRoomFeed(
         WHERE e.project_id = $1
           AND (
             (e.type = ANY($3::text[]) AND t.id IS NOT NULL
-              AND (t.team_role IS NULL OR t.team_role = $2 OR (e.type LIKE 'QUESTION\_%' AND e.payload->>'targetRole' = $2)))
+              AND (t.team_role IS NULL OR t.team_role = $2 OR (e.type LIKE 'QUESTION\_%' AND e.payload->>'targetRole' = $2)
+                   -- 재지정(038)은 옛 대상의 룸에도 나온다 — 넘겼다는 사실을 넘긴 쪽도 본다.
+                   OR (e.type = 'QUESTION_REROUTED' AND e.payload->>'fromRole' = $2)))
             OR e.type = ANY($4::text[])
             -- 기획 단계 질문(033)은 태스크가 없다 — 기능 명세 초안의 질문은 모든 룸에(프로젝트 단위), 계약 초안의 질문은 BE 룸과 답할 역할의 룸에.
             OR (e.type LIKE 'QUESTION\_%' AND e.payload->>'stage' IN ('feature_spec', 'contract')
-                AND (e.payload->>'stage' = 'feature_spec' OR $2 = 'BACKEND' OR e.payload->>'targetRole' = $2))
+                AND (e.payload->>'stage' = 'feature_spec' OR $2 = 'BACKEND' OR e.payload->>'targetRole' = $2
+                     OR (e.type = 'QUESTION_REROUTED' AND e.payload->>'fromRole' = $2)))
             OR (e.type = 'ROOM_MESSAGE_SENT' AND e.payload->>'role' = $2)
             -- 그 역할 에이전트의 연결 해제·재연결(028) — 태스크에 딸리지 않아 역할(payload.teamRole)로 거른다.
             OR (e.type IN ('MEMBER_AGENT_DETACHED', 'MEMBER_AGENT_ATTACHED') AND e.payload->>'teamRole' = $2)

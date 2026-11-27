@@ -41,6 +41,7 @@ export type EventType =
   | 'QUESTION_ANSWERED'
   | 'QUESTION_EXPIRED'
   | 'QUESTION_DRAFTED'
+  | 'QUESTION_REROUTED'
   | 'TASK_BLOCKED_ON_QUESTION'
   | 'MEMBER_UNASSIGNED'
   | 'MEMBER_AGENT_DETACHED'
@@ -286,6 +287,19 @@ export type QuestionDraftedPayload = QuestionStageFields & {
   resumedTask: boolean;
   // 누가 초안을 썼나(025). 없으면 대상 역할 에이전트의 상담 실행 — pm이면 대표가 운용하는 PM 에이전트(초안은 답이 되지 않는다).
   drafter?: 'pm';
+};
+
+// 대상 역할 담당 또는 대표가 질문을 다른 역할로 다시 보냈다(038). targetRole = 새 대상(룸이 이 값으로 답할 역할의 룸에 낸다), fromRole = 옛 대상.
+// reroutedByRole: 옛 대상 역할 담당인지 대표인지. 옛 대상의 상담 초안은 지워졌다(clearedDraft).
+// 라우팅 평가 기록(question_routing_runs)은 건드리지 않는다 — 라우터의 처음 판정은 agent_questions.rerouted_from에 남는다.
+export type QuestionReroutedPayload = QuestionStageFields & {
+  questionId: string;
+  taskId: string | null;
+  fromRole: string;
+  targetRole: string;
+  reroutedByRole: 'TARGET_OWNER' | 'REPRESENTATIVE';
+  reason: string | null;
+  clearedDraft: boolean;
 };
 
 // 묻는 쪽이 정한 시간만 기다리고 태스크를 내려놓았다(BLOCKED·QUESTION). 답이 오면 READY로 돌아간다.
@@ -737,6 +751,7 @@ export type EventPayloadMap = {
   QUESTION_ANSWERED: QuestionAnsweredPayload;
   QUESTION_EXPIRED: QuestionExpiredPayload;
   QUESTION_DRAFTED: QuestionDraftedPayload;
+  QUESTION_REROUTED: QuestionReroutedPayload;
   TASK_BLOCKED_ON_QUESTION: TaskBlockedOnQuestionPayload;
   MEMBER_UNASSIGNED: MemberUnassignedPayload;
   AGENT_DISCONNECTED: AgentDisconnectedPayload;

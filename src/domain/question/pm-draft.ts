@@ -7,6 +7,7 @@ import { getPmModel } from '../pm/model.js';
 import { costOfAttempts } from '../pm/pricing.js';
 import { findProjectForPm, loadPlanContext } from '../pm/repository.js';
 import { findQuestion, saveDraft, type QuestionDraft } from './repository.js';
+import { PM_TARGET } from './router.js';
 
 // PM 소관 질문(025)의 답 초안 — 대표가 운용하는 PM 에이전트(중계 모드면 대표 노트북, API 모드면 서버 키)가
 // 확정한 기능 명세·API 계약을 읽고 답 초안을 쓴다. 제품 결정이라 **초안은 답이 되지 않는다** — 대표가 웹에서 확인해 확정한다(DB도 막는다).
@@ -93,7 +94,7 @@ export async function draftPmAnswer(questionId: string, orgId: string): Promise<
   const draft = toDraft(response.text, question.questions.map((q) => q.question));
 
   await withTransaction(async (tx) => {
-    if (!(await saveDraft(tx, questionId, draft, null, false))) return; // 그 사이 답이 왔거나 만료
+    if (!(await saveDraft(tx, questionId, draft, null, false, PM_TARGET))) return; // 그 사이 답이 왔거나 만료
     await appendEvent(tx, {
       orgId,
       projectId: question.projectId,

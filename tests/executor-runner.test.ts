@@ -56,3 +56,18 @@ describe('출력 없는 시간 감지', () => {
     }
   });
 });
+
+describe('프롬프트 전달', () => {
+  const node = (script: string) => ({ command: process.execPath, commandArgs: ['-e', script] });
+  const base = () => ({ workspaceDir: mkdtempSync(path.join(tmpdir(), 'nomos-runner-')), prompt: 'p', mcpConfigPath: 'm.json' });
+  it('프롬프트는 명령줄이 아니라 stdin으로 간다 — 40k자여도 실행된다(Windows 명령줄 한도)', async () => {
+    const long = 'x'.repeat(40_000);
+    const result = await runClaude({
+      ...base(),
+      prompt: long,
+      command: node("let n=0;process.stdin.on('data',d=>n+=d.length);process.stdin.on('end',()=>console.log('stdin='+n))"),
+    });
+    expect(result.outcome).toBe('completed');
+    expect(readFileSync(result.logPath, 'utf8')).toContain('stdin=40000');
+  });
+});
