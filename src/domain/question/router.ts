@@ -13,6 +13,7 @@ import type { AskedQuestion } from './repository.js';
 export type QuestionTarget = TeamRole | 'PM';
 export const PM_TARGET = 'PM' as const;
 export type RoutingTarget = QuestionTarget | 'SELF';
+export type TeamRules = Partial<Record<QuestionTarget, string>>;
 
 // 질문이 나온 단계. 지금은 implementation(태스크를 구현하다 묻는다)만 실제로 이 경로를 탄다 —
 // feature_spec(PM이 기능 명세 초안을 쓰다 묻는다)·contract(BE가 API 계약 초안을 쓰다 묻는다)는 같은 라우터로 보내려고 입력 모양을 먼저 맞춰 둔다.
@@ -33,6 +34,9 @@ export type RoutingInput = {
   questions: AskedQuestion[];
   // 그 기능의 확정한 API 계약 요약(023) — implementation에서만. 계약이 정한 것은 BE에 물을 일이 아니다. contract 단계는 쓰고 있는 중이라 null.
   contract?: { featureKey: string; summary: string | null } | null;
+  // 팀 규칙 — 역할마다 "이 팀에서는 이런 질문이 이 역할 소관이다"(정답은 팀의 합의라 팀마다 다르다). 후보 설명(TARGET_DESCRIPTIONS) 뒤에 붙어
+  // 세 라우터(프롬프트·Jev·OpenAI Decisions 선택지)에 똑같이 들어간다. 지금은 오프라인 평가(--team-rules)만 넣는다 — 프로젝트에 이 입력 칸이 아직 없다.
+  teamRules?: TeamRules | null;
   // 서버에서만 — 어느 조직의 모델 호출인가(중계 모드는 그 조직 대표 노트북이 돈다). 평가 장치는 넣지 않는다.
   context?: { orgId: string };
 };
@@ -124,6 +128,12 @@ export const TARGET_DESCRIPTIONS: Record<QuestionTarget, string> = {
   PM: '요구사항·서비스 정책·기능 범위·우선순위 같은 제품 결정(대표가 정한다). 기술 구현 방식은 PM이 아니다',
 };
 
+// 후보 설명 + 그 팀의 규칙. 규칙이 없으면 TARGET_DESCRIPTIONS 그대로다(운영은 지금 늘 이쪽 — 프롬프트가 v3와 글자까지 같다).
+export function targetDescription(target: QuestionTarget, input: Pick<RoutingInput, 'teamRules'>): string {
+  const rule = input.teamRules?.[target]?.trim();
+  return rule ? `${TARGET_DESCRIPTIONS[target]}. 이 팀의 규칙: ${rule}` : TARGET_DESCRIPTIONS[target];
+}
+
 // 고를 수 있는 값. 프로젝트에 없는 역할도 후보로 둔다(지금과 같다 — 해석이 프로젝트 역할만 받는다).
 export function routingTargets(input: RoutingInput): RoutingTarget[] {
   return ['FRONTEND', 'BACKEND', PM_TARGET, ...(selfAllowed(input) ? (['SELF'] as const) : [])];
@@ -142,7 +152,7 @@ export function buildRoutingContext(input: RoutingInput): string[] {
     situation(input),
     '',
     `후보: ${[...input.roles, PM_TARGET].join(', ')}`,
-    ...(['FRONTEND', 'BACKEND', PM_TARGET] as const).map((t) => `- ${t} = ${TARGET_DESCRIPTIONS[t]}`),
+    ...(['FRONTEND', 'BACKEND', PM_TARGET] as const).map((t) => `- ${t} = ${targetDescription(t, input)}`),
     `질문한 쪽: ${input.askerRole}`,
     input.task ? `태스크: ${input.task.title} (${input.task.kind})` : '',
     input.repo ? `레포: ${input.repo.fullName}` : '',

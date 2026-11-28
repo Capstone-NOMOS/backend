@@ -241,3 +241,29 @@ describe('OpenAI Decisions 라우터 (결정 전용 API)', () => {
     await expect(make(200, answer('QA', { QA: 1 })).route(INPUT)).rejects.toThrow(/unknown target/);
   });
 });
+
+// 팀 규칙(발표 18장 실험) — 정답은 팀의 합의라 팀마다 다르다. 규칙은 후보 설명 뒤에 붙어 세 라우터가 같은 문장을 받는다.
+describe('팀 규칙', () => {
+  const RULES = { FRONTEND: '입력 방식·화면 배치는 FE다', BACKEND: '로그인 유지 방식은 BE다', PM: '누구에게 허용할지는 PM이다' };
+
+  it('규칙이 없으면 프롬프트·Jev 기준이 예전과 글자까지 같다 — 운영 판정(v3)이 바뀌지 않는다', () => {
+    expect(buildRoutingPrompt({ ...INPUT, teamRules: null })).toBe(buildRoutingPrompt(INPUT));
+    expect(buildRoutingPrompt({ ...INPUT, teamRules: {} })).toBe(buildRoutingPrompt(INPUT));
+    expect(jevCriteria({ ...INPUT, teamRules: {} })).toEqual(jevCriteria(INPUT));
+    expect(buildRoutingPrompt(INPUT)).not.toContain('이 팀의 규칙');
+  });
+
+  it('규칙을 넣으면 프롬프트(Claude·OpenAI)와 선택지 설명(Jev·OpenAI Decisions)에 같은 문장으로 들어간다', () => {
+    const input = { ...INPUT, teamRules: RULES };
+    const prompt = buildRoutingPrompt(input);
+    for (const rule of Object.values(RULES)) expect(prompt).toContain(`이 팀의 규칙: ${rule}`);
+    const criteria = jevCriteria(input);
+    // FE가 물었으니 FE 후보는 SELF 하나다 — FE 규칙은 SELF 설명에 붙는다.
+    expect(criteria.BACKEND).toContain(`이 팀의 규칙: ${RULES.BACKEND}`);
+    expect(criteria.PM).toContain(`이 팀의 규칙: ${RULES.PM}`);
+    expect(criteria.SELF).toContain(`이 팀의 FRONTEND 규칙: ${RULES.FRONTEND}`);
+    const body = decisionsRequestBody('gpt-6-luna', input) as { input: string; questions: { choices: { value: string; description: string }[] }[] };
+    expect(body.questions[0]!.choices).toContainEqual({ value: 'BACKEND', description: criteria.BACKEND });
+    expect(body.input).toContain(`이 팀의 규칙: ${RULES.FRONTEND}`);
+  });
+});

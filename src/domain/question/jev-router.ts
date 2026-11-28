@@ -1,4 +1,4 @@
-import { buildRoutingContext, normalizeTarget, PM_TARGET, ROUTING_PROMPT_VERSION, selfRule, TARGET_DESCRIPTIONS, type QuestionRouter, type RoutingInput } from './router.js';
+import { buildRoutingContext, normalizeTarget, PM_TARGET, ROUTING_PROMPT_VERSION, selfRule, targetDescription, type QuestionRouter, type RoutingInput } from './router.js';
 
 // Jev 라우터 — TypeSafe의 결정 모델(System One API, https://docs.typesafe.ai/api). 글을 생성하지 않고 choice 질문에 확률로 답한다.
 // 발표 비교의 한 축(Claude · OpenAI · Jev). LLM 계열과 **같은 맥락 문장**(buildRoutingContext)을 state로, 같은 후보 설명(TARGET_DESCRIPTIONS)을
@@ -30,10 +30,14 @@ type JevResponse = {
 export function jevCriteria(input: RoutingInput): Record<string, string> {
   const criteria: Record<string, string> = {};
   for (const role of input.roles) {
-    if (role !== input.askerRole) criteria[role] = TARGET_DESCRIPTIONS[role];
+    if (role !== input.askerRole) criteria[role] = targetDescription(role, input);
   }
-  criteria[PM_TARGET] = TARGET_DESCRIPTIONS[PM_TARGET];
-  if (input.askerRole !== 'PM') criteria[SELF] = `질문한 역할(${input.askerRole}) 자신이 정할 수 있는 것 — 남에게 물을 일이 아니다`;
+  criteria[PM_TARGET] = targetDescription(PM_TARGET, input);
+  // 질문한 역할의 팀 규칙은 SELF 쪽에 붙인다 — 그 역할 후보는 SELF 하나로만 둔다(위). 프롬프트(LLM 계열)는 후보 목록에서 세 역할의 규칙을 다 본다.
+  const askerRule = input.askerRole !== 'PM' ? input.teamRules?.[input.askerRole]?.trim() : undefined;
+  if (input.askerRole !== 'PM') {
+    criteria[SELF] = `질문한 역할(${input.askerRole}) 자신이 정할 수 있는 것 — 남에게 물을 일이 아니다${askerRule ? `. 이 팀의 ${input.askerRole} 규칙: ${askerRule}` : ''}`;
+  }
   return criteria;
 }
 
