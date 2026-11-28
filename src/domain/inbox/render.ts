@@ -4,7 +4,7 @@ import type { NotificationRow } from './repository.js';
 // 질문 내용·답은 요약 한 줄만 싣는다. 전체는 화면이 questionId로 GET /projects/:id/questions(또는 /decisions)를 읽는다 —
 // 여기에 다 실으면 "누가 이 질문을 볼 수 있나"의 판정이 두 벌이 된다.
 
-export type NotificationType = 'task_done' | 'question_answered' | 'question_asked';
+export type NotificationType = 'task_done' | 'question_answered' | 'question_asked' | 'question_rerouted';
 
 const ROLE_SHORT: Record<string, string> = { FRONTEND: 'FE', BACKEND: 'BE', PM: 'PM' };
 const SUMMARY_MAX = 60;
@@ -54,6 +54,7 @@ function firstAnswer(questions: { question: string }[] | null, answers: Record<s
 
 export function notificationTypeOf(eventType: string): NotificationType {
   if (eventType === 'QUESTION_ASKED') return 'question_asked';
+  if (eventType === 'QUESTION_REROUTED') return 'question_rerouted';
   if (eventType === 'QUESTION_ANSWERED' || eventType === 'QUESTION_DRAFTED') return 'question_answered';
   return 'task_done';
 }
@@ -77,6 +78,11 @@ export function renderNotification(row: NotificationRow): string {
       return `${roleShort(row.targetRole)} 에이전트가 코드에서 찾아 답했습니다 — ${firstAnswer(row.questions, row.answers)}`;
     case 'QUESTION_ASKED':
       return `${roleShort(row.askerRole)} 에이전트가 물었습니다 — ${firstQuestion(row.questions)}`;
+    case 'QUESTION_REROUTED': {
+      const who = row.payload.reroutedByRole === 'REPRESENTATIVE' ? '대표가' : withSubject(ownerName(String(row.payload.fromRole ?? ''), row.actorNickname));
+      const to = row.payload.targetRole === 'PM' ? 'PM(대표)' : roleShort(String(row.payload.targetRole ?? ''));
+      return `${who} 질문을 ${to}에게 넘겼습니다 — ${firstQuestion(row.questions)}`;
+    }
     default:
       return title;
   }
