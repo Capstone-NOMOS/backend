@@ -19,10 +19,9 @@
 //
 // 지표: 정확도(accept에 든 판정), SELF 탐지(정답이 SELF뿐인 문항을 SELF로), 잘못 막음(남에게 물어야 할 걸 SELF로),
 // 지연·비용. 결과는 scripts/data/router-runs/에 남긴다(커밋하지 않는다).
-import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { oppositeRoleRouter, type TeamRules } from '../src/domain/question/router.js';
+import { oppositeRoleRouter, teamRulesTag, type TeamRules } from '../src/domain/question/router.js';
 import { claudeApiEvalRouter, claudeCliRouter, httpRouter, jevEvalRouter, openAiDecisionsEvalRouter, openAiEvalRouter, type EvalRouter } from './lib/question-routers.js';
 import { parseDataset, runEvaluation, summarize, type LoadedDataset } from './lib/routing-dataset.js';
 
@@ -77,7 +76,7 @@ if (teamRulesFile) {
     console.error('--team-rules 파일에 규칙이 없다({ "rules": { "FRONTEND": "..." } })');
     process.exit(1);
   }
-  const sha = createHash('sha256').update(JSON.stringify(rules)).digest('hex').slice(0, 8);
+  const sha = teamRulesTag(rules).replace('+team-', '');
   teamRules = { rules, sha, file: path.basename(teamRulesFile) };
   dataset = { ...dataset, items: dataset.items.map((i) => ({ ...i, input: { ...i.input, teamRules: rules } })) };
 }

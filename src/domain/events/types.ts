@@ -56,6 +56,7 @@ export type EventType =
   | 'TASK_CANCELLED'
   | 'TASK_COMPLETED_MANUALLY'
   | 'PROJECT_SETTINGS_UPDATED'
+  | 'ROUTING_RULES_UPDATED'
   | 'EXPERIMENT_SKIPPED'
   | 'TASK_MERGED_TO_DEFAULT'
   | 'RELEASE_REQUESTED'
@@ -387,6 +388,14 @@ export type ProjectCreatedPayload = {
 export type ProjectSettingsUpdatedPayload = {
   before: { questionRelay: boolean; questionMode?: 'normal' | 'experiment'; autoMerge?: boolean };
   after: { questionRelay: boolean; questionMode?: 'normal' | 'experiment'; autoMerge?: boolean };
+};
+
+// 팀별 질문 라우팅 규칙(039) — 바뀐 문장 원문과 해시(판정 기록 routed_by의 +team-<해시>와 같다). null = 규칙 없음.
+export type RoutingRulesUpdatedPayload = {
+  before: Partial<Record<'COMMON' | 'PM' | 'FRONTEND' | 'BACKEND', string>> | null;
+  after: Partial<Record<'COMMON' | 'PM' | 'FRONTEND' | 'BACKEND', string>> | null;
+  beforeTag: string | null;
+  afterTag: string | null;
 };
 
 // G1 — 이 시점의 멤버·태스크 수·승인한 계획을 남긴다. 이후 지표("이 구성으로 시작해서 어땠나")의 기준점이다.
@@ -777,6 +786,7 @@ export type EventPayloadMap = {
   TASK_CANCELLED: TaskCancelledPayload;
   TASK_COMPLETED_MANUALLY: TaskCompletedManuallyPayload;
   PROJECT_SETTINGS_UPDATED: ProjectSettingsUpdatedPayload;
+  ROUTING_RULES_UPDATED: RoutingRulesUpdatedPayload;
   EXPERIMENT_SKIPPED: ExperimentSkippedPayload;
   TASK_MERGED_TO_DEFAULT: TaskMergedToDefaultPayload;
   RELEASE_REQUESTED: ReleaseRequestedPayload;

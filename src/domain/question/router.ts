@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { TeamRole } from '../roles.js';
 import type { AskedQuestion } from './repository.js';
 
@@ -128,6 +129,26 @@ export const TARGET_DESCRIPTIONS: Record<QuestionTarget, string> = {
   BACKEND: 'API 계약·응답 형식·상태 코드·데이터·서버 동작',
   PM: '요구사항·서비스 정책·기능 범위·우선순위 같은 제품 결정(대표가 정한다). 기술 구현 방식은 PM이 아니다',
 };
+
+// 규칙을 정리한다 — 아는 키의 비지 않은 문장만(앞뒤 공백 제거). 하나도 없으면 null(규칙 없음).
+export const TEAM_RULE_KEYS = ['COMMON', 'PM', 'FRONTEND', 'BACKEND'] as const;
+export function normalizeTeamRules(rules: TeamRules | null | undefined): TeamRules | null {
+  if (!rules) return null;
+  const out: TeamRules = {};
+  for (const k of TEAM_RULE_KEYS) {
+    const v = rules[k]?.trim();
+    if (v) out[k] = v;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+// 규칙이 있으면 판정 기록 이름(routed_by)에 +team-<해시 8자>를 붙인다 — 규칙 있는 판정과 없는 판정, 규칙 문장이 다른 판정이 지표에서 섞이지 않는다.
+// 규칙이 없으면 빈 문자열(예전 이름 그대로). 해시는 키 순서를 고정한 정리본으로 낸다(오프라인 평가의 --team-rules 해시와 같은 문장이면 같다).
+export function teamRulesTag(rules: TeamRules | null | undefined): string {
+  const n = normalizeTeamRules(rules);
+  if (!n) return '';
+  return `+team-${createHash('sha256').update(JSON.stringify(n)).digest('hex').slice(0, 8)}`;
+}
 
 // 후보 설명 + 그 팀의 규칙. 규칙이 없으면 TARGET_DESCRIPTIONS 그대로다(운영은 지금 늘 이쪽 — 프롬프트가 v3와 글자까지 같다).
 export function targetDescription(target: QuestionTarget, input: Pick<RoutingInput, 'teamRules'>): string {

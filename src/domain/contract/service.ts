@@ -331,7 +331,7 @@ export async function submitContractDraft(
 
 // 계약 초안의 질문이 라우터에 넘기는 맥락 — 확정한 기능 명세(태스크는 없다), BE 레포, 질문 하나.
 async function contractQuestionInputs(ctx: AgentContext, contract: ContractView, questions: PlanningQuestion[]): Promise<{ question: AskedQuestion; input: RoutingInput }[]> {
-  const [spec, repos] = await Promise.all([findSpecForTask(pool, contract.specId), listBackendRepos(pool, ctx.projectId)]);
+  const [spec, repos, project] = await Promise.all([findSpecForTask(pool, contract.specId), listBackendRepos(pool, ctx.projectId), findProjectById(pool, ctx.projectId)]);
   return questions.map((q) => {
     const asked = toAskedQuestion(q);
     return {
@@ -346,6 +346,7 @@ async function contractQuestionInputs(ctx: AgentContext, contract: ContractView,
         questions: [asked],
         // 계약을 쓰는 중이라 확정한 계약 요약은 없다.
         contract: null,
+        ...(project?.routingRules ? { teamRules: project.routingRules } : {}),
         context: { orgId: ctx.orgId },
       },
     };

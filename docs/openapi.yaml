@@ -114,7 +114,7 @@ components:
             teamRole: { type: string, enum: [FRONTEND, BACKEND] }
     Project:
       type: object
-      required: [id, orgId, name, autonomyPreset, policyHash, constitutionHash, pmBudgetUsd, budgetUsd, deadline, status, startedAt, createdBy, createdAt, questionRelay, questionMode, autoMerge]
+      required: [id, orgId, name, autonomyPreset, policyHash, constitutionHash, pmBudgetUsd, budgetUsd, deadline, status, startedAt, createdBy, createdAt, questionRelay, questionMode, autoMerge, routingRules]
       properties:
         id: { type: string, format: uuid }
         orgId: { type: string, format: uuid }
@@ -149,6 +149,18 @@ components:
             완료 태스크를 기본 브랜치에 합치기(037, **실험 모드 전용**, 기본 꺼짐). 켜면 DONE이 된 태스크의 마지막 제출 커밋을 서버가 기본 브랜치에 합친다
             (이벤트 `TASK_MERGED_TO_DEFAULT` — merged·already·conflict). 기능을 쌓아 큰 앱을 키우는 무인 실험용이다 — 회차를 반복하는 실험에서는 끈다(회차마다 같은 출발점이어야 한다).
             시작(G1) 전에만 바꾼다
+        routingRules:
+          description: |
+            팀별 질문 라우팅 규칙(039). 에이전트 질문을 누구에게 보낼지 정하는 기준 문장 — 질문이 올 때 라우터(Claude·OpenAI·Jev)에 똑같이 들어간다.
+            null이면 규칙 없음(기본 설명만으로 판정). 비어 있지 않은 칸만 담긴다. 바꾸는 API는 `PUT /projects/{projectId}/routing-rules`
+          type: object
+          nullable: true
+          additionalProperties: false
+          properties:
+            COMMON: { type: string, description: '역할에 딸리지 않은 공통 원칙·헷갈릴 때의 기준' }
+            PM: { type: string, description: 'PM(대표)이 정하는 것' }
+            FRONTEND: { type: string, description: 'FE가 정하는 것' }
+            BACKEND: { type: string, description: 'BE가 정하는 것' }
     RepoListItem:
       type: object
       required: [id, fullName, githubRepoId, defaultBranch, devBranch, cloneUrl, ownershipAssigned, activeProjectId, activeProjectName]
@@ -289,6 +301,16 @@ components:
           properties:
             featureKey: { type: string }
             summary: { type: string, nullable: true }
+        teamRules:
+          type: object
+          nullable: true
+          description: '질문할 때 그 프로젝트의 팀별 라우팅 규칙(039) — 규칙이 없었으면 이 필드가 없다'
+          additionalProperties: false
+          properties:
+            COMMON: { type: string }
+            PM: { type: string }
+            FRONTEND: { type: string }
+            BACKEND: { type: string }
     RoutingDatasetItem:
       type: object
       description: |
@@ -3499,6 +3521,66 @@ paths:
             application/json:
               example:
                 error: { code: PROJECT_STARTED, message: project has started; settings are frozen }
+
+  /projects/{projectId}/routing-rules:
+    put:
+      tags: [프로젝트]
+      summary: 팀별 질문 라우팅 규칙 (대표 전용)
+      description: |
+        에이전트 질문을 어느 역할에게 보낼지 정하는 팀의 기준 문장(039). 역할마다(PM·FRONTEND·BACKEND)와 공통(COMMON) 칸이 있고, 각 2000자까지.
+        질문이 올 때 이 문장이 라우터 입력에 들어가 세 라우터가 같은 기준으로 판정한다.
+        **시작 뒤에도 바꿀 수 있다**(권한이 아니라 판정 기준이다). 끝난 프로젝트는 409 `PROJECT_NOT_OPEN`.
+        빈 문장·null인 칸은 지우고, `rules: null`이면 전부 지운다. 바뀌면 이벤트 `ROUTING_RULES_UPDATED`(전·후 원문). 같은 규칙이면 그대로 돌려준다.
+        규칙이 있는 동안의 판정은 라우터 이름(routedBy)에 `+team-<해시>`가 붙어 규칙 전·후 판정이 섞이지 않는다.
+      security: [{ userToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/ProjectId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [rules]
+              properties:
+                rules:
+                  type: object
+                  nullable: true
+                  additionalProperties: false
+                  description: '칸마다 문장(2000자까지). 빈 문장·null인 칸은 지운다. rules 자체가 null이면 전부 지운다'
+                  properties:
+                    COMMON: { type: string, nullable: true, maxLength: 2000 }
+                    PM: { type: string, nullable: true, maxLength: 2000 }
+                    FRONTEND: { type: string, nullable: true, maxLength: 2000 }
+                    BACKEND: { type: string, nullable: true, maxLength: 2000 }
+            example:
+              rules:
+                COMMON: '질문을 받은 역할이 개발하다가 스스로 정할 수 있으면 그 역할이 답한다. 화면은 모습·문구·배치는 PM, 동작은 FE.'
+                PM: '기능 범위와 우선순위, 정책, 서비스 규칙, 콘텐츠, 화면의 모습·문구·표시 형식'
+                FRONTEND: '목록을 나눠 보여 주는 방식, 다시 불러올 때, 화면 이동, 오류 화면 동작'
+                BACKEND: 'DB 구조, 인증·세션, API 응답 형식, 입력값 검증, 서버 계산 방식'
+      responses:
+        '200':
+          description: 바뀐 프로젝트(routingRules 포함)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/Project' }
+        '403':
+          description: 대표가 아님
+          content:
+            application/json:
+              example:
+                error: { code: NOT_REPRESENTATIVE, message: only the representative can change routing rules }
+        '409':
+          description: 끝난 프로젝트
+          content:
+            application/json:
+              example:
+                error: { code: PROJECT_NOT_OPEN, message: project is completed }
 
   /projects/{projectId}/start:
     post:

@@ -6,7 +6,7 @@ import { findProjectById } from '../project/repository.js';
 import { assertProjectVisibleToUser, type UserContext } from '../project/visibility.js';
 import { findQuestion, listRoutingDatasetRows, type AnswerSource } from './repository.js';
 import { shadowRouters, ROUTER_TIMEOUT_MS, type RoutedResult } from './router-registry.js';
-import { ROUTING_STAGES, type RoutingInput, type RoutingInputSnapshot, type RoutingStage } from './router.js';
+import { ROUTING_STAGES, teamRulesTag, type RoutingInput, type RoutingInputSnapshot, type RoutingStage } from './router.js';
 import { insertRoutingRun, listEvalQuestions, setGoldTarget, type EvalQuestionRow } from './routing-eval-repository.js';
 
 // 질문 라우팅 평가(026) — 서비스가 아니라 발표 지표를 위한 기록이다. 서비스 동작(누구에게 보내나)은 바꾸지 않는다.
@@ -27,7 +27,7 @@ export function recordRouting(questionId: string, input: RoutingInput, routed: R
     // 먼저 시도한 라우터가 실패해 규칙으로 대체됐으면, 그 실패도 그 라우터의 기록으로 남긴다(실패율).
     if (routed.fallback !== null) {
       await insertRoutingRun(pool, {
-        questionId, router: routed.attempted, mode: 'primary', target: null, confidence: null,
+        questionId, router: routed.attempted + teamRulesTag(input.teamRules), mode: 'primary', target: null, confidence: null,
         latencyMs: routed.latencyMs, modelLatencyMs: null, costUsd: null, error: routed.fallback,
       });
     }
@@ -51,12 +51,12 @@ export function recordRouting(questionId: string, input: RoutingInput, routed: R
             new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`timed out after ${ROUTER_TIMEOUT_MS}ms`)), ROUTER_TIMEOUT_MS).unref()),
           ]);
           await insertRoutingRun(pool, {
-            questionId, router: decision.routedBy, mode: 'shadow', target: decision.target, confidence: decision.confidence,
+            questionId, router: decision.routedBy + teamRulesTag(input.teamRules), mode: 'shadow', target: decision.target, confidence: decision.confidence,
             latencyMs: Date.now() - started, modelLatencyMs: decision.modelLatencyMs ?? null, costUsd: decision.costUsd ?? null, error: null,
           });
         } catch (err) {
           await insertRoutingRun(pool, {
-            questionId, router: router.name, mode: 'shadow', target: null, confidence: null,
+            questionId, router: router.name + teamRulesTag(input.teamRules), mode: 'shadow', target: null, confidence: null,
             latencyMs: Date.now() - started, modelLatencyMs: null, costUsd: null, error: (err instanceof Error ? err.message : String(err)).slice(0, 300),
           });
         }

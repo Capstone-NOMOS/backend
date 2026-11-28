@@ -986,6 +986,7 @@ async function prepareFeatureQuestions(
         repo: null,
         questions: [asked],
         contract: null,
+        ...(project.routingRules ? { teamRules: project.routingRules } : {}),
         context: { orgId: project.orgId },
       };
       return { question: asked, input };

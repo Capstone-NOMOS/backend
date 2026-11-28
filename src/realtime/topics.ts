@@ -70,6 +70,7 @@ export const TOPICS_BY_EVENT: Record<EventType, Mapping> = {
   TASK_CANCELLED: { project: ['room', 'tasks'], org: ['inbox'] },
   TASK_COMPLETED_MANUALLY: { project: ['room', 'tasks'], org: ['inbox'] },
   PROJECT_SETTINGS_UPDATED: { project: ['project'], org: ['projects'] },
+  ROUTING_RULES_UPDATED: { project: ['project'] },
   RELEASE_REQUESTED: { project: ['approvals', 'project', 'room'], org: ['approvals', 'projects', 'inbox'] },
   ACTION_DETECTED: { project: ['tasks'] },
   RELEASE_DECIDED: { project: ['approvals', 'project', 'room'], org: ['approvals', 'projects', 'inbox'] },

@@ -60,6 +60,8 @@ export const routingInputSchema = z.object({
   repo: z.object({ fullName: z.string().min(1) }).nullable(),
   questions: z.array(askedQuestionSchema).min(1).max(4),
   contract: z.object({ featureKey: z.string(), summary: z.string().nullable() }).nullable().optional(),
+  // 팀별 라우팅 규칙(039) — 질문할 때 그 프로젝트에 규칙이 있었으면 스냅샷에 남는다. 평가가 그대로 다시 넣는다.
+  teamRules: z.object({ COMMON: z.string(), PM: z.string(), FRONTEND: z.string(), BACKEND: z.string() }).partial().nullable().optional(),
 });
 const v2ItemSchema = z
   .object({
