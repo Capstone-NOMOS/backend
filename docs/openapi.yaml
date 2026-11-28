@@ -194,11 +194,12 @@ components:
         id: { type: string, description: '이벤트 id(bigint를 문자열로). 읽음 커서·더 보기(before)에 쓴다' }
         type:
           type: string
-          enum: [task_done, question_answered, question_asked]
+          enum: [task_done, question_answered, question_asked, question_rerouted]
           description: |
             - task_done: 태스크가 완료됐다(최종 승인·검증만으로 완료·직접 완료). 1차 검토 승인은 완료가 아니라 없다. 역할 = 태스크 역할
             - question_answered: 질문한 역할의 질문에 답이 정해졌다(사람의 답, 또는 상담 초안이 그대로 답이 된 경우). 역할 = 질문한 역할
             - question_asked: 그 역할에게 질문이 왔다(PM 대상이면 대표만). 역할 = 대상 역할
+            - question_rerouted: 다른 역할이 질문을 이 역할에게 넘겼다(PM이면 대표만, 넘긴 사람 자신은 받지 않는다). 역할 = 넘겨받은 역할
         ts: { type: string, format: date-time }
         read: { type: boolean, description: '이벤트 id ≤ 읽음 커서' }
         projectId: { type: string, format: uuid }
@@ -3680,7 +3681,7 @@ paths:
       summary: 알림(일어난 일)
       description: |
         내 태스크가 완료됐다 · 내 질문에 답이 왔다 · 나에게 질문이 왔다. events에서 계산하고 최근 30일만 본다. 최신순.
-        `before`(이전 응답의 마지막 `id`)로 더 본다. `unreadCount`는 읽음 커서 뒤의 내 알림 수.
+        `nextBefore`를 다음 요청의 `before`로 넘기면 더 본다(더 없으면 null). `unreadCount`는 읽음 커서 뒤의 내 알림 수.
         실시간: 조직 토픽 `inbox` 신호를 받으면 다시 읽는다.
       security: [{ userToken: [] }]
       parameters:
@@ -3698,10 +3699,11 @@ paths:
                   data:
                     type: object
                     additionalProperties: false
-                    required: [notifications, unreadCount]
+                    required: [notifications, unreadCount, nextBefore]
                     properties:
                       notifications: { type: array, items: { $ref: '#/components/schemas/Notification' } }
                       unreadCount: { type: integer }
+                      nextBefore: { type: string, nullable: true, description: '더 있으면 이 값을 다음 요청의 before로. 더 없으면 null' }
   /me/notifications/read:
     post:
       tags: [받은 편지함]

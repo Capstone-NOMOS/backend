@@ -770,7 +770,8 @@ Table events {
 
   ★ 031 받은 편지함 알림: 알림 테이블 없이 events에서 계산한다(GET /me/notifications). 읽음은 users.notifications_read_event_id 커서
     CREATE INDEX idx_events_notifications ON events (org_id, id)
-      WHERE type IN ('APPROVAL_RESULT','VERIFICATION_COMPLETED','TASK_COMPLETED_MANUALLY','QUESTION_ANSWERED','QUESTION_DRAFTED','QUESTION_ASKED');
+      WHERE type IN ('APPROVAL_RESULT','VERIFICATION_COMPLETED','TASK_COMPLETED_MANUALLY','QUESTION_ANSWERED','QUESTION_DRAFTED','QUESTION_ASKED','QUESTION_REROUTED');
+    -- 040: 질문 재지정(QUESTION_REROUTED)을 더했다 — 넘겨받은 역할 담당에게 알림
   '''
 }
 

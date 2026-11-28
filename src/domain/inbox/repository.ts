@@ -11,6 +11,8 @@ export const NOTIFICATION_EVENT_TYPES = [
   'QUESTION_ANSWERED',
   'QUESTION_DRAFTED',
   'QUESTION_ASKED',
+  // 040: 질문을 넘겨받은 역할 담당에게(038 재지정).
+  'QUESTION_REROUTED',
 ] as const;
 
 // 최근 이만큼만 본다. events는 지워지지 않아 계속 자라는데, 받은 편지함은 "최근에 일어난 일"이다 —
@@ -40,6 +42,7 @@ export type NotificationRow = {
 //   task_done          — 태스크가 DONE이 된 순간: 최종 승인(1차 검토 승인은 taskState가 AWAITING_APPROVAL이라 빠진다)·검증만으로 완료·직접 완료. 역할 = 태스크 역할.
 //   question_answered  — 사람의 답, 또는 상담 초안이 그대로 답이 된 경우(QUESTION_DRAFTED.autoAnswered). 역할 = 질문한 쪽(asker).
 //   question_asked     — 대상 역할(PM이면 담당이 없어 대표만). SELF(자기 소관으로 돌려보냄)는 묻는 쪽이 계속 하므로 빠진다.
+//   question_rerouted  — 질문을 넘겨받은 역할(payload.targetRole, PM이면 대표만). 넘긴 사람 자신은 받지 않는다.
 // 대표는 조직의 모든 프로젝트 알림을, 팀원은 지금 그 역할 담당(project_members.user_id)인 것만 받는다. 한 이벤트는 한 줄이라 대표이면서 담당이어도 한 번이다.
 const BASE = `
   WITH n AS (
@@ -49,13 +52,13 @@ const BASE = `
            q.id AS question_id, q.asker_role, q.target_role, q.questions, q.answers,
            CASE
              WHEN e.type IN ('QUESTION_ANSWERED', 'QUESTION_DRAFTED') THEN q.asker_role
-             WHEN e.type = 'QUESTION_ASKED' THEN e.payload->>'targetRole'
+             WHEN e.type IN ('QUESTION_ASKED', 'QUESTION_REROUTED') THEN e.payload->>'targetRole'
              ELSE t.team_role
            END AS role
       FROM events e
       JOIN projects p ON p.id = e.project_id
       LEFT JOIN tasks t ON t.id = (e.payload->>'taskId')::uuid
-      LEFT JOIN agent_questions q ON e.type IN ('QUESTION_ANSWERED', 'QUESTION_DRAFTED', 'QUESTION_ASKED')
+      LEFT JOIN agent_questions q ON e.type IN ('QUESTION_ANSWERED', 'QUESTION_DRAFTED', 'QUESTION_ASKED', 'QUESTION_REROUTED')
                                  AND q.id = (e.payload->>'questionId')::uuid
      WHERE e.org_id = $1
        AND e.type = ANY($4::text[])
@@ -68,14 +71,15 @@ const BASE = `
             -- 실험 모드의 자동 답(033, 첫 선택지)은 사람 일이 아니다 — 답도, 그 질문이 왔다는 알림도 내지 않는다(곧바로 답해진다).
             OR (e.type = 'QUESTION_ANSWERED' AND e.payload->>'source' IS DISTINCT FROM 'auto_first_option')
             OR (e.type = 'QUESTION_DRAFTED' AND e.payload->>'autoAnswered' = 'true')
-            OR (e.type = 'QUESTION_ASKED' AND e.payload->>'targetRole' <> 'SELF' AND q.answer_source IS DISTINCT FROM 'auto_first_option'))
+            OR (e.type = 'QUESTION_ASKED' AND e.payload->>'targetRole' <> 'SELF' AND q.answer_source IS DISTINCT FROM 'auto_first_option')
+            OR e.type = 'QUESTION_REROUTED')
   ),
   mine AS (
     SELECT n.* FROM n
      WHERE ($2 OR EXISTS (SELECT 1 FROM project_members m WHERE m.project_id = n.project_id AND m.user_id = $3 AND m.team_role = n.role))
-       -- 사람이 직접 결정한 일(승인 결과·사람의 답·직접 완료)은 그 사람 자신에게 알리지 않는다 — 방금 내가 누른 것이 안 읽은 알림으로 쌓였다.
+       -- 사람이 직접 결정한 일(승인 결과·사람의 답·직접 완료·재지정)은 그 사람 자신에게 알리지 않는다 — 방금 내가 누른 것이 안 읽은 알림으로 쌓였다.
        -- 검증 완료·질문 발생·상담 초안 답은 빼지 않는다: 명의가 에이전트 주인(그 담당 본인)이라 같은 기준이면 받아야 할 알림이 사라진다.
-       AND NOT (n.type IN ('APPROVAL_RESULT', 'QUESTION_ANSWERED', 'TASK_COMPLETED_MANUALLY') AND n.on_behalf_of = $3::text)
+       AND NOT (n.type IN ('APPROVAL_RESULT', 'QUESTION_ANSWERED', 'TASK_COMPLETED_MANUALLY', 'QUESTION_REROUTED') AND n.on_behalf_of = $3::text)
   )`;
 
 const iso = (v: unknown): string => (v instanceof Date ? v.toISOString() : String(v));
