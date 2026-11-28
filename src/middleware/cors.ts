@@ -53,7 +53,9 @@ export function isAllowedOrigin(rules: readonly OriginRule[], origin: string): b
   return rules.some((r) => ('exact' in r ? r.exact === o : r.pattern.test(o)));
 }
 
-const ALLOW_METHODS = 'GET, POST, PATCH, DELETE';
+// 라우트가 쓰는 메서드는 전부 여기 있어야 한다 — 빠지면 브라우저 사전 요청에서 막힌다(039의 PUT /routing-rules가 실제로 그랬다).
+// tests/deploy-config.test.ts가 src/routes의 메서드와 대조한다.
+export const ALLOW_METHODS = 'GET, POST, PUT, PATCH, DELETE';
 const ALLOW_HEADERS = 'Authorization, Content-Type';
 
 export function cors(rules: readonly OriginRule[]) {
