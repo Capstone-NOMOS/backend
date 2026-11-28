@@ -32,8 +32,14 @@ const ACTIVITY_TEXT: Record<string, (target: string) => string> = {
 };
 
 // 질문 대상 PM(025)은 대표가 운용하는 PM 에이전트 — 사람이 읽기 쉽게 적는다.
+// 룸 문장의 역할 표기는 화면 이름(FE·BE)으로 맞춘다 — 서버 값(FRONTEND)이 섞이면 "BE 담당이 질문을 FRONTEND에게"처럼 읽혔다(FE 요청).
+function roleLabel(v: unknown): string {
+  return v === 'BACKEND' ? 'BE' : v === 'FRONTEND' ? 'FE' : String(v ?? '');
+}
+
+// 답할 쪽 — PM은 대표가 확정하므로 "PM(대표)".
 function targetLabel(v: unknown): string {
-  return v === 'PM' ? 'PM(대표)' : String(v ?? '');
+  return v === 'PM' ? 'PM(대표)' : roleLabel(v);
 }
 
 // 역할 담당(사람)을 부를 때 — "BE 담당 민수".
@@ -181,7 +187,7 @@ function eventText(row: FeedRow): { speaker: RoomMessage['speaker']; text: strin
     case 'QUESTION_ASKED': {
       // 기획 단계 질문(033) — 기능 명세·API 계약 초안을 쓰다가 물었다(태스크가 없어 프로젝트의 모든 룸에 나온다).
       const where = p.stage === 'feature_spec' ? ' (기능 명세 초안)' : p.stage === 'contract' ? ' (API 계약 초안)' : '';
-      return { speaker: 'agent', text: `${str(p.askerRole)} 에이전트가 ${targetLabel(p.targetRole)}에게 질문했습니다${where} (${num(p.questionCount)}개)` };
+      return { speaker: 'agent', text: `${roleLabel(p.askerRole)} 에이전트가 ${targetLabel(p.targetRole)}에게 질문했습니다${where} (${num(p.questionCount)}개)` };
     }
     case 'QUESTION_DRAFTED':
       if (p.drafter === 'pm') return { speaker: 'pm', text: `PM이 답 초안을 만들었습니다 — 대표 확인을 기다립니다 (정해진 것 ${num(p.decidedCount)}/${num(p.questionCount)})` };

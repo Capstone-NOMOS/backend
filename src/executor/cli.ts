@@ -139,7 +139,9 @@ async function consultPending(client: NomosClient, role: string): Promise<void> 
       const active = [...activeWorkspaces.values()].find((w) => repos.some((r) => r.fullName === w.repo));
       const repo = active ? { fullName: active.repo } : repos[0];
       if (!repo) throw new Error('이 역할이 맡은 레포가 프로젝트에 없어요');
-      const dir = active ? active.dir : ensureRepo({ fullName: repo.fullName, cloneUrl: repos[0]!.cloneUrl }, { log }).path;
+      const source = repos.find((r) => r.fullName === repo.fullName) ?? repos[0]!;
+      // 읽기 전에 클론 폴더를 origin/<기본 브랜치>로 맞춘다 — fetch만 하면 처음 클론한 시점의 코드를 읽는다.
+      const dir = active ? active.dir : ensureRepo({ fullName: source.fullName, cloneUrl: source.cloneUrl }, { log, syncWorkTree: source.defaultBranch }).path;
       log(`${job.askerRole} 쪽에서 온 질문 ${job.questions.length}개의 답을 ${repo.fullName}에서 찾고 있어요${active ? ' (작업 중인 폴더 기준)' : ''}`);
       const draft = await runConsult({ dir, role, repoName: repo.fullName, question: job, signal: agentStop.signal });
       const result = await client.submitDraft(job.id, draft);
@@ -176,7 +178,7 @@ async function contractPending(client: NomosClient): Promise<void> {
         return;
       }
       // 레포 최신화는 묶음당 한 번(C).
-      const dir = active ? active.dir : ensureRepo({ fullName: repo.fullName, cloneUrl: repo.cloneUrl }, { log }).path;
+      const dir = active ? active.dir : ensureRepo({ fullName: repo.fullName, cloneUrl: repo.cloneUrl }, { log, syncWorkTree: repo.defaultBranch }).path;
 
       // 첫 회차가 둘 이상이면 한 번에 쓴다(A).
       const firsts = jobs.filter((j) => j.attempt === 1);

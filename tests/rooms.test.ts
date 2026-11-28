@@ -360,8 +360,8 @@ describe('질문 중계와 룸', () => {
     expect((await http('POST', `/questions/${questionId}/answer`, w.be.token, { answers: { [q]: 'title' } })).status).toBe(200);
     const fe = (await feed(w.rep.token, w.projectId, 'FRONTEND')).messages.map((m) => m.text).reverse();
     expect(fe.slice(-5)).toEqual([
-      'FRONTEND 에이전트가 BACKEND에게 질문했습니다 (1개)',
-      'BACKEND의 답을 기다리며 태스크를 잠시 내려놓았습니다 — 답이 오면 다시 시작합니다',
+      'FE 에이전트가 BE에게 질문했습니다 (1개)',
+      'BE의 답을 기다리며 태스크를 잠시 내려놓았습니다 — 답이 오면 다시 시작합니다',
       '실행을 멈췄습니다 (200초) — 질문의 답이 오면 다시 시작합니다',
       '질문에 답이 왔습니다(담당자) → 다시 시작합니다',
       'T-2 가입 화면 다시 실행해 주세요 (재개)',
@@ -370,7 +370,7 @@ describe('질문 중계와 룸', () => {
 
     // 답할 역할(BACKEND)의 룸에도 질문이 보인다 — 거기서 답을 준비한다.
     const be = (await feed(w.be.token, w.projectId, 'BACKEND')).messages.map((m) => m.text);
-    expect(be).toContain('FRONTEND 에이전트가 BACKEND에게 질문했습니다 (1개)');
+    expect(be).toContain('FE 에이전트가 BE에게 질문했습니다 (1개)');
 
     // 질문 줄에는 questionId가 붙는다 — 화면이 같은 id의 질문으로 카드(선택지·답)를 그린다.
     const lines = (await feed(w.rep.token, w.projectId, 'FRONTEND')).messages;

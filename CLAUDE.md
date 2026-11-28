@@ -312,6 +312,7 @@ owner가 NULL이므로, 그 파일들은 `**`의 소유 역할을 따른다. 상
 - **태스크의 레포는 CLI가 받는다**(`executor/repo-checkout.ts`): `~/.nomos/repos/<조직>/<레포>`에 브리핑의 `repo.cloneUrl`(NULL이면 `github.com/{fullName}`)로 클론하고,
   태스크마다 fetch해 `origin/<기본 브랜치>`에서 분기한다. `repos.json`에 적힌 경로가 있으면 그게 우선이다(fetch하지 않음, 시드·기존 클론용).
   서버가 준 주소라도 노트북에서 한 번 더 거른다(https·로컬 경로만, `-` 시작·`::`·자격 증명 거부, `git clone --`). git 비밀값은 서버가 주지 않는다 — 사용자의 git 자격 증명을 쓴다.
+  **읽기 전용 실행(상담·계약 초안)은 클론 폴더를 그대로 읽으므로 그 전에 작업 트리를 `origin/<기본 브랜치>`로 맞춘다**(`ensureRepo`의 `syncWorkTree`, detach·force — CLI가 관리하는 클론이라 사람의 변경이 없다). fetch만 하면 처음 클론한 시점의 코드로 답했다(FE 코드 읽기). `repos.json`의 사람 레포는 건드리지 않는다.
 - **npm 배포는 `cli-v*` 태그 → Trusted Publishing(OIDC)이다**(`publish-cli.yml`). `NPM_TOKEN`을 Secrets에 두지 말 것. 태그와 `packages/cli/package.json` 버전이 다르면 멈춘다.
 
 - **백그라운드 실행**(`executor/background.ts`, FE 요청): `connect --background`는 같은 인자로 connect를 분리된 자식으로 띄우고 바로 끝난다(출력은 `~/.nomos/logs/connect.log`,
@@ -812,7 +813,7 @@ FE의 "받은 편지함"은 두 칸이다(대표 결정 2026-10-29). **둘 다 �
   - **신호원은 events INSERT 트리거 → NOTIFY다**(016, `realtime/event-feed.ts`가 전용 연결로 LISTEN). 서비스가 알림을 따로 부르지 않는다 —
     모든 상태 변화는 events에 남으므로 빠지는 경로가 없고, NOTIFY는 커밋할 때만 전달돼 롤백된 변화는 알리지 않는다.
     에이전트용 `tasksChanged`는 그대로 둔다(스냅샷 계산 시점을 서비스가 정한다). LISTEN이 끊겼다 붙으면 `resync`를 보내 화면이 전부 다시 읽게 한다.
-  - 이벤트 타입 → 토픽은 `realtime/topics.ts`의 `TOPICS_BY_EVENT`(`Record<EventType, …>`) 한 곳이다. 이벤트 타입을 추가하면 컴파일이 여기를 채우라고 한다.
+  - 이벤트 타입 → 토픽은 `realtime/topics.ts`의 `TOPICS_BY_EVENT`(`Record<EventType, …>`) 한 곳이다. 이벤트 타입을 추가하면 컴파일이 여기를 채우라고 한다. **룸 피드에 줄이 되는 이벤트(`TASK_FEED_EVENTS`·`PROJECT_FEED_EVENTS`)는 `room`을 낸다** — 질문 줄에 빠져 새로 고칠 때까지 안 보였다(`tests/user-stream.test.ts`가 대조한다).
   - 범위: 조직 토픽은 같은 조직 전부(`approvals`도 — 030부터 팀원의 검토 요청 배지가 프로젝트 화면 밖에서 갱신돼야 한다. 신호에 데이터가 없고 조직 대기열 API는 여전히 대표 전용이라 새는 것이 없다), 프로젝트 토픽은 **구독한** 연결만.
     구독은 `assertProjectVisibleToUser`로 확인하고, `MEMBER_UNASSIGNED`가 오면 다시 확인해 끊는다. 역할은 연결할 때 읽는다.
   - 인증은 첫 메시지(사람 JWT, `resolveUserToken` — HTTP `authenticate`와 한 벌). Origin은 CORS 허용 목록 + 서버 자신만 받는다(Origin 없음 = 브라우저 아님 → 통과).

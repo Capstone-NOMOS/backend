@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
@@ -165,6 +165,27 @@ describe('레포 자동 클론', () => {
     ensureRepo({ fullName: 'acme/api', cloneUrl: origin }, { ...quiet, root, readMap: () => ({}) });
     const head = execFileSync('git', ['rev-parse', 'origin/main'], { cwd: first.path, encoding: 'utf-8' }).trim();
     expect(head).toBe(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: origin, encoding: 'utf-8' }).trim());
+  });
+
+  it('읽기 전용 실행용(syncWorkTree)이면 클론 폴더의 작업 트리까지 origin/<기본 브랜치>로 맞춘다', () => {
+    const root = path.join(tmp, 'repos-sync');
+    const first = ensureRepo({ fullName: 'acme/api', cloneUrl: origin }, { ...quiet, root, readMap: () => ({}) });
+    const before = readFileSync(path.join(first.path, 'README.md'), 'utf-8');
+
+    writeFileSync(path.join(origin, 'README.md'), 'v-sync\n');
+    git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-am', 'v-sync'], origin);
+
+    // fetch만 하면 작업 트리는 그대로다 — 상담·계약 초안이 이 폴더를 읽어 옛 코드로 답했다.
+    ensureRepo({ fullName: 'acme/api', cloneUrl: origin }, { ...quiet, root, readMap: () => ({}) });
+    expect(readFileSync(path.join(first.path, 'README.md'), 'utf-8')).toBe(before);
+
+    ensureRepo({ fullName: 'acme/api', cloneUrl: origin }, { ...quiet, root, readMap: () => ({}), syncWorkTree: 'main' });
+    expect(readFileSync(path.join(first.path, 'README.md'), 'utf-8').trim()).toBe('v-sync');
+
+    // 없는 브랜치면 멈추지 않고 지금 트리로 읽는다.
+    const lines: string[] = [];
+    expect(() => ensureRepo({ fullName: 'acme/api', cloneUrl: origin }, { root, readMap: () => ({}), git: quiet.git, log: (l) => lines.push(l), syncWorkTree: 'nope' })).not.toThrow();
+    expect(lines.some((l) => l.includes('origin/nope'))).toBe(true);
   });
 
   it('repos.json에 적힌 경로가 있으면 받지 않고 그대로 쓴다', () => {
