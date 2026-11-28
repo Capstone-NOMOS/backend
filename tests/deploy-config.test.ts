@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -11,7 +11,7 @@ import { parseEnv } from '../src/config/env.js';
 import { assertSchemaUpToDate, listMigrationNames } from '../src/config/migrations.js';
 import { loadParametersFromSsm, type SsmLike } from '../src/config/ssm.js';
 import { createInvite } from '../src/domain/invite/service.js';
-import { compileOriginRules } from '../src/middleware/cors.js';
+import { ALLOW_METHODS, compileOriginRules } from '../src/middleware/cors.js';
 import { createTestOrg } from './fixtures.js';
 import { resetSchema, testPool, truncateAll } from './test-db.js';
 
@@ -126,6 +126,17 @@ describe('CORS', () => {
     expect(await originOf('https://nomos-otherteam.vercel.app')).toBeNull();
     expect(await originOf('https://evil.com.x-myteam.vercel.app')).toBeNull();
     expect(await originOf('http://nomos.vercel.app')).toBeNull();
+  });
+
+  it('라우트가 쓰는 HTTP 메서드는 전부 CORS 허용 목록에 있다 — 빠지면 화면에서만 막힌다(PUT이 그랬다)', () => {
+    const allowed = new Set(ALLOW_METHODS.split(',').map((m) => m.trim()));
+    const dir = path.resolve('src/routes');
+    const used = new Set<string>();
+    for (const f of readdirSync(dir).filter((n) => n.endsWith('.ts'))) {
+      for (const m of readFileSync(path.join(dir, f), 'utf8').matchAll(/Router\.(get|post|put|patch|delete)\(/g)) used.add(m[1]!.toUpperCase());
+    }
+    expect(used.size).toBeGreaterThan(0);
+    for (const m of used) expect(allowed, m).toContain(m);
   });
 
   it('사전 요청은 라우트까지 가지 않고 204로 끝난다 — 쿠키를 쓰지 않으므로 credentials 헤더는 없다', async () => {
