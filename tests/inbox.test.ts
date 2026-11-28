@@ -121,7 +121,7 @@ async function http(method: string, urlPath: string, token: string, body?: unkno
   return { status: res.status, json: (await res.json()) as Json };
 }
 
-async function notifications(who: Account, query = ''): Promise<{ notifications: Notification[]; unreadCount: number }> {
+async function notifications(who: Account, query = ''): Promise<{ notifications: Notification[]; unreadCount: number; nextBefore: string | null }> {
   const res = await http('GET', `/me/notifications${query}`, await who.token());
   expect(res.status).toBe(200);
   return res.json.data as unknown as { notifications: Notification[]; unreadCount: number };
@@ -223,6 +223,24 @@ describe('알림 — 질문', () => {
     expect(n).toMatchObject({ questionId: asked.id, text: 'BE 에이전트가 코드에서 찾아 답했습니다 — 스터디 목록 한 페이지 크기는? → 20개' });
   });
 
+  it('질문을 넘기면(038 재지정) 넘겨받은 역할 담당·대표에게 question_rerouted — 넘긴 사람 자신은 받지 않는다(040)', async () => {
+    const w = await world();
+    await w.feClient.claimTask(w.feTaskId);
+    const asked = await w.feClient.askQuestions(w.feTaskId, [PAGE]); // 기본 라우터: FE 질문 → BACKEND
+    const moved = await http('POST', `/questions/${asked.id}/reroute`, await w.be.token(), { targetRole: 'FRONTEND', reason: '화면이 정할 일' });
+    expect(moved.status).toBe(200);
+    for (const who of [w.fe, w.rep]) {
+      const n = (await notifications(who)).notifications.find((x) => x.type === 'question_rerouted');
+      expect(n).toMatchObject({ questionId: asked.id, role: 'FRONTEND', text: 'BE 담당 민수가 질문을 FE에게 넘겼습니다 — 스터디 목록 한 페이지 크기는?' });
+    }
+    expect(await types(w.be)).toEqual(['question_asked']);
+
+    // 대표가 PM으로 넘기면 대표 자신에게는 없고, PM은 담당이 없어 팀원에게도 없다.
+    await http('POST', `/questions/${asked.id}/reroute`, await w.rep.token(), { targetRole: 'PM' });
+    expect((await notifications(w.rep)).notifications.filter((x) => x.type === 'question_rerouted')).toHaveLength(1);
+    expect((await notifications(w.fe)).notifications.filter((x) => x.type === 'question_rerouted')).toHaveLength(1);
+  });
+
   it('PM 대상 질문은 대표에게만, SELF(자기 소관)는 알림이 없다', async () => {
     const w = await world();
     await w.feClient.claimTask(w.feTaskId);
@@ -286,6 +304,11 @@ describe('알림 — 읽음 커서와 범위', () => {
     expect((await notifications(w.be)).unreadCount).toBe(2);
     // 더 보기(before).
     expect((await notifications(w.rep, `?limit=1&before=${newest!.id}`)).notifications.map((n) => n.id)).toEqual([older!.id]);
+    // nextBefore — 더 있을 때만 값이 있다. 알림 수가 페이지 크기와 같아도 빈 "더 보기"가 생기지 않는다.
+    const first = await notifications(w.rep, '?limit=1');
+    expect(first.nextBefore).toBe(newest!.id);
+    expect((await notifications(w.rep, `?limit=1&before=${first.nextBefore}`)).nextBefore).toBeNull();
+    expect((await notifications(w.rep, '?limit=2')).nextBefore).toBeNull();
   });
 
   it('다른 조직·내 역할이 아닌 프로젝트·지운 프로젝트의 알림은 보이지 않는다', async () => {

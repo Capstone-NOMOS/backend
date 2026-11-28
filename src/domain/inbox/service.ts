@@ -47,10 +47,13 @@ function isRead(eventId: string, cursor: string | null): boolean {
 export async function listNotifications(
   actor: UserContext,
   input: { before: string | null; limit: number },
-): Promise<{ notifications: Notification[]; unreadCount: number }> {
+): Promise<{ notifications: Notification[]; unreadCount: number; nextBefore: string | null }> {
   const who = recipient(actor);
   const cursor = await findReadCursor(pool, actor.userId);
-  const [rows, unreadCount] = await Promise.all([listNotificationRows(pool, who, input), countUnreadNotifications(pool, who, cursor)]);
+  // 한 줄 더 읽어 뒤에 더 있는지 정확히 안다 — "꽉 찬 페이지면 더 있다"로 추정하면 알림 수가 페이지 크기의 배수일 때 빈 "더 보기"가 떴다(FE 요청).
+  const [fetched, unreadCount] = await Promise.all([listNotificationRows(pool, who, { ...input, limit: input.limit + 1 }), countUnreadNotifications(pool, who, cursor)]);
+  const rows = fetched.slice(0, input.limit);
+  const nextBefore = fetched.length > input.limit ? (rows[rows.length - 1]?.eventId ?? null) : null;
   const notifications = rows.map((row): Notification => {
     const type = notificationTypeOf(row.type);
     return {
@@ -67,7 +70,7 @@ export async function listNotifications(
       text: renderNotification(row),
     };
   });
-  return { notifications, unreadCount };
+  return { notifications, unreadCount, nextBefore };
 }
 
 // 읽음 — 커서를 upToEventId(없으면 지금 최신)까지 민다. 뒤로는 가지 않는다. 이벤트를 남기지 않는다(위 주석).

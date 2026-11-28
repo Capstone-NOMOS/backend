@@ -588,12 +588,12 @@ FE의 "받은 편지함"은 두 칸이다(대표 결정 2026-10-29). **둘 다 �
 
 - **알림(`GET /me/notifications`) = 일어난 일, events에서 계산한다.** 알림 테이블을 두면 events와 같은 사실을 두 번 쓰게 되고(P5),
   받는 사람 규칙을 바꿀 때마다 쌓인 행을 고쳐야 한다. 종류는 셋 — `task_done`(최종 승인·검증만으로 완료·직접 완료 — 1차 검토 승인은 `taskState`가
-  AWAITING_APPROVAL이라 빠진다), `question_answered`(사람의 답 + 상담 초안이 그대로 답이 된 `QUESTION_DRAFTED.autoAnswered`), `question_asked`(SELF 제외).
+  AWAITING_APPROVAL이라 빠진다), `question_answered`(사람의 답 + 상담 초안이 그대로 답이 된 `QUESTION_DRAFTED.autoAnswered`), `question_asked`(SELF 제외), `question_rerouted`(040, 넘겨받은 역할).
   받는 사람 = 관련 역할(태스크 역할·질문한 역할·대상 역할)의 **지금** 담당(`project_members.user_id`) + 대표(조직 전부). 한 이벤트가 한 줄이라 대표이면서 담당이어도 한 번.
   **사람이 직접 결정한 일(최종 승인 결과·사람의 답·직접 완료)은 결정한 사람 자신(`on_behalf_of`)에게 알리지 않는다** — 방금 누른 것이 안 읽은 알림으로 쌓였다.
   검증 완료·질문 발생·상담 초안 답은 빼지 않는다: 명의가 에이전트 주인(그 담당 본인)이라 같은 기준이면 받아야 할 알림이 사라진다.
   지운 프로젝트는 빠지고 끝난 프로젝트는 남는다(일어난 일이다). 판정 SQL은 `inbox/repository.ts` 한 곳이고, 대상 타입 목록(`NOTIFICATION_EVENT_TYPES`)은
-  031의 부분 인덱스 `idx_events_notifications`와 같아야 한다. **최근 30일만 본다**(`NOTIFICATION_WINDOW_DAYS`) — events는 계속 자라고, 몇 달 전 알림이 안 읽음으로 남으면 숫자가 의미를 잃는다.
+  031의 부분 인덱스 `idx_events_notifications`와 같아야 한다. 더 보기는 `nextBefore`(한 줄 더 읽어 정확히 안다 — "꽉 찬 페이지면 더 있다"로 추정하면 빈 더 보기가 떴다). **최근 30일만 본다**(`NOTIFICATION_WINDOW_DAYS`) — events는 계속 자라고, 몇 달 전 알림이 안 읽음으로 남으면 숫자가 의미를 잃는다.
 - 문장(`text`)은 서버가 만든다(`inbox/render.ts`, 룸 피드와 같은 이유). 질문 내용·답은 요약 한 줄만 — 화면은 `questionId`로 질문 API를 읽는다(가시성 판정이 두 벌이 되지 않게).
 - **읽음은 커서 하나**(`users.notifications_read_event_id`, `POST /me/notifications/read`). 앞으로만 간다(GREATEST). **읽음은 events에 쓰지 않는다** —
   상태 변화가 아니라 화면 상태이고(노트 읽기와 같은 이유), 쓰면 events가 조회 로그가 된다.
@@ -733,7 +733,7 @@ FE의 "받은 편지함"은 두 칸이다(대표 결정 2026-10-29). **둘 다 �
   옛 대상의 상담 초안은 지우고, `saveDraft`는 초안을 쓴 쪽이 본 대상과 지금 대상이 같을 때만 저장한다(재지정 뒤 늦게 온 초안이 새 대상의 질문에 붙지 않게).
   **라우팅 평가는 바꾸지 않는다**: 라우터의 처음 판정은 `rerouted_from`(한 번만)에 남고 데이터셋 내보내기·`questions:export-all`은 `COALESCE(rerouted_from, target_role)`로 읽는다.
   `question_routing_runs`는 건드리지 않는다. 평가에서 "라우터가 보낸 대상"을 읽는 새 코드는 같은 COALESCE를 쓸 것 — `target_role`을 그대로 읽으면 재지정이 성적을 바꾼다.
-  이벤트 `QUESTION_REROUTED`(fromRole·targetRole)는 옛 대상과 새 대상의 룸에 모두 나온다. 받은 편지함 알림은 붙이지 않았다(처리할 일에는 바로 나온다 — 알림을 붙이려면 031의 부분 인덱스도 함께 바꾼다).
+  이벤트 `QUESTION_REROUTED`(fromRole·targetRole)는 옛 대상과 새 대상의 룸에 모두 나온다. 받은 편지함 알림 `question_rerouted`(040 — 넘겨받은 역할 담당·대표, 넘긴 사람 자신은 빼고, 031의 부분 인덱스도 함께 바꿨다).
 - **`GET /me/questions`**: 내가 답할 질문(대표는 전부, 팀원은 자기 역할이 대상인 것) — 알림 배지용. 답할 자격 정의는 `answerQuestion`과 같아야 한다.
 
 ### 룸 (`domain/room`, 017) — 보기 전용
