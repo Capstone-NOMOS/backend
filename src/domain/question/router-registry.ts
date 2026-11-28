@@ -5,7 +5,7 @@ import { jevQuestionRouter } from './jev-router.js';
 import { llmQuestionRouter } from './llm-router.js';
 import { openAiDecisionsQuestionRouter } from './openai-decisions-router.js';
 import { openAiQuestionRouter } from './openai-router.js';
-import { PM_TARGET, type QuestionRouter, type RoutingDecision, type RoutingInput } from './router.js';
+import { PM_TARGET, type QuestionRouter, type RoutingDecision, type RoutingInput, teamRulesTag } from './router.js';
 
 // 지금 쓰는 라우터 — QUESTION_ROUTER로 고른다: llm(기본, PM 모델(Claude)이 FE·BE·PM 중 고른다) · openai(OpenAI, 같은 프롬프트) ·
 // jev(TypeSafe의 결정 모델) · decision(임의의 외부 결정 모델, DECISION_ROUTER_URL). 발표 비교는 llm·openai·jev 셋이다.
@@ -86,7 +86,7 @@ export async function routeQuestion(input: RoutingInput): Promise<RoutedResult> 
       router.route(input),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`router timed out after ${ROUTER_TIMEOUT_MS}ms`)), ROUTER_TIMEOUT_MS).unref()),
     ]);
-    return { ...decision, latencyMs: Date.now() - started, fallback: null, attempted: router.name };
+    return { ...decision, routedBy: decision.routedBy + teamRulesTag(input.teamRules), latencyMs: Date.now() - started, fallback: null, attempted: router.name };
   } catch (err) {
     const decision: RoutingDecision = { target: PM_TARGET, confidence: null, reason: '라우터 실패 — 대표가 판단한다', routedBy: FALLBACK_ROUTED_BY };
     return {

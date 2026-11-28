@@ -1,3 +1,4 @@
+import type { TeamRules } from '../question/router.js';
 import type { QueryResultRow } from 'pg';
 import type { Queryable } from '../../config/db.js';
 import type { TeamRole } from '../roles.js';
@@ -24,6 +25,8 @@ export type Project = {
   questionMode: QuestionMode;
   // 완료 태스크를 기본 브랜치에 합치기(037) — 실험 모드 전용, 시작 전에만 바꾼다. 기능을 쌓아 큰 앱을 키우는 실험용(회차 반복 실험에서는 끈다).
   autoMerge: boolean;
+  // 팀별 질문 라우팅 규칙(039) — 역할마다·공통 문장. null = 규칙 없음. 질문 라우터 입력(teamRules)으로 들어간다.
+  routingRules: TeamRules | null;
 };
 
 export type QuestionMode = 'normal' | 'experiment';
@@ -39,6 +42,18 @@ function toDateString(value: unknown): string | null {
   }
   // 파서가 문자열을 주는 경우(설정 변경·이미 잘린 값)도 날짜 부분만 남긴다.
   return typeof value === 'string' ? value.slice(0, 10) : null;
+}
+
+// 저장된 jsonb에서 아는 키의 문자열만 꺼낸다(DB는 객체인지만 본다).
+const ROUTING_RULE_KEYS = ['COMMON', 'PM', 'FRONTEND', 'BACKEND'] as const;
+function toRoutingRules(value: unknown): TeamRules | null {
+  if (!value || typeof value !== 'object') return null;
+  const out: TeamRules = {};
+  for (const k of ROUTING_RULE_KEYS) {
+    const v = (value as Record<string, unknown>)[k];
+    if (typeof v === 'string' && v.trim() !== '') out[k] = v;
+  }
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 function toProject(row: QueryResultRow): Project {
@@ -59,6 +74,7 @@ function toProject(row: QueryResultRow): Project {
     questionRelay: row.question_relay !== false,
     questionMode: row.question_mode === 'experiment' ? 'experiment' : 'normal',
     autoMerge: row.auto_merge === true,
+    routingRules: toRoutingRules(row.routing_rules),
   };
 }
 
@@ -484,6 +500,12 @@ export async function listLatestInvites(db: Queryable, projectId: string): Promi
 // 질문 중계 스위치(시작 전에만 — 호출부가 확인한다).
 export async function updateQuestionRelay(db: Queryable, projectId: string, enabled: boolean): Promise<Project> {
   const { rows } = await db.query(`UPDATE projects SET question_relay = $2 WHERE id = $1 RETURNING *`, [projectId, enabled]);
+  return toProject(rows[0]!);
+}
+
+// 팀별 질문 라우팅 규칙(039). null이면 지운다.
+export async function updateProjectRoutingRules(db: Queryable, projectId: string, rules: TeamRules | null): Promise<Project> {
+  const { rows } = await db.query(`UPDATE projects SET routing_rules = $2::jsonb WHERE id = $1 RETURNING *`, [projectId, rules === null ? null : JSON.stringify(rules)]);
   return toProject(rows[0]!);
 }
 

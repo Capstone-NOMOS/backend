@@ -2,6 +2,7 @@ import { Router, type Request } from 'express';
 import { z } from 'zod';
 import {
   updateProjectSettings,
+  updateRoutingRules,
   assignMemberWithInvites,
   retryGithubInvites,
   startProject,
@@ -141,6 +142,26 @@ projectsRouter.patch(
     // warnings(034): 실험 모드를 켤 때 PM 예산이 모자라 보이면 경고(막지 않는다). data는 예전처럼 프로젝트다.
     const { project, warnings } = await updateProjectSettings(actorOf(req), projectId, body);
     res.status(200).json({ data: project, warnings });
+  },
+);
+
+// 팀별 질문 라우팅 규칙(039). 문장마다 2000자까지, null·빈 문장은 지운다. rules 자체가 null이면 규칙을 모두 지운다.
+const ruleText = z.string().max(2000).nullable().optional();
+const routingRulesBodySchema = z
+  .object({ rules: z.object({ COMMON: ruleText, PM: ruleText, FRONTEND: ruleText, BACKEND: ruleText }).strict().nullable() })
+  .strict();
+
+// PUT /api/projects/:projectId/routing-rules — 팀별 질문 라우팅 규칙(대표 전용, 시작 뒤에도 바꿀 수 있다).
+projectsRouter.put(
+  '/projects/:projectId/routing-rules',
+  validate({ params: projectIdParamsSchema, body: routingRulesBodySchema }),
+  authenticate,
+  requireRepresentative,
+  async (req, res) => {
+    const { projectId } = req.params as z.infer<typeof projectIdParamsSchema>;
+    const { rules } = req.body as z.infer<typeof routingRulesBodySchema>;
+    const clean = rules ? Object.fromEntries(Object.entries(rules).filter((e): e is [string, string] => typeof e[1] === 'string')) : null;
+    res.status(200).json({ data: await updateRoutingRules(actorOf(req), projectId, clean) });
   },
 );
 

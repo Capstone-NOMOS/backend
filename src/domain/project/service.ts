@@ -1,3 +1,4 @@
+import { normalizeTeamRules, teamRulesTag, type TeamRules } from '../question/router.js';
 import type { PoolClient } from 'pg';
 import { pool, withTransaction, type Queryable } from '../../config/db.js';
 import { AppError } from '../../errors.js';
@@ -57,6 +58,7 @@ import {
   markProjectStarted,
   summarizeProjectTasks,
   updateProjectSettingsRow,
+  updateProjectRoutingRules,
   type QuestionMode,
   type AutonomyPreset,
   type Project,
@@ -325,6 +327,31 @@ export async function createProject(
       repos: await listProjectRepos(tx, project.id),
       members: [],
     };
+  });
+}
+
+// 팀별 질문 라우팅 규칙(039, 대표 전용). 역할마다(PM·FRONTEND·BACKEND)·공통(COMMON) 문장 — 질문이 올 때 라우터 입력으로 들어간다.
+// 설정(questionRelay 등)과 달리 시작 뒤에도 바꿀 수 있다: 권한·정책이 아니라 "누구에게 먼저 물을지"의 기준이고,
+// 판정 기록(routed_by)에 규칙 해시(+team-<해시>)가 붙어 규칙 전·후 판정이 지표에서 섞이지 않는다. 끝난 프로젝트는 409 PROJECT_NOT_OPEN.
+// 빈 문장·null은 지운다. 같은 규칙이면 이벤트 없이 그대로 돌려준다.
+export async function updateRoutingRules(actor: Actor, projectId: string, rules: TeamRules | null): Promise<Project> {
+  if (actor.orgRole !== 'REPRESENTATIVE') throw new AppError('NOT_REPRESENTATIVE', 'only the representative can change routing rules');
+  const next = normalizeTeamRules(rules);
+  return withTransaction(async (tx) => {
+    const project = await assertProjectInOrg(tx, actor.orgId, projectId, 'update');
+    if (project.status === 'completed' || project.status === 'aborted') throw new AppError('PROJECT_NOT_OPEN', `project is ${project.status}`);
+    const before = normalizeTeamRules(project.routingRules);
+    if (JSON.stringify(before) === JSON.stringify(next)) return project;
+    const updated = await updateProjectRoutingRules(tx, projectId, next);
+    await appendEvent(tx, {
+      orgId: actor.orgId,
+      projectId,
+      type: 'ROUTING_RULES_UPDATED',
+      onBehalfOf: actor.userId,
+      policyHash: project.policyHash,
+      payload: { before, after: next, beforeTag: teamRulesTag(before) || null, afterTag: teamRulesTag(next) || null },
+    });
+    return updated;
   });
 }
 

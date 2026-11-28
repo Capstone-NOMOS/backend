@@ -254,6 +254,7 @@ describe('모든 성공 응답을 실제로 받아 문서와 대조한다', () =
     // 질문 중계 스위치(시작 전) — 껐다가 다시 켠다(아래에서 질문 흐름을 쓴다).
     await call('PATCH', `/projects/${projectId}/settings`, rep, { questionRelay: false });
     await call('PATCH', `/projects/${projectId}/settings`, rep, { questionRelay: true });
+    await call('PUT', `/projects/${projectId}/routing-rules`, rep, { rules: { COMMON: '화면 모습은 PM, 동작은 FE', PM: '정책·문구', FRONTEND: '화면 동작', BACKEND: '서버 동작' } });
     const beAgentId = beConn.data.agentId as string;
     const repAgentId = repConn.data.agentId as string;
     await call('POST', `/projects/${projectId}/members`, rep, { agentId: repAgentId, teamRole: 'FRONTEND' });
