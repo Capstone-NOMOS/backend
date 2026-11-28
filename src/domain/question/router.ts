@@ -13,7 +13,8 @@ import type { AskedQuestion } from './repository.js';
 export type QuestionTarget = TeamRole | 'PM';
 export const PM_TARGET = 'PM' as const;
 export type RoutingTarget = QuestionTarget | 'SELF';
-export type TeamRules = Partial<Record<QuestionTarget, string>>;
+// 역할별 규칙 + COMMON(역할에 딸리지 않은 원칙·헷갈릴 때의 기준). COMMON은 맥락(buildRoutingContext)에 한 번 들어가 세 라우터가 같은 문장을 본다.
+export type TeamRules = Partial<Record<QuestionTarget | 'COMMON', string>>;
 
 // 질문이 나온 단계. 지금은 implementation(태스크를 구현하다 묻는다)만 실제로 이 경로를 탄다 —
 // feature_spec(PM이 기능 명세 초안을 쓰다 묻는다)·contract(BE가 API 계약 초안을 쓰다 묻는다)는 같은 라우터로 보내려고 입력 모양을 먼저 맞춰 둔다.
@@ -153,6 +154,7 @@ export function buildRoutingContext(input: RoutingInput): string[] {
     '',
     `후보: ${[...input.roles, PM_TARGET].join(', ')}`,
     ...(['FRONTEND', 'BACKEND', PM_TARGET] as const).map((t) => `- ${t} = ${targetDescription(t, input)}`),
+    ...(input.teamRules?.COMMON?.trim() ? [`이 팀의 공통 규칙:\n${input.teamRules.COMMON.trim()}`] : []),
     `질문한 쪽: ${input.askerRole}`,
     input.task ? `태스크: ${input.task.title} (${input.task.kind})` : '',
     input.repo ? `레포: ${input.repo.fullName}` : '',

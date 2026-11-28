@@ -266,4 +266,12 @@ describe('팀 규칙', () => {
     expect(body.questions[0]!.choices).toContainEqual({ value: 'BACKEND', description: criteria.BACKEND });
     expect(body.input).toContain(`이 팀의 규칙: ${RULES.FRONTEND}`);
   });
+
+  it('공통 규칙(COMMON)은 맥락에 한 번 들어가 프롬프트·Jev state·Decisions input이 같은 문장을 본다', () => {
+    const input = { ...INPUT, teamRules: { ...RULES, COMMON: '화면 모습은 PM, 동작은 FE로 가른다' } };
+    const line = '이 팀의 공통 규칙:\n화면 모습은 PM, 동작은 FE로 가른다';
+    expect(buildRoutingPrompt(input)).toContain(line);
+    expect((decisionsRequestBody('gpt-6-luna', input) as { input: string }).input).toContain(line);
+    expect(Object.values(jevCriteria(input)).join(' ')).not.toContain('화면 모습은 PM');
+  });
 });

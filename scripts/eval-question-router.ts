@@ -13,7 +13,7 @@
 //   npx tsx scripts/eval-question-router.ts --check --data team.json      # 형식 검사만(라우터를 부르지 않는다)
 //   npx tsx scripts/eval-question-router.ts jev --data team.json --ids test.json --team-rules rules.json   # 팀 규칙을 넣고 일부 문항만
 //
-// --team-rules: { "rules": { "FRONTEND": "...", "BACKEND": "...", "PM": "..." } } — 문항마다 input.teamRules로 넣는다(세 라우터가 같은 문장을 받는다).
+// --team-rules: { "rules": { "FRONTEND": "...", "BACKEND": "...", "PM": "...", "COMMON": "역할에 딸리지 않은 원칙(선택)" } } — 문항마다 input.teamRules로 넣는다(세 라우터가 같은 문장을 받는다).
 //   결과의 라우터 이름에 +team-<규칙 해시 8자>가 붙고 요약에 규칙 원문이 남는다 — 규칙 전·후 결과가 섞이지 않는다.
 // --ids: 문항 id 배열(JSON) 또는 { "ids": [...] } — 그 문항만 잰다(규칙을 쓴 문항과 재는 문항을 나눌 때).
 //
@@ -67,8 +67,8 @@ if (teamRulesFile) {
   const raw = JSON.parse(readFileSync(path.resolve(teamRulesFile), 'utf8')) as { rules?: Record<string, unknown> };
   const rules: TeamRules = {};
   for (const [k, v] of Object.entries(raw.rules ?? {})) {
-    if (!['FRONTEND', 'BACKEND', 'PM'].includes(k) || typeof v !== 'string' || v.trim() === '') {
-      console.error(`--team-rules의 rules는 FRONTEND·BACKEND·PM 키에 문장(문자열)만 받는다: ${k}`);
+    if (!['FRONTEND', 'BACKEND', 'PM', 'COMMON'].includes(k) || typeof v !== 'string' || v.trim() === '') {
+      console.error(`--team-rules의 rules는 FRONTEND·BACKEND·PM·COMMON 키에 문장(문자열)만 받는다: ${k}`);
       process.exit(1);
     }
     rules[k as keyof TeamRules] = v.trim();
