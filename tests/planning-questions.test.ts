@@ -494,7 +494,7 @@ describe('태스크 없는 질문이 다른 화면에서 깨지지 않는다', (
     expect((mine.json.data as unknown as { questions: { taskTitle: string | null }[] }).questions).toEqual([expect.objectContaining({ taskTitle: null })]);
     expect((await http('GET', `/projects/${w.projectId}/decisions?status=all`, w.rep)).status).toBe(200);
     const feed = await http('GET', `/projects/${w.projectId}/rooms/FRONTEND/feed?limit=50`, w.rep);
-    expect((feed.json.data as unknown as { messages: { text: string }[] }).messages.map((m) => m.text)).toContain('PM 에이전트가 BACKEND에게 질문했습니다 (기능 명세 초안) (1개)');
+    expect((feed.json.data as unknown as { messages: { text: string }[] }).messages.map((m) => m.text)).toContain('PM 에이전트가 BE에게 질문했습니다 (기능 명세 초안) (1개)');
     const notes = (await http('GET', '/me/notifications', w.rep)).json.data as unknown as { notifications: { type: string; text: string; taskId: string | null }[] };
     expect(notes.notifications.filter((n) => n.type === 'question_asked').map((n) => n.taskId)).toEqual([null, null]);
     const inbox = (await http('GET', '/me/inbox', w.be)).json.data as unknown as { items: { kind: string; text: string }[] };

@@ -67,12 +67,17 @@ import {
 
 const PRESETS: readonly AutonomyPreset[] = ['L1', 'L2', 'L3', 'L4'];
 
+// 생성 요청에서 생략하면 쓰는 값 — 화면이 같은 상수를 따로 들고 있지 않게 서버가 정한다(FE 요청).
+export const DEFAULT_AUTONOMY_PRESET: AutonomyPreset = 'L2';
+export const DEFAULT_PM_BUDGET_USD = 100;
+
 export type Actor = { userId: string; orgId: string; orgRole: string };
 
 export type CreateProjectInput = {
   name: string;
-  autonomyPreset: string;
-  pmBudgetUsd: number;
+  // 생략하면 DEFAULT_AUTONOMY_PRESET·DEFAULT_PM_BUDGET_USD.
+  autonomyPreset?: string;
+  pmBudgetUsd?: number;
   budgetUsd?: number;
   deadline?: string;
   repoIds: string[];
@@ -240,7 +245,7 @@ export async function createProject(
   actorUserId: string,
   input: CreateProjectInput,
 ): Promise<ProjectDetail> {
-  const preset = assertPreset(input.autonomyPreset);
+  const preset = assertPreset(input.autonomyPreset ?? DEFAULT_AUTONOMY_PRESET);
   const repoIds = [...new Set(input.repoIds)];
 
   return withTransaction(async (tx) => {
@@ -283,7 +288,7 @@ export async function createProject(
       orgId,
       name: input.name,
       autonomyPreset: preset,
-      pmBudgetUsd: input.pmBudgetUsd,
+      pmBudgetUsd: input.pmBudgetUsd ?? DEFAULT_PM_BUDGET_USD,
       budgetUsd: input.budgetUsd ?? null,
       deadline: input.deadline ?? null,
       constitution,

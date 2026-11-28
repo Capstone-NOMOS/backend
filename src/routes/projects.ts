@@ -38,8 +38,9 @@ const memberParamsSchema = projectIdParamsSchema.extend({ agentId: z.string().uu
 // autonomyPreset은 여기서 enum으로 막지 않는다 — 서비스가 422로 "무엇이 허용되는지"까지 답한다.
 const createProjectBodySchema = z.object({
   name: z.string().trim().min(1).max(128),
-  autonomyPreset: z.string().min(1),
-  pmBudgetUsd: z.number().positive(),
+  // 생략하면 서버 기본값(L2·$100 — project/service.ts의 DEFAULT_*).
+  autonomyPreset: z.string().min(1).optional(),
+  pmBudgetUsd: z.number().positive().optional(),
   budgetUsd: z.number().positive().optional(),
   deadline: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'deadline must be YYYY-MM-DD').optional(),
   repoIds: z.array(z.string().uuid()).min(1).max(20),
