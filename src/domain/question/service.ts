@@ -123,6 +123,8 @@ export async function askQuestion(ctx: AgentContext, taskId: string, questions: 
     repo: repo ? { fullName: repo.fullName } : null,
     questions,
     contract: contract ? { featureKey: contract.featureKey, summary: contract.summary } : null,
+    // 팀별 라우팅 규칙(039) — 없으면 넣지 않는다(예전 프롬프트·스냅샷과 같다).
+    ...(project?.routingRules ? { teamRules: project.routingRules } : {}),
     context: { orgId: ctx.orgId },
   };
   const routed = await routeQuestion(routingInput);

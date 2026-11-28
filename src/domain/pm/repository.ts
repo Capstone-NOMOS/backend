@@ -1,3 +1,4 @@
+import { normalizeTeamRules, type TeamRules } from '../question/router.js';
 import type { QueryResultRow } from 'pg';
 import type { Queryable } from '../../config/db.js';
 import type { QuestionMode } from '../project/repository.js';
@@ -267,11 +268,11 @@ export async function planCostsUsd(db: Queryable, planIds: string[]): Promise<Ma
 
 // ── 맥락
 
-export type ProjectForPm = { id: string; orgId: string; name: string; deadline: string | null; pmBudgetUsd: number; policyHash: string; questionMode: QuestionMode };
+export type ProjectForPm = { id: string; orgId: string; name: string; deadline: string | null; pmBudgetUsd: number; policyHash: string; questionMode: QuestionMode; routingRules: TeamRules | null };
 
 export async function findProjectForPm(db: Queryable, projectId: string): Promise<ProjectForPm | null> {
   const { rows } = await db.query(
-    `SELECT id, org_id, name, to_char(deadline, 'YYYY-MM-DD') AS deadline, pm_budget_usd::float8 AS pm_budget_usd, policy_hash, question_mode
+    `SELECT id, org_id, name, to_char(deadline, 'YYYY-MM-DD') AS deadline, pm_budget_usd::float8 AS pm_budget_usd, policy_hash, question_mode, routing_rules
        FROM projects WHERE id = $1 AND deleted_at IS NULL`,
     [projectId],
   );
@@ -284,6 +285,8 @@ export async function findProjectForPm(db: Queryable, projectId: string): Promis
         deadline: r.deadline,
         pmBudgetUsd: r.pm_budget_usd,
         policyHash: r.policy_hash,
+        // 팀별 라우팅 규칙(039) — 기능 명세 초안의 질문 라우팅에 넣는다.
+        routingRules: normalizeTeamRules(r.routing_rules),
         questionMode: r.question_mode === 'experiment' ? 'experiment' : 'normal',
       }
     : null;
