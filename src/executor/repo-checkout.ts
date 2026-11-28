@@ -50,6 +50,9 @@ export type EnsureRepoDeps = {
   git?: (args: string[], cwd: string) => void;
   root?: string;
   readMap?: () => Record<string, string>;
+  // 읽기 전용 실행(상담·계약 초안)은 클론 폴더를 그대로 읽는다 — 그 전에 작업 트리를 origin/<이 브랜치>로 맞춘다.
+  // 태스크는 worktree를 origin/<기본 브랜치>에서 새로 따므로 필요 없다(주지 않는다).
+  syncWorkTree?: string;
 };
 
 const defaultGit = (args: string[], cwd: string) => {
@@ -88,5 +91,22 @@ export function ensureRepo(repo: { fullName: string; cloneUrl: string | null }, 
       );
     }
   }
+  if (deps.syncWorkTree !== undefined) syncWorkTree(dir, deps.syncWorkTree, git, log);
   return { path: dir, managed: true, baseRef: (b) => `origin/${b}` };
+}
+
+// fetch는 원격 브랜치만 바꾸고 작업 트리는 처음 클론한 시점에 머문다 — 상담·계약 초안이 그 옛 코드를 근거로 답할 수 있었다(FE 코드 읽기, 2026-11-27).
+// CLI가 관리하는 클론이라 작업 트리에 사람의 변경이 없다(태스크는 worktree에서 한다) — 그래서 --force로 맞춘다.
+// repos.json에 적힌 사람의 레포는 건드리지 않는다(위에서 이미 돌아간다).
+// 실패하면(빈 레포라 브랜치가 없는 등) 멈추지 않고 지금 트리로 읽는다 — 읽기 전용 실행을 막을 이유가 아니다.
+function syncWorkTree(dir: string, branch: string, git: (args: string[], cwd: string) => void, log: (line: string) => void): void {
+  if (!branch || branch.startsWith('-')) {
+    log(`기본 브랜치 이름이 이상해서 폴더를 최신으로 맞추지 못했어요: ${branch}`);
+    return;
+  }
+  try {
+    git(['checkout', '--quiet', '--detach', '--force', `origin/${branch}`], dir);
+  } catch (err) {
+    log(`폴더를 origin/${branch}로 맞추지 못해서 지금 있는 코드로 읽어요 (${err instanceof Error ? err.message : String(err)})`);
+  }
 }

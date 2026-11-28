@@ -439,6 +439,17 @@ describe('HTTP — 대표 전용 게이트', () => {
     expect((assigned.body as unknown as { data: { notice: string } }).data.notice).toContain('refresh');
   });
 
+  it('autonomyPreset·pmBudgetUsd를 생략하면 서버 기본값(L2·$100)으로 만든다 — 화면이 상수를 따로 들지 않는다', async () => {
+    const rep = await account('rep');
+    const { orgId } = await createOrganization(rep.userId, 'Acme Inc.');
+    const [repo] = await connectRepos({ orgId, actorUserId: rep.userId, repos: [{ fullName: 'acme/api' }] });
+    await ownRepo(orgId, rep.userId, repo!.id, 'BACKEND');
+
+    const created = await post(`/api/orgs/${orgId}/projects`, rep.token, { name: 'p-default', repoIds: [repo!.id] });
+    expect(created.status).toBe(201);
+    expect((created.body as unknown as { data: { project: unknown } }).data.project).toMatchObject({ autonomyPreset: 'L2', pmBudgetUsd: '100.00' });
+  });
+
   it('다른 조직의 :orgId로는 만들 수 없다', async () => {
     const rep = await account('rep');
     const { orgId } = await createOrganization(rep.userId, 'Acme Inc.');

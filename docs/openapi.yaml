@@ -3300,13 +3300,14 @@ paths:
           application/json:
             schema:
               type: object
-              required: [name, autonomyPreset, pmBudgetUsd, repoIds]
+              required: [name, repoIds]
               properties:
                 name: { type: string, maxLength: 128 }
-                autonomyPreset: { type: string, description: 'L1 | L2 | L3 | L4' }
+                autonomyPreset: { type: string, default: L2, description: 'L1 | L2 | L3 | L4. 생략하면 L2.' }
                 pmBudgetUsd:
                   type: number
-                  description: PM 예산. 필수 — PM은 NOMOS 키로 돌아 비용을 우리가 부담한다.
+                  default: 100
+                  description: PM 예산(USD). 생략하면 100 — PM은 NOMOS 키로 돌아 비용을 우리가 부담한다.
                 budgetUsd: { type: number, description: 프로젝트 전체 상한 (선택) }
                 deadline: { type: string, example: '2026-12-31' }
                 repoIds: { type: array, minItems: 1, items: { type: string, format: uuid } }

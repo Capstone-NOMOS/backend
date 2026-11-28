@@ -15,6 +15,7 @@ import { acceptInvite, createInvite } from '../src/domain/invite/service.js';
 import { createOrganization } from '../src/domain/org/service.js';
 import { assignMember, createProject, unassignMember } from '../src/domain/project/service.js';
 import { connectRepos } from '../src/domain/repo/service.js';
+import { PROJECT_FEED_EVENTS, TASK_FEED_EVENTS } from '../src/domain/room/repository.js';
 import { attachRealtime, type Realtime } from '../src/realtime/index.js';
 import { TOPICS_BY_EVENT } from '../src/realtime/topics.js';
 import { resetSchema, testPool, truncateAll } from './test-db.js';
@@ -289,6 +290,8 @@ describe('조직 신호', () => {
     }
     // 알림이 되는 이벤트 타입은 전부 inbox 신호를 낸다.
     for (const type of NOTIFICATION_EVENT_TYPES) expect(TOPICS_BY_EVENT[type].org).toContain('inbox');
+    // 룸 피드에 줄이 되는 이벤트 타입은 전부 room 신호를 낸다 — 질문 줄이 새로 고칠 때까지 안 보였다(FE 요청).
+    for (const type of [...TASK_FEED_EVENTS, ...PROJECT_FEED_EVENTS]) expect(TOPICS_BY_EVENT[type].project, type).toContain('room');
     rep.close();
     be.close();
   });

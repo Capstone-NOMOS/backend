@@ -81,19 +81,20 @@ export const TOPICS_BY_EVENT: Record<EventType, Mapping> = {
 
   APPROVAL_REQUESTED: { project: ['approvals', 'tasks', 'room'], org: ['approvals', 'inbox'] },
   APPROVAL_RESULT: { project: ['approvals', 'tasks', 'room'], org: ['approvals', 'inbox'] },
-  QUESTION_ASKED: { project: ['questions'], org: ['questions', 'inbox'] },
+  // 질문 줄은 룸 피드에 나온다(묻는 쪽·답할 쪽 룸) — room 신호가 없으면 새로 고칠 때까지 안 보였다(FE 요청).
+  QUESTION_ASKED: { project: ['questions', 'room'], org: ['questions', 'inbox'] },
   QUESTION_GOLD_LABELED: { project: ['questions'] },
   CONTRACT_REQUESTED: { project: ['contracts', 'room'], org: ['contracts'] },
   CONTRACT_DRAFTED: { project: ['contracts', 'room'], org: ['contracts', 'inbox'] },
   CONTRACT_REVISION_REQUESTED: { project: ['contracts', 'room'], org: ['contracts', 'inbox'] },
   CONTRACT_APPROVED: { project: ['contracts', 'room'], org: ['contracts', 'inbox'] },
   CONTRACT_FAILED: { project: ['contracts', 'room'], org: ['contracts', 'inbox'] },
-  QUESTION_ANSWERED: { project: ['questions', 'tasks'], org: ['questions', 'inbox'] },
-  QUESTION_EXPIRED: { project: ['questions', 'tasks'], org: ['questions', 'inbox'] },
-  QUESTION_DRAFTED: { project: ['questions', 'tasks'], org: ['questions', 'inbox'] },
+  QUESTION_ANSWERED: { project: ['questions', 'tasks', 'room'], org: ['questions', 'inbox'] },
+  QUESTION_EXPIRED: { project: ['questions', 'tasks', 'room'], org: ['questions', 'inbox'] },
+  QUESTION_DRAFTED: { project: ['questions', 'tasks', 'room'], org: ['questions', 'inbox'] },
   // 038: 답할 사람이 바뀐다 — 옛 대상·새 대상의 "내가 답할 질문"·처리할 일이 함께 바뀐다.
-  QUESTION_REROUTED: { project: ['questions'], org: ['questions', 'inbox'] },
-  TASK_BLOCKED_ON_QUESTION: { project: ['tasks', 'questions'] },
+  QUESTION_REROUTED: { project: ['questions', 'room'], org: ['questions', 'inbox'] },
+  TASK_BLOCKED_ON_QUESTION: { project: ['tasks', 'questions', 'room'] },
 
   PM_PLAN_REQUESTED: { project: ['plans'], org: ['inbox'] },
   PM_CALL: { project: ['plans'] },
